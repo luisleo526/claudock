@@ -1,0 +1,36 @@
+name: macOS
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: xcrun swift --version
+      - name: Tests
+        run: xcrun swift test
+      - name: CLI process and argument smoke checks
+        run: python3 Tests/CLIIntegration/check.py
+      - name: Package app
+        run: scripts/build-app.sh
+      - name: Preserve the application bundle
+        run: ditto -c -k --norsrc --noextattr --keepParent 'dist/Claudock.app' 'dist/Claudock-macOS.zip'
+      - name: Upload local-build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claudock-macOS-build
+          path: dist/Claudock-macOS.zip
+          if-no-files-found: error
+          retention-days: 14

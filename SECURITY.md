@@ -1,0 +1,25 @@
+# Security
+
+## Report a vulnerability
+
+Use this repository's **Security → Advisories → Report a vulnerability** feature to contact the maintainers privately. If private vulnerability reporting is unavailable, open an issue requesting a private reporting channel without technical details, personal data, or secrets. Do not post credentials, Keychain output, `.credentials.json`, shell startup files, session transcripts, or raw account responses.
+
+Include the affected version or commit, macOS version, a description of the trust boundary, and reproduction steps using synthetic profiles. The project does not promise a response SLA. Fixes target the current source version; there is no separate support commitment for older releases.
+
+## Data and trust boundaries
+
+- OAuth tokens come from the selected profile's Claude Keychain service or its existing credential file. They are used in memory and are not copied into the app's profile registry or persisted as a usage cache.
+- Access tokens are sent to `https://api.anthropic.com/api/oauth/usage`; refresh tokens are sent only to `https://platform.claude.com/v1/oauth/token` for renewal. Both clients reject redirects and use ephemeral sessions. There is no developer-operated server, telemetry, or analytics service.
+- Discovery statically parses a bounded set of zsh files and literal includes. It does not source or execute them. Dynamically constructed wrappers may need a manual import.
+- The profile registry and new account directories live under `~/Library/Application Support/Claudock/`. CRUD updates the registry without editing shell files. Optional shell integration writes `~/.config/claudock/init.zsh` and a named loader block in `.zshrc`, with a backup before editing an existing file. It creates only the namespaced `claudock` function. Legacy files under `~/.config/claude-usage/` are imported read-only and preserved. Treat these files as private local configuration, not shareable diagnostics.
+- The bundled CLI uses the same registry, profile validation, credential mapping, and provider-environment cleanup as the app. `run` and `profile login` invoke Claude directly with literal argument vectors in the current directory; they do not evaluate a generated shell string. `usage` reads credentials and queries account quota only when invoked; it does not rotate tokens. It prints no email or credential fields.
+- Local analytics reads main sessions and recognized direct/workflow subagent logs in a bounded background scan to extract usage metadata and project paths. Transcripts and token summaries are not uploaded by the monitor. The local dashboard and read-only `--analytics` diagnostic can still reveal profile names, project names, paths, and work patterns; redact screenshots and diagnostic output before sharing.
+- Re-login opens Claude Code in Terminal using a private temporary command file that deletes itself when it runs. The file contains command arguments and local paths, never OAuth credentials. Interactive authentication remains with Claude Code. Claudock can renew expired access tokens using the same refresh token and saves the rotated pair back to the existing credential store. Keychain writes go through the trusted security utility over stdin, with a strict input-size ceiling and no secret-bearing argv. They use Claude's cooperative locks plus full-document and persistent-item identity checks; they do not provide atomic isolation from arbitrary external writers. macOS can require approval to access Keychain.
+- **Continue as…** deliberately launches the selected Claude executable with a saved conversation path under the chosen target profile. Claude Code may then send conversation context to its configured provider as part of its normal operation. This explicit Claude workflow is separate from the monitor's local analytics. The target profile's settings and Claude's normal project/tool permission prompts apply.
+- Removing a profile preserves its Claude config directory, conversations, and Keychain entry. This is removal from the monitor, not secure deletion or account revocation.
+
+A private `.claudock-refresh-<service-hash>.json` attempt marker contains only a token-pair fingerprint, never credentials. It prevents reusing a possibly consumed refresh token after a lost response or crash. Automatic renewal belongs to the resident app, not the one-shot CLI.
+
+The app runs with the current user's local permissions and is not sandboxed. Anyone or any process with equivalent access may already be able to read or change local configuration. The monitor does not protect credentials from a compromised Mac, untrusted local binaries, or a malicious shell setup used during an explicit Terminal action.
+
+The service endpoint is undocumented and can change or be withdrawn. A local ad-hoc signature verifies bundle integrity but does not establish the developer identity or notarization status of a downloaded release. Maintainers should sign and notarize public app distributions and verify the artifact after packaging.
