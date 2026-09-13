@@ -37,7 +37,7 @@ final class ProfileStoreTests: XCTestCase {
             claude-dynamic() { custom-helper "$ACCOUNT"; }
             """#
             try write(original, ".zshrc", home: home)
-            let discovered = ProfileDiscovery.discover(home: home.path)
+            let discovered = ProfileDiscovery.discover(home: home.path).filter { !$0.isVertex }
             let loaded = try ProfileStore.load(home: home.path)
             XCTAssertEqual(loaded.map(\.command), discovered.map(\.command))
             XCTAssertEqual(loaded.map(\.configDirectory), discovered.map(\.configDirectory))
@@ -56,6 +56,55 @@ final class ProfileStoreTests: XCTestCase {
             claude-two() { _claude-native "$HOME/.same"; }
             """#, ".zshrc", home: home)
             XCTAssertEqual(try ProfileStore.load(home: home.path).map(\.command), ["claude", "claude-one", "claude-two"])
+        }
+    }
+
+    func testExternalProviderRegistrationsAreRetiredWithoutTouchingHistory() throws {
+        try withHome { home in
+            try write(#"""
+            claude-vertex() { export CLAUDE_CONFIG_DIR="$HOME/.cloud"; export CLAUDE_CODE_USE_VERTEX=1; claude; }
+            claude-bedrock() { export CLAUDE_CONFIG_DIR="$HOME/.bedrock"; export CLAUDE_CODE_USE_BEDROCK=true; claude; }
+            claude-foundry() { export CLAUDE_CONFIG_DIR="$HOME/.foundry"; export CLAUDE_CODE_USE_FOUNDRY=1; claude; }
+            """#, ".zshrc", home: home)
+            let ordinary = try ProfileStore.add(name: "ordinary", home: home.path)
+            XCTAssertEqual(try ProfileStore.load(home: home.path).map(\.command), ["claude", ordinary.command])
+            let cloud = home.appendingPathComponent(".cloud")
+            try FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+            try Data("preserved".utf8).write(to: cloud.appendingPathComponent("history.jsonl"))
+            let registry = ProfileStore.directory(home: home.path).appendingPathComponent("profiles.json")
+            var state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: registry)) as? [String: Any])
+            var profiles = try XCTUnwrap(state["profiles"] as? [[String: Any]])
+            profiles.append(["command": "claude-vertex", "configDirectory": cloud.path, "isVertex": true,
+                             "registryID": UUID().uuidString, "managed": false])
+            state["profiles"] = profiles
+            try JSONSerialization.data(withJSONObject: state).write(to: registry)
+            XCTAssertEqual(try ProfileStore.load(home: home.path).map(\.command), ["claude", ordinary.command])
+            XCTAssertEqual(try ProfileStore.importShellProfiles(home: home.path).map(\.command), ["claude", ordinary.command])
+            XCTAssertEqual(try Data(contentsOf: cloud.appendingPathComponent("history.jsonl")), Data("preserved".utf8))
+            let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: registry)) as? [String: Any])
+            XCTAssertTrue((saved["suppressedCommands"] as? [String] ?? []).contains("claude-vertex"))
+        }
+    }
+
+    func testLegacyUnmarkedCloudImportsAreReconciledOnceAndOnExplicitImport() throws {
+        try withHome { home in
+            _ = try ProfileStore.load(home: home.path)
+            try write(#"claude-cloud() { export CLAUDE_CONFIG_DIR="$HOME/.cloud"; export CLAUDE_CODE_USE_BEDROCK=1; claude; }"#, ".zshrc", home: home)
+            let path = registry(home)
+            var state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+            let initial = try XCTUnwrap(state["profiles"] as? [[String: Any]])
+            let old: [String: Any] = ["command": "claude-cloud", "configDirectory": home.path + "/.cloud",
+                                      "isVertex": false, "registryID": UUID().uuidString, "managed": false]
+            state["profiles"] = initial + [old]; state.removeValue(forKey: "subscriptionOnlyMigration")
+            try JSONSerialization.data(withJSONObject: state).write(to: path)
+            XCTAssertEqual(try ProfileStore.load(home: home.path).map(\.command), ["claude"])
+            let migrated = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+            XCTAssertEqual(migrated["subscriptionOnlyMigration"] as? Int, 1)
+            // A later explicit rescan also reconciles an old/unmarked import.
+            state["subscriptionOnlyMigration"] = 1
+            try JSONSerialization.data(withJSONObject: state).write(to: path)
+            XCTAssertEqual(try ProfileStore.load(home: home.path).count, 2)
+            XCTAssertEqual(try ProfileStore.importShellProfiles(home: home.path).map(\.command), ["claude"])
         }
     }
 
@@ -273,14 +322,14 @@ final class ProfileStoreTests: XCTestCase {
         }
     }
 
-    func testProviderAndUnresolvedProfilesDoNotClaimSubscriptionCredentialIdentity() throws {
+    func testExcludedProvidersAndUnresolvedProfilesDoNotClaimSubscriptionIdentity() throws {
         try withHome { home in
             try write(#"""
             claude-cloud() { export CLAUDE_CONFIG_DIR="$HOME/shared"; export CLAUDE_CODE_USE_VERTEX=1; claude; }
             claude-dynamic() { custom-helper "$ACCOUNT"; }
             """#, ".zshrc", home: home)
             let initial = try ProfileStore.load(home: home.path)
-            XCTAssertEqual(initial.first { $0.command == "claude-cloud" }?.launchCommand, "claude-cloud")
+            XCTAssertNil(initial.first { $0.command == "claude-cloud" })
             XCTAssertEqual(initial.first { $0.command == "claude-dynamic" }?.launchCommand, "claude-dynamic")
             try write(#"""
             claude-cloud() { export CLAUDE_CONFIG_DIR="$HOME/shared"; export CLAUDE_CODE_USE_VERTEX=1; claude; }
@@ -289,7 +338,7 @@ final class ProfileStoreTests: XCTestCase {
             let subscription = try XCTUnwrap(ProfileStore.importShellProfiles(home: home.path).first { $0.command == "claude-subscription" })
             try ProfileStore.remove(profile: subscription, home: home.path)
             try write(#"claude-secondcloud() { export CLAUDE_CONFIG_DIR="$HOME/shared"; export CLAUDE_CODE_USE_VERTEX=1; claude; }"#, ".zshrc", home: home)
-            XCTAssertTrue(try ProfileStore.importShellProfiles(home: home.path).contains { $0.command == "claude-secondcloud" })
+            XCTAssertFalse(try ProfileStore.importShellProfiles(home: home.path).contains { $0.command == "claude-secondcloud" })
         }
     }
 

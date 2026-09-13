@@ -107,9 +107,16 @@ public enum ProfileDiscovery {
         func profile(_ command: String, body: [String]) -> Profile {
             var candidates: Set<String> = []
             var hasDynamicPath = false
-            var vertex = false
+            // Keep the legacy serialized isVertex flag as the external-provider
+            // marker so older registries remain readable during migration.
+            let cloudKeys = ["CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_USE_BEDROCK=", "CLAUDE_CODE_USE_FOUNDRY="]
+            let vertex = body.enumerated().contains { index, token in
+                guard let key = cloudKeys.first(where: { token.hasPrefix($0) }), isAssignmentPosition(body, at: index),
+                      let value = literal(String(token.dropFirst(key.count)), home: home) else { return false }
+                return ["1", "true"].contains(value.lowercased())
+            }
             if body.contains(where: { $0.hasPrefix("CLAUDE_SECURESTORAGE_CONFIG_DIR=") }) {
-                return Profile(command: command, configDirectory: "", discoveryNote: "This wrapper overrides CLAUDE_SECURESTORAGE_CONFIG_DIR, which requires separate credential storage mapping and cannot be resolved safely.")
+                return Profile(command: command, configDirectory: "", isVertex: vertex, discoveryNote: "This wrapper overrides CLAUDE_SECURESTORAGE_CONFIG_DIR, which requires separate credential storage mapping and cannot be resolved safely.")
             }
             for (index, token) in body.enumerated() {
                 var pathToken: String?
@@ -124,10 +131,6 @@ public enum ProfileDiscovery {
                     } else {
                         hasDynamicPath = true
                     }
-                }
-                if token.hasPrefix("CLAUDE_CODE_USE_VERTEX="), isAssignmentPosition(body, at: index),
-                   let value = literal(String(token.dropFirst("CLAUDE_CODE_USE_VERTEX=".count)), home: home) {
-                    vertex = vertex || ["1", "true"].contains(value.lowercased())
                 }
             }
             guard !hasDynamicPath, candidates.count == 1, let directory = candidates.first else {

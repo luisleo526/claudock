@@ -77,7 +77,7 @@ The app and CLI use the same custom executable preference domain. The bundle ide
 
 `claudock run NAME -- ARGUMENTS` and `claudock profile login NAME` replace the current CLI process with Claude through POSIX `execve`; no intermediate shell evaluates arguments. They retain the invoking working directory and terminal. `LaunchCommand.environment` validates supported profiles and clears conflicting credential, provider, model, and nested-session variables before setting the account's literal `CLAUDE_CONFIG_DIR` (or clearing it for the default account). Interactive login happens in Claude Code only after a deliberate action. Discovery never initiates login. Quota monitoring can renew an expired access token through the saved OAuth refresh token.
 
-`claudock usage` requests quota sequentially for supported profiles and emits tab-separated window percentages/reset timestamps. It skips unresolved and Vertex profiles with a message, reports per-account failures, and returns a failure status when a requested account fails. No email or credential fields are printed. It performs no automatic polling; the GUI owns scheduled refresh and cooldown state.
+`claudock usage` requests quota sequentially for supported profiles and emits tab-separated window percentages/reset timestamps. It skips unresolved profiles with a message, reports per-account failures, and returns a failure status when a requested account fails. No email or credential fields are printed. It performs no automatic polling; the GUI owns scheduled refresh and cooldown state.
 
 ## Limits and external dependencies
 
@@ -91,7 +91,7 @@ The zsh reader is a constrained static parser, not a complete shell interpreter.
 
 Unit tests should use temporary homes and synthetic account responses. App interaction, real Keychain permissions, real Claude authentication, upstream compatibility, signing/notarization, and a packaged launch are distinct checks; a unit-test pass does not establish all of them. CI packages a local-build artifact and does not publish a public release.
 
-Resolved subscription profiles copy an exact Claudock selector through the bundled CLI, including imported profiles. Shell-disabled users receive a quoted absolute CLI path. Only unsupported custom/Vertex wrappers retain a raw shell command. Registry deduplication uses Claude credential-service identity, while analytics groups resolved history directories; these are separate identities.
+Resolved subscription profiles copy an exact Claudock selector through the bundled CLI, including imported profiles. Shell-disabled users receive a quoted absolute CLI path. Only unresolved custom wrappers retain a raw shell command. Registry deduplication uses Claude credential-service identity, while analytics groups resolved history directories; these are separate identities.
 
 ## Automatic credential renewal
 
@@ -120,3 +120,9 @@ The one-shot `claudock usage` command reads quota without rotating credentials. 
 `SubscriptionPlan` recognizes exact Claude Code metadata mappings for Max 5×/20× and Team Premium; unknown seat mappings remain explicit. Quota percentages are never converted into presumed plan capacity.
 
 Long-lived mint credentials are separate from full-scope refreshable credentials. Browser PKCE authorization requests `user:inference` and a one-year lifetime. The server-reported expiry is stored; normal quota OAuth remains available for background refresh. Minting cannot eliminate the usage API's scope requirement.
+
+## Shell Auto shortcut and subscription-only profiles
+
+Adapter v3 preserves byte-for-byte v1/v2 ownership validation and upgrades only unchanged owned code/state. `claude-auto` forwards arguments through `claudock auto -- "$@"`, preserving the working directory and native resume semantics. A reserved-name sentinel from the data-only profile emitter prevents replacing any legacy profile named `claude-auto`. Existing aliases/functions/executables and user-modified generated functions keep precedence. New profiles cannot use the reserved `auto` name.
+
+Profile discovery classifies explicit Vertex/Bedrock/Foundry selection using the legacy serialized external-provider flag. Registry bootstrap/import excludes those wrappers, and old external-provider registrations become suppressed entries on load. A one-time bounded static rescan reconciles older imported Bedrock/Foundry wrappers that had no external flag, only when command and literal config path still match; explicit imports repeat this reconciliation. Configuration folders and shared histories are preserved.

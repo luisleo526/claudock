@@ -34,7 +34,8 @@ def check(base):
     sources = [PROJECT / "Sources/ClaudockCLI/ClaudockCLI.swift", PROJECT / "Sources/UsageCore/Profile.swift", PROJECT / "Sources/UsageCore/LaunchCommand.swift",
                PROJECT / "Sources/UsageCore/SubscriptionPlan.swift"]
     compile_swift(["-emit-library", "-emit-module", "-module-name", "UsageCore", "-o", str(base / "libUsageCore.dylib"),
-                   str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2]), str(sources[3])])
+                   str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2]), str(sources[3]),
+                   str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift")])
     binary = base / "claudock"
     compile_swift(["-parse-as-library", "-I", str(base), "-L", str(base), "-lUsageCore", "-Xlinker", "-rpath", "-Xlinker", str(base),
                    "-o", str(binary), str(sources[0]), str(PROJECT / "Sources/ClaudockCLI/BalancedSession.swift")])
@@ -62,6 +63,7 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["nonsense"], 2), (["run"], 2), (["run", "smoke", "--resume"], 2), (["profile", "add"], 2),
              (["profile", "add", "bad name"], 2), (["profile", "add", "work", "--directory", "relative"], 2),
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
+             (["profile", "add", "auto"], 2), (["profile", "rename", "smoke", "AUTO"], 2),
              (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
              (["auto", "bad"], 2), (["auto", "--profiles"], 2), (["auto", "--profiles", "a,,b"], 2)]
     for arguments, expected_status in cases:
@@ -70,7 +72,7 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
         assert result.returncode == expected_status, (arguments, result.returncode, result.stderr)
         assert not marker.exists(), (arguments, "unexpected profile store access")
         if arguments in (["version"], ["--version"]):
-            assert result.stdout.strip() == "Claudock 1.5.0"
+            assert result.stdout.strip() == "Claudock 1.5.1"
         passed.append("parser " + repr(arguments))
 
     result = run(["shell", "profile-names"])

@@ -83,9 +83,12 @@ final class SharedProfileWorkspaceTests: XCTestCase {
             let canonical = home.appendingPathComponent(".claude")
             let allowed = ["settings.json", "settings.local.json", "CLAUDE.md", "plugins", "skills", "agents", "commands", "hooks", "plans", "tasks", "teams", "sessions", "session-env", "ide", "image-cache", "paste-cache", "file-history", "cache", "security", "shell-snapshots", "backups", "debug", "downloads", "feedback-bundles", "jobs", "hud", ".omc", ".omc-config.json", ".last-cleanup", ".caveman-active", "security_warnings_state_fixture.json", "daemon"]
             let directories: Set<String> = ["plugins", "skills", "agents", "commands", "hooks"]
+            func contents(_ name: String) -> String {
+                ["settings.json", "settings.local.json"].contains(name) ? "{\"fixture\":\"shared \(name)\"}" : "shared \(name)"
+            }
             for name in allowed {
                 let target = canonical.appendingPathComponent(name)
-                try write("shared \(name)", at: directories.contains(name) ? target.appendingPathComponent("fixture") : target)
+                try write(contents(name), at: directories.contains(name) ? target.appendingPathComponent("fixture") : target)
             }
             try write("unlisted private state", at: canonical.appendingPathComponent("not-on-allowlist.json"))
             let profile = try ProfileStore.add(name: "shared", home: home.path)
@@ -93,7 +96,7 @@ final class SharedProfileWorkspaceTests: XCTestCase {
             for name in allowed {
                 XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: config(profile).appendingPathComponent(name).path), canonical.appendingPathComponent(name).path)
                 let target = canonical.appendingPathComponent(name)
-                XCTAssertEqual(try String(contentsOf: directories.contains(name) ? target.appendingPathComponent("fixture") : target, encoding: .utf8), "shared \(name)")
+                XCTAssertEqual(try String(contentsOf: directories.contains(name) ? target.appendingPathComponent("fixture") : target, encoding: .utf8), contents(name))
             }
         }
     }
@@ -102,12 +105,12 @@ final class SharedProfileWorkspaceTests: XCTestCase {
         try withHome { home in
             let imported = home.appendingPathComponent("existing-account")
             try write("private session", at: imported.appendingPathComponent("projects/demo.jsonl"))
-            try write("private settings", at: imported.appendingPathComponent("settings.json"))
+            try write("{\"fixture\":\"private settings\"}", at: imported.appendingPathComponent("settings.json"))
             try write("private login", at: imported.appendingPathComponent(".credentials.json"))
             let profile = try ProfileStore.add(name: "imported", configDirectory: imported.path, home: home.path)
             XCTAssertEqual(profile.configDirectory, imported.path)
             XCTAssertEqual(try String(contentsOf: imported.appendingPathComponent("projects/demo.jsonl"), encoding: .utf8), "private session")
-            XCTAssertEqual(try String(contentsOf: imported.appendingPathComponent("settings.json"), encoding: .utf8), "private settings")
+            XCTAssertEqual(try String(contentsOf: imported.appendingPathComponent("settings.json"), encoding: .utf8), "{\"fixture\":\"private settings\"}")
             XCTAssertThrowsError(try FileManager.default.destinationOfSymbolicLink(atPath: imported.appendingPathComponent("projects").path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude").path))
         }

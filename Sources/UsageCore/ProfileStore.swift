@@ -24,7 +24,9 @@ public enum ProfileStore {
         guard let state = try? JSONDecoder().decode(State.self, from: data) else { throw Failure.invalidManagedFiles }
         try validate(state)
         return sorted(state.profiles).filter {
-            $0.managed && !$0.isVertex && $0.discoveryNote == nil && $0.command != "claude"
+            // Reserved-name sentinel: an older/imported profile named auto owns
+            // its name even when it cannot receive a generated profile shortcut.
+            $0.command == "claude-auto" || ($0.managed && !$0.isVertex && $0.discoveryNote == nil && $0.command != "claude")
         }.map(\.command)
     }
 
@@ -32,7 +34,10 @@ public enum ProfileStore {
     /// Existing registry records are authoritative; same-name or same-credential-store imports are skipped.
     public static func importShellProfiles(home: String = NSHomeDirectory()) throws -> [Profile] {
         try withState(home: home) { state in
-            for candidate in ProfileDiscovery.discover(home: home) {
+            let discovered = ProfileDiscovery.discover(home: home)
+            reconcileExternalImports(discovered, state: &state)
+            for candidate in discovered where !candidate.isVertex {
+                guard acceptsDiscovered(candidate) else { continue }
                 guard !state.suppressedCommands.contains(candidate.command),
                       !isSuppressedDirectory(candidate, state: state),
                       !state.profiles.contains(where: { $0.command == candidate.command }),
@@ -52,6 +57,7 @@ public enum ProfileStore {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { throw Failure.invalidDirectory }
         }
+        try SubscriptionConfiguration.validate(configDirectory: explicitDirectory ?? URL(fileURLWithPath: home).appendingPathComponent(".claude").path)
         let identifier = UUID().uuidString
         let accountParent = directory(home: home).appendingPathComponent("accounts", isDirectory: true).appendingPathComponent(identifier, isDirectory: true)
         let path = explicitDirectory ?? accountParent.appendingPathComponent("claude", isDirectory: true).path
@@ -102,6 +108,7 @@ public enum ProfileStore {
         var profiles: [Profile]
         var suppressedCommands: [String] = []
         var suppressedDirectories: [String] = []
+        var subscriptionOnlyMigration: Int? = 1
     }
 
     private struct Snapshot {
@@ -150,9 +157,21 @@ public enum ProfileStore {
             } else {
                 // The legacy overlay is imported by the same non-executing parser as
                 // ordinary wrappers. Its original config paths and scripts are retained.
-                state = State(profiles: ProfileDiscovery.discover(home: home).map(imported))
+                state = State(profiles: ProfileDiscovery.discover(home: home).filter(acceptsDiscovered).map(imported))
                 try validate(state)
             }
+            // Before 1.5.1, Bedrock/Foundry imports were not marked as external.
+            // Reconcile once using static declarations with the same name and
+            // literal config path; user-managed registrations remain authoritative.
+            if state.subscriptionOnlyMigration == nil {
+                reconcileExternalImports(ProfileDiscovery.discover(home: home), state: &state)
+                state.subscriptionOnlyMigration = 1
+            }
+            // Older versions listed external cloud providers even though they
+            // could not use subscription quota. Retire only their registrations;
+            // shared history, account folders, and external cloud auth stay intact.
+            for profile in state.profiles.filter({ $0.isVertex }) { suppress(profile, in: &state) }
+            state.profiles.removeAll { $0.isVertex }
             let result = try operation(&state)
             try validate(state)
             let encoder = JSONEncoder()
@@ -179,6 +198,26 @@ public enum ProfileStore {
     private static func imported(_ profile: Profile) -> Profile {
         Profile(command: profile.command, configDirectory: profile.configDirectory, isVertex: profile.isVertex,
                 discoveryNote: profile.discoveryNote, registryID: UUID().uuidString, managed: false)
+    }
+
+    private static func acceptsDiscovered(_ profile: Profile) -> Bool {
+        guard !profile.isVertex else { return false }
+        // Keep the required default placeholder and unresolved subscriptions so
+        // users can repair sign-in/configuration rather than losing registration.
+        if profile.command == "claude" || profile.discoveryNote != nil { return true }
+        return (try? SubscriptionConfiguration.validate(configDirectory: profile.configDirectory)) != nil
+    }
+
+    private static func reconcileExternalImports(_ discovered: [Profile], state: inout State) {
+        let external = discovered.filter(\.isVertex)
+        let removed = state.profiles.filter { stored in
+            !stored.managed && stored.command != "claude" && external.contains {
+                $0.command == stored.command && $0.configDirectory == stored.configDirectory
+            }
+        }
+        for profile in removed { suppress(profile, in: &state) }
+        let ids = Set(removed.map(\.id))
+        state.profiles.removeAll { ids.contains($0.id) }
     }
 
     private static func sorted(_ profiles: [Profile]) -> [Profile] {
@@ -233,12 +272,13 @@ public enum ProfileStore {
               state.suppressedDirectories.allSatisfy(validPath),
               state.profiles.allSatisfy({ profile in
                   (validPath(profile.configDirectory) || (profile.configDirectory.isEmpty && profile.discoveryNote != nil)) &&
-                  (!profile.managed || (profile.command != "claude" && !profile.isVertex && profile.discoveryNote == nil && (try? validatedCommand(profile.name)) == profile.command))
+                  (!profile.managed || (profile.command != "claude" && !profile.isVertex && profile.discoveryNote == nil && (try? validatedCommand(profile.name, allowLegacyAuto: true)) == profile.command))
               }) else { throw Failure.invalidManagedFiles }
     }
 
-    private static func validatedCommand(_ name: String) throws -> String {
+    private static func validatedCommand(_ name: String, allowLegacyAuto: Bool = false) throws -> String {
         guard name.caseInsensitiveCompare("default") != .orderedSame else { throw Failure.reservedName }
+        guard allowLegacyAuto || name.caseInsensitiveCompare("auto") != .orderedSame else { throw Failure.reservedName }
         guard name.range(of: #"\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}\z"#, options: .regularExpression) != nil else { throw Failure.invalidName }
         return "claude-" + name
     }

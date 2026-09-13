@@ -10,7 +10,7 @@ public enum ProfileManager {
         public var errorDescription: String? {
             switch self {
             case .invalidName: return "Use 1–40 letters, numbers, underscores, or hyphens, starting with a letter or number."
-            case .reservedName: return "The name ‘default’ is reserved for Claude's default profile. Choose another name."
+            case .reservedName: return "The names ‘default’ and ‘auto’ are reserved for the default account and automatic routing. Choose another name."
             case .duplicateName: return "A Claude profile with that name already exists. Choose another name."
             case .duplicateDirectory: return "That config path uses the same Claude credential store as an existing profile. Choose a different config path."
             case .missingProfile: return "This profile changed or was removed. Refresh the account list and try again."

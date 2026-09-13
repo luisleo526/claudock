@@ -4,9 +4,9 @@
 
 **Your Claude accounts, one menu bar.** See Fable headroom, keep long-lived tokens in Keychain, and let Auto switch accounts when a quota runs out.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.5.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.5.1 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.0).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.1).
 
 <details>
 <summary>Build from source</summary>
@@ -72,11 +72,15 @@ Renaming preserves account data. Removing a profile keeps its Claude folders, co
 Click **Start Auto**, or use:
 
 ```sh
-claudock auto
+claude-auto
+claude-auto --continue
+claude-auto --resume SESSION_ID --fork-session
+
+# Restrict the account pool:
 claudock auto --profiles work,personal -- --resume
 ```
 
-Auto starts Claude in your shared workspace. It prefers available headroom for the requested model, keeps a conversation on its current account, and tries another account after a quota or authentication rejection. **No Terminal restart. No lost local conversation.** You can also choose Auto from **Sessions → Continue as…**.
+With zsh integration enabled, `claude-auto` behaves like your `claude-{slug}` commands and forwards normal Claude arguments unchanged. Auto starts Claude in your shared workspace. It prefers available headroom for the requested model, keeps a conversation on its current account, and tries another account after a quota or authentication rejection. **No Terminal restart. No lost local conversation.** You can also choose Auto from **Sessions → Continue as…**.
 
 Each Auto session owns a small authenticated loopback proxy that closes when Claude exits. It tries at most three profiles per request. Output streams as it arrives; once an answer has started, Auto never replays it or repeats its tool output. Requests referencing account-owned files or server-side containers must use their original named profile; Auto does not know those resources' owners. Independent Auto sessions do not share a central scheduler.
 
@@ -108,6 +112,10 @@ Your original session keeps running. The new session uses the selected profile's
 
 Continuation is a **preview feature** that depends on compatible Claude Code JSONL resume support. [Compatibility details](docs/GUIDE.md#continue-a-saved-session).
 
+A conversation still running in another Terminal can be continued with `--resume SESSION_ID --fork-session`. Claude creates a new session from its history while the original process continues. `--continue` selects the latest conversation in the current project. New profiles share this history by default; isolated imported folders remain available through the Sessions view or an explicit JSONL resume path.
+
+Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
+
 ## Fewer login interruptions
 
 Choose **Mint token** in Manage profiles. Claudock opens Claude's browser authorization, accepts the returned authorization code, and saves the long-lived inference token in a separate macOS Keychain entry. The default requested lifetime is one year; the actual expiry comes from Claude's response. No token needs to be pasted into `.zshrc`.
@@ -128,7 +136,7 @@ claude-work
 claudock usage
 ```
 
-Integration adds the `claudock` command and missing shortcuts such as `claude-work`. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
+Integration adds `claudock`, `claude-auto`, and missing profile shortcuts such as `claude-work`. The profile name `auto` is reserved. An existing command or legacy profile with that name is preserved; use `claudock auto` in that case. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
 
 **If shell integration was already enabled:** open the updated Claudock app, then open a new Terminal tab or run this once in each existing tab:
 

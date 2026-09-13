@@ -16,6 +16,7 @@ public enum LaunchCommand {
               !profile.configDirectory.contains("\0") else {
             throw MonitorError.unsupported("This profile cannot be launched safely. Import its config folder or choose a subscription profile.")
         }
+        try SubscriptionConfiguration.validate(configDirectory: profile.configDirectory)
         var result = inherited
         for key in clearedEnvironment { result.removeValue(forKey: key) }
         if profile.command != "claude" { result["CLAUDE_CONFIG_DIR"] = profile.configDirectory }

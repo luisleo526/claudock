@@ -66,7 +66,7 @@ public enum ShellIntegration {
             throw IntegrationError.customZdotdir
         }
         try mutate(home: home) { paths, previous in
-            let state = State(version: 2, cliPath: cliPath)
+            let state = State(version: 3, cliPath: cliPath)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             let stateData = try encoder.encode(state) + Data("\n".utf8)
@@ -97,12 +97,12 @@ public enum ShellIntegration {
         }
         guard hasManagedFiles else { return false }
         try paths.validateDirectories()
-        guard try read(paths).state?.version == 1 else { return false }
+        guard let version = try read(paths).state?.version, version < 3 else { return false }
         var upgraded = false
         try mutate(home: home, checkShellLocation: false) { _, previous in
             // A concurrent disable or upgrade wins. Never recreate its removed block.
-            guard let saved = previous.state, saved.version == 1 else { return [] }
-            let state = State(version: 2, cliPath: saved.cliPath)
+            guard let saved = previous.state, saved.version < 3 else { return [] }
+            let state = State(version: 3, cliPath: saved.cliPath)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             let data = try encoder.encode(state) + Data("\n".utf8)
@@ -221,7 +221,7 @@ public enum ShellIntegration {
         } else {
             guard let registryData = registry.data,
                   let saved = try? JSONDecoder().decode(State.self, from: registryData),
-                  [1, 2].contains(saved.version), validPath(saved.cliPath),
+                  [1, 2, 3].contains(saved.version), validPath(saved.cliPath),
                   script.data == Data(render(saved).utf8), range != nil else {
                 throw IntegrationError.modifiedFiles
             }
@@ -246,6 +246,94 @@ public enum ShellIntegration {
 
     private static func render(_ state: State) -> String {
         if state.version == 1 { return renderVersionOne(state) }
+        if state.version == 2 { return renderVersionTwo(state) }
+        return renderVersionThree(state)
+    }
+
+    private static func renderVersionThree(_ state: State) -> String {
+        let invocationPrefix = quote("command " + quote(state.cliPath) + " run ")
+        let autoBody = quote("command " + quote(state.cliPath) + " auto -- \"$@\"")
+        return """
+        # Managed by Claudock. Change shell integration in Claudock Settings.
+        # Adapter v3: managed profile shortcuts and the optional claude-auto command.
+        function claudock() {
+          command \(quote(state.cliPath)) "$@"
+        }
+
+        function _claudock_sync_profiles() {
+          emulate -L zsh
+          setopt no_aliases
+          local _claudock_output
+          _claudock_output=$(command \(quote(state.cliPath)) shell profile-names 2>/dev/null) || return 0
+          local -a _claudock_lines _claudock_names
+          _claudock_lines=("${(@f)_claudock_output}")
+          [[ "${_claudock_lines[1]-}" == 'claudock-profile-names-v1' ]] || return 0
+          _claudock_names=("${_claudock_lines[@]:1}")
+          (( ${#_claudock_names} <= 1000 )) || return 0
+          local -A _claudock_seen
+          local _claudock_name _claudock_suffix
+          # Validate the entire data batch before changing any existing shortcut.
+          for _claudock_name in "${_claudock_names[@]}"; do
+            [[ "$_claudock_name" == claude-* ]] || return 0
+            _claudock_suffix=${_claudock_name#claude-}
+            (( ${#_claudock_suffix} >= 1 && ${#_claudock_suffix} <= 40 )) || return 0
+            [[ "$_claudock_suffix" != *[^A-Za-z0-9_-]* ]] || return 0
+            (( ! ${+_claudock_seen[$_claudock_name]} )) || return 0
+            _claudock_seen[$_claudock_name]=1
+          done
+          local _claudock_auto_reserved=${+_claudock_seen[claude-auto]}
+          if [[ -n "${_claudock_auto_body-}" && "${functions[claude-auto]-}" != "$_claudock_auto_body" ]]; then
+            unset _claudock_auto_body
+          fi
+          if (( _claudock_auto_reserved )) && [[ -n "${_claudock_auto_body-}" ]]; then
+            builtin unfunction claude-auto
+            unset _claudock_auto_body
+          fi
+          # Forget user replacements; remove only exact bodies installed by us.
+          for _claudock_name in "${(@k)_claudock_profile_bodies}"; do
+            if [[ "${functions[$_claudock_name]-}" != "${_claudock_profile_bodies[$_claudock_name]}" ]]; then
+              unset "_claudock_profile_bodies[$_claudock_name]"
+            elif (( ! ${+_claudock_seen[$_claudock_name]} )); then
+              builtin unfunction "$_claudock_name"
+              unset "_claudock_profile_bodies[$_claudock_name]"
+            fi
+          done
+          local _claudock_prefix=\(invocationPrefix)
+          for _claudock_name in "${_claudock_names[@]}"; do
+            # A registered profile reserves this name, including imported ones.
+            # Keep existing v2/user wrappers; explicit claudock run still works.
+            [[ "$_claudock_name" == claude-auto ]] && continue
+            if (( ! ${+_claudock_profile_bodies[$_claudock_name]} )) && builtin whence -w -- "$_claudock_name" >/dev/null 2>&1; then
+              continue
+            fi
+            functions[$_claudock_name]="${_claudock_prefix}'${_claudock_name}' -- \\\"\\$@\\\""
+            _claudock_profile_bodies[$_claudock_name]="${functions[$_claudock_name]}"
+          done
+          if (( ! _claudock_auto_reserved )); then
+            if [[ -n "${_claudock_auto_body-}" ]] || ! builtin whence -w -- claude-auto >/dev/null 2>&1; then
+              functions[claude-auto]=\(autoBody)
+              _claudock_auto_body="${functions[claude-auto]}"
+            fi
+          fi
+          return 0
+        }
+
+        () {
+          emulate -L zsh
+          setopt no_aliases
+          typeset -gA _claudock_profile_bodies
+          typeset -g _claudock_auto_body
+          autoload -Uz add-zsh-hook
+          add-zsh-hook precmd _claudock_sync_profiles
+          add-zsh-hook preexec _claudock_sync_profiles
+          _claudock_sync_profiles
+        }
+
+        """
+    }
+
+    /// Frozen v2 output remains readable for ownership-safe upgrades.
+    private static func renderVersionTwo(_ state: State) -> String {
         let invocationPrefix = quote("command " + quote(state.cliPath) + " run ")
         return """
         # Managed by Claudock. Change shell integration in Claudock Settings.

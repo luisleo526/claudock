@@ -91,8 +91,8 @@ private enum Command {
     }
 
     private static func newName(_ value: String) throws -> String {
-        guard value.caseInsensitiveCompare("default") != .orderedSame else {
-            throw CLIError.arguments("The name 'default' is reserved for Claude's default account.")
+        guard !["default", "auto"].contains(value.lowercased()) else {
+            throw CLIError.arguments("The names 'default' and 'auto' are reserved for the default account and automatic routing.")
         }
         guard value.range(of: #"\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}\z"#, options: .regularExpression) != nil else {
             throw CLIError.arguments("Use 1–40 letters, numbers, underscores, or hyphens, starting with a letter or number.")
@@ -119,7 +119,7 @@ private struct ClaudockCLI {
     private static func execute(_ command: Command) async throws {
         switch command {
         case .help: print(help)
-        case .version: print("Claudock 1.5.0")
+        case .version: print("Claudock 1.5.1")
         case .list:
             let profiles = try ProfileStore.load()
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
@@ -264,6 +264,7 @@ private struct ClaudockCLI {
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
       claudock auto [--profiles NAME,NAME] [-- CLAUDE_ARGS...]
+      claude-auto [CLAUDE_ARGS...]       With zsh integration enabled
       claudock usage
       claudock shell enable|disable|status
       claudock version
@@ -287,6 +288,8 @@ private struct ClaudockCLI {
       claudock profile login work
       claudock run work
       claude-work                    After enabling shell integration
+      claude-auto --continue         Continue the latest shared project session
+      claude-auto --resume           Choose a shared conversation to continue
       claudock run work -- --resume
     """
 }

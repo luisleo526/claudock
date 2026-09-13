@@ -10,7 +10,7 @@ Claudock is an independent open-source project, unaffiliated with Anthropic. Liv
 
 Screenshots use the built-in synthetic demo. No real account data is shown.
 
-Each account row has **Open in Terminal** to start that profile and **Copy** to copy its launch command. Copy displays a visible confirmation; launch failures appear beside the account. Unsupported custom/Vertex wrappers retain the Copy action.
+Each account row has **Open in Terminal** to start that profile and **Copy** to copy its launch command. Copy displays a visible confirmation; launch failures appear beside the account. Unresolved custom wrappers retain the Copy action until their subscription config is imported.
 
 ## Get started
 
@@ -80,7 +80,7 @@ Open the **…** menu in the header for Settings. Preferences are saved locally.
 - **Locate Claude executable…** selects a custom Claude installation for actions launched by the app.
 - Closing the dashboard keeps the menu bar app running. Use Settings or right-click the menu bar icon to quit.
 
-Vertex AI profiles are identified but cannot show Claude subscription allowances. API billing and subscription usage are different systems; this app is not an API cost dashboard.
+Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import. Legacy cloud registrations are removed from the app without deleting their configuration or shared history.
 
 ## Manage profiles
 
@@ -95,7 +95,7 @@ Claudock saves names and directory bindings in:
 
 New accounts receive a private, stable config directory whose UUID does not depend on the display name. This keeps each account's login separate. The directory links its projects and history, plus common settings, plugins, and skills, to the default `~/.claude` setup. You can keep using the same conversations and preferences across accounts; changes to shared settings affect the profiles linked to them.
 
-Importing an explicit existing folder preserves its paths, credentials, history, and layout without adding these links. Renaming never moves an account directory. Removing a profile only removes its Claudock registration; it preserves Claude conversations, settings, credentials, and original shell wrappers. The default account and Vertex profiles are protected from rename and removal.
+Importing an explicit existing folder preserves its paths, credentials, history, and layout without adding these links. Renaming never moves an account directory. Removing a profile only removes its Claudock registration; it preserves Claude conversations, settings, credentials, and original shell wrappers. The default account is protected from rename and removal.
 
 When upgrading from Claude Usage, active shell declarations are imported, including the old `~/.config/claude-usage/profiles.zsh` when it is sourced by zsh. Legacy files remain intact; an orphaned old JSON registry with no active wrapper is not automatically imported, so use Import folder for those accounts. Claudock does not rewrite old generated wrappers or remove their source line. Existing external `claude-NAME` wrappers continue to be owned by their original shell configuration; renaming or removing a Claudock entry does not rewrite those commands.
 
@@ -248,6 +248,10 @@ These commands assume you have configured a `ClaudockNotary` Keychain profile wi
 Automatic token renewal runs in the resident menu bar app. The one-shot `claudock usage` command reads quota without rotating credentials; an expired-token message directs you to Claudock or the relevant Claude profile.
 
 ## Auto account selection
+
+With zsh integration enabled, run `claude-auto` like any `claude-{slug}` command. No arguments starts a new conversation. `claude-auto --continue` selects the latest conversation in the current project; `claude-auto --resume SESSION_ID` resumes a particular conversation. Add `--fork-session` when the source is still running to continue its history in a new session. Sessions and history are shared with the default Claude workspace. Imported isolated histories can be resumed by absolute JSONL path or through the app's Sessions view.
+
+An unchanged v1/v2 shell adapter upgrades to v3 automatically when the app starts. Existing tabs can run `source ~/.config/claudock/init.zsh` once; new tabs load it automatically. Existing user commands or legacy profiles named `claude-auto` are preserved, so use explicit `claudock auto` when a collision exists.
 
 Choose **Start Auto** in Accounts, or run `claudock auto` from your project directory. Use `claudock auto --profiles work,personal -- --resume` to restrict the pool and continue a shared conversation. **Sessions → Continue as… → Auto** opens a fork in a new Terminal; the original session remains running.
 
