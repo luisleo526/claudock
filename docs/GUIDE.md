@@ -261,13 +261,15 @@ Auto is opt-in per launch. Ordinary `claude-{slug}` shortcuts remain pinned to t
 
 ## Long-lived inference tokens
 
-1. Open **Manage profiles → Mint token** on the desired account.
-2. Open the Claude authorization page, sign in to that account, and copy the returned authorization code.
-3. Paste the code into Claudock and save. Claudock exchanges it using PKCE and stores the resulting token in Keychain.
+Open **Manage profiles → Set token…** (or **Manage token…** for an existing token). **Paste token** is selected by default. Paste a raw `sk-ant-oat01-…` token or its `export CLAUDE_CODE_OAUTH_TOKEN=…` assignment and choose **Save to Keychain**. The input is parsed as data, never executed. Import does not require a browser or a prior normal Claude login.
 
-The default requested lifetime is one year; Claudock uses the expiry returned by Claude. Token values are never written to zsh or the profile registry. Minted tokens are preferred by GUI launches, managed shortcuts, `claudock run`, and Auto. They survive profile renames. Imported user-authored wrappers remain unchanged; use the copied Claudock launch command for those profiles to select the minted token. Removing a profile preserves login/token data; it does not revoke the token remotely.
+Pasted tokens are assigned manually to the selected profile. Their provider account identity cannot be verified from the opaque value; expiry is shown as unknown unless supplied. Use the matching account's token when pairing it with a quota-monitoring login.
 
-Minted tokens grant inference only, so quota monitoring still needs the account's normal OAuth login. The app renews that login when possible. A monitoring re-login warning does not mean the separately minted inference token has expired. A minted token cannot be refreshed indefinitely; create another when it expires or is revoked.
+The **Create in browser** option remains available for new tokens. It opens Claude authorization and accepts the returned `code#state` in its own field. That flow verifies account/organization against the profile's existing login and uses the expiry reported by Claude, requesting one year by default.
+
+Saved tokens are preferred by GUI launches, managed shortcuts, `claudock run`, and Auto. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
+
+Quota monitoring still uses normal OAuth. A monitoring re-login warning does not mean an independently saved inference token has expired. Revoked or expired tokens need replacement; an unknown expiry is not a promise of unlimited validity.
 
 ## Account plan badges
 

@@ -187,7 +187,13 @@ final class ClaudeCredentialLockTests: XCTestCase {
             }
             XCTAssertTrue(FileManager.default.fileExists(atPath: first))
             let waitingMtime = try modificationTime(first)
-            try await Task.sleep(for: .milliseconds(150))
+            // Utility-queue timers can be coalesced on CI, and filesystem mtime
+            // precision varies. Await an observed heartbeat within a fixed bound
+            // rather than assuming three nominal timer intervals were scheduled.
+            let heartbeatDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while try modificationTime(first) <= waitingMtime, ContinuousClock.now < heartbeatDeadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
             XCTAssertGreaterThan(try modificationTime(first), waitingMtime)
             let cancelledAt = ContinuousClock.now
             waiter.cancel()

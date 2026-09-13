@@ -18,6 +18,7 @@ final class MintTokenTests: XCTestCase {
     private var token: MintToken {
         MintToken(accessToken: "fixture-inference-token", expiresAt: instant.addingTimeInterval(3600), identity: identity)
     }
+    private var pastedValue: String { "sk-ant-oat01-" + "fixture_imported_token_0123456789" }
 
     private func response(overrides: [String: Any] = [:], omitting: [String] = []) throws -> Data {
         var body: [String: Any] = ["access_token": "fixture-inference-token", "expires_in": 3600,
@@ -243,5 +244,207 @@ final class MintTokenTests: XCTestCase {
             XCTFail("Unsupported profile reached mint storage")
             return nil
         }))
+    }
+
+    func testRawAndExactExportImportsNeedNoExistingLoginAndNeverInventExpiry() throws {
+        for raw in [pastedValue, " \n" + pastedValue + "\r\n",
+                    "export CLAUDE_CODE_OAUTH_TOKEN=" + pastedValue,
+                    "export  \tCLAUDE_CODE_OAUTH_TOKEN='" + pastedValue + "'",
+                    "export CLAUDE_CODE_OAUTH_TOKEN=\"" + pastedValue + "\"\n"] {
+            var saves = 0
+            let imported = try MintTokenStore.importToken(raw: raw, profile: profile,
+                identity: { _ in throw MintTokenError.loginRequired }, save: { token, selected in
+                    saves += 1
+                    XCTAssertEqual(selected, self.profile)
+                    XCTAssertEqual(token.accessToken, self.pastedValue)
+                    XCTAssertNil(token.identity)
+                })
+            XCTAssertEqual(saves, 1)
+            XCTAssertNil(imported.expiresAt)
+            XCTAssertEqual(imported.provenance, .pasted)
+            XCTAssertFalse(imported.identityVerified)
+            XCTAssertEqual(MintTokenStore.status(imported, now: instant), .imported(expiresAt: nil))
+        }
+    }
+
+    func testUnsafeOrMalformedClipboardInputFailsBeforeMetadataOrSave() throws {
+        let invalid = ["", "not-a-token", "sk-ant-oat01-", "sk-ant-api03-" + "fixture_wrong_kind",
+                       "CLAUDE_CODE_OAUTH_TOKEN=" + pastedValue,
+                       "export OTHER_TOKEN=" + pastedValue,
+                       "export CLAUDE_CODE_OAUTH_TOKEN =" + pastedValue,
+                       "export CLAUDE_CODE_OAUTH_TOKEN= '" + pastedValue + "'",
+                       "export CLAUDE_CODE_OAUTH_TOKEN='" + pastedValue,
+                       "export CLAUDE_CODE_OAUTH_TOKEN='" + pastedValue + "\"",
+                       "export CLAUDE_CODE_OAUTH_TOKEN='" + pastedValue + "'; touch never-run",
+                       "export CLAUDE_CODE_OAUTH_TOKEN=\"$(touch never-run)\"",
+                       pastedValue + "\ncommand second-line", pastedValue + "`whoami`", pastedValue + "$USER",
+                       pastedValue + "\0", pastedValue + "漢字"]
+        for raw in invalid {
+            XCTAssertThrowsError(try MintTokenStore.importToken(raw: raw, profile: profile, identity: { _ in
+                XCTFail("Malformed clipboard data must not read profile metadata")
+                return self.identity
+            }, save: { _, _ in XCTFail("Malformed clipboard data must not write Keychain") })) { error in
+                XCTAssertEqual(error as? MintTokenError, .invalidToken)
+                XCTAssertFalse(error.localizedDescription.contains(self.pastedValue))
+                XCTAssertFalse(error.localizedDescription.contains("never-run"))
+            }
+        }
+        XCTAssertThrowsError(try MintTokenStore.importToken(raw: String(repeating: "a", count: 32_769), profile: profile,
+            identity: { _ in XCTFail(); return self.identity }, save: { _, _ in XCTFail() })) {
+            XCTAssertEqual($0 as? MintTokenError, .tokenTooLarge)
+        }
+    }
+
+    func testImportedExpiryAndCachedIdentityAreOnlyUserLocalMetadata() throws {
+        let expiry = instant.addingTimeInterval(1800)
+        let imported = try MintTokenStore.importToken(raw: pastedValue, profile: profile, expiresAt: expiry,
+            identity: { _ in self.identity }, save: { _, _ in })
+        XCTAssertEqual(imported.expiresAt, expiry)
+        XCTAssertEqual(imported.identity, identity)
+        XCTAssertFalse(imported.identityVerified)
+        XCTAssertEqual(MintTokenStore.status(imported, now: instant), .imported(expiresAt: expiry))
+        XCTAssertEqual(MintTokenStore.status(imported, now: expiry), .expired(expiresAt: expiry))
+        for invalid in [Date(timeIntervalSince1970: .infinity), Date(timeIntervalSince1970: -.infinity), Date(timeIntervalSince1970: 0)] {
+            XCTAssertThrowsError(try MintToken.imported(raw: pastedValue, expiresAt: invalid, identity: nil)) {
+                XCTAssertEqual($0 as? MintTokenError, .invalidExpiry)
+            }
+        }
+    }
+
+    func testImportedStorageHasExplicitProvenanceAndOptionalExpiryAndIdentity() throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
+        let data = try MintTokenStore.encode(imported)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["version"] as? Int, 2)
+        XCTAssertEqual(object["provenance"] as? String, "pasted")
+        XCTAssertNil(object["expiresAt"])
+        XCTAssertNil(object["identity"])
+        XCTAssertNil(object["refreshToken"])
+        XCTAssertNil(object["claudeAiOauth"])
+        let restored = try MintTokenStore.decode(data)
+        XCTAssertEqual(restored.accessToken, pastedValue)
+        XCTAssertEqual(restored.provenance, .pasted)
+        XCTAssertNil(restored.expiresAt)
+        XCTAssertFalse(restored.identityVerified)
+        let hex = Data(data.map { String(format: "%02x", $0) }.joined().utf8)
+        XCTAssertEqual(try MintTokenStore.decode(hex).provenance, .pasted)
+    }
+
+    func testLegacyVersionOneBrowserItemKeepsStrictIdentityAndExpiration() throws {
+        let legacy = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "accessToken": "fixture-browser-legacy", "expiresAt": instant.addingTimeInterval(3600).timeIntervalSince1970,
+            "identity": ["accountUUID": identity.accountUUID, "organizationUUID": identity.organizationUUID]
+        ])
+        let restored = try MintTokenStore.decode(legacy)
+        XCTAssertEqual(restored.provenance, .browser)
+        XCTAssertTrue(restored.identityVerified)
+        XCTAssertEqual(restored.expiresAt, instant.addingTimeInterval(3600))
+        XCTAssertThrowsError(try MintTokenStore.read(profile: profile, securityRead: { _ in (legacy, 0) }, identity: { _ in self.otherIdentity })) {
+            XCTAssertEqual($0 as? MintTokenError, .accountMismatch)
+        }
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        object["provenance"] = "pasted"
+        XCTAssertThrowsError(try MintTokenStore.decode(JSONSerialization.data(withJSONObject: object)))
+        object.removeValue(forKey: "provenance")
+        object.removeValue(forKey: "identity")
+        XCTAssertThrowsError(try MintTokenStore.decode(JSONSerialization.data(withJSONObject: object)))
+        XCTAssertThrowsError(try MintTokenStore.encode(MintToken(accessToken: "fixture-browser", expiresAt: nil, identity: identity)))
+    }
+
+    func testUnboundImportedReadDoesNotRequireOrPretendToVerifyAnAccount() throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
+        let data = try MintTokenStore.encode(imported)
+        let restored = try XCTUnwrap(MintTokenStore.read(profile: profile, securityRead: { service in
+            XCTAssertEqual(service, MintTokenStore.serviceName(for: self.profile))
+            return (data, 0)
+        }, identity: { _ in XCTFail("An unbound pasted token needs no existing OAuth metadata"); throw MintTokenError.loginRequired }))
+        XCTAssertEqual(restored.accessToken, pastedValue)
+        XCTAssertFalse(restored.identityVerified)
+    }
+
+    func testCachedBindingCannotSilentlyRetargetImportedTokenToChangedLocalAccount() throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: identity)
+        let data = try MintTokenStore.encode(imported)
+        XCTAssertThrowsError(try MintTokenStore.read(profile: profile, securityRead: { _ in (data, 0) }, identity: { _ in self.otherIdentity })) {
+            XCTAssertEqual($0 as? MintTokenError, .accountMismatch)
+        }
+        let noLogin = try XCTUnwrap(MintTokenStore.read(profile: profile, securityRead: { _ in (data, 0) }, identity: { _ in throw MintTokenError.loginRequired }))
+        XCTAssertFalse(noLogin.identityVerified)
+        XCTAssertEqual(noLogin.accessToken, pastedValue)
+    }
+
+    func testImportedSaveUsesBoundedSeparateKeychainStdinAndVerifiesReadback() throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
+        let encoded = try MintTokenStore.encode(imported)
+        var writes = 0, reads = 0
+        try MintTokenStore.save(imported, profile: profile, identity: { _ in
+            XCTFail("No preexisting browser login is required")
+            throw MintTokenError.loginRequired
+        }, securityWrite: { command in
+            writes += 1
+            XCTAssertLessThanOrEqual(command.count, 4032)
+            let text = String(decoding: command, as: UTF8.self)
+            XCTAssertFalse(text.contains(self.pastedValue))
+            XCTAssertTrue(text.contains(MintTokenStore.serviceName(for: self.profile)))
+            XCTAssertFalse(text.contains("Claude Code-credentials"))
+        }, securityRead: { service in
+            reads += 1
+            XCTAssertEqual(service, MintTokenStore.serviceName(for: self.profile))
+            return (encoded, 0)
+        })
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(reads, 1)
+    }
+
+    func testSaveRefusesChangedIdentityBeforeWritingAndMismatchedReadback() throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: identity)
+        var reads = 0, writes = 0
+        XCTAssertThrowsError(try MintTokenStore.save(imported, profile: profile, identity: { _ in
+            reads += 1; return reads == 1 ? self.identity : self.otherIdentity
+        }, securityWrite: { _ in writes += 1 }, securityRead: { _ in (try MintTokenStore.encode(imported), 0) })) {
+            XCTAssertEqual($0 as? MintTokenError, .accountChanged)
+        }
+        XCTAssertEqual(writes, 0)
+        let unbound = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
+        XCTAssertThrowsError(try MintTokenStore.save(unbound, profile: profile, identity: { _ in self.identity },
+            securityWrite: { _ in }, securityRead: { _ in (try MintTokenStore.encode(self.token), 0) })) {
+            XCTAssertEqual($0 as? MintTokenError, .keychainWriteFailed)
+        }
+    }
+
+    func testOversizedImportedSaveFailsBeforeKeychainWrite() throws {
+        let imported = try MintToken.imported(raw: "sk-ant-oat01-" + String(repeating: "a", count: 3000), expiresAt: nil, identity: nil)
+        XCTAssertThrowsError(try MintTokenStore.save(imported, profile: profile, identity: { _ in throw MintTokenError.loginRequired },
+            securityWrite: { _ in XCTFail("Oversized token must not reach security stdin") },
+            securityRead: { _ in XCTFail("Oversized token must not read Keychain"); return (Data(), 44) })) {
+            XCTAssertEqual($0 as? MintTokenError, .tokenTooLarge)
+        }
+    }
+
+    func testUnknownExpiryImportedTokenIsPreferredWithoutOAuthReadOrRenewal() async throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
+        let credential = try await InferenceCredential.read(profile: profile, mint: { _ in imported }, oauth: { _ in
+            XCTFail("Pasted token requires no existing OAuth login")
+            throw MintTokenError.loginRequired
+        }, now: instant)
+        XCTAssertEqual(credential.accessToken, pastedValue)
+        XCTAssertNil(credential.expiresAt)
+        XCTAssertNil(credential.refreshToken)
+        XCTAssertEqual(credential.scopes, ["user:inference"])
+        XCTAssertEqual(try InferenceCredential.environmentToken(profile: profile, mint: { _ in imported }, now: instant), pastedValue)
+    }
+
+    func testKnownExpiredImportedTokenDoesNotSelectAnotherOAuthIdentity() async throws {
+        let imported = try MintToken.imported(raw: pastedValue, expiresAt: instant, identity: nil)
+        do {
+            _ = try await InferenceCredential.read(profile: profile, mint: { _ in imported }, oauth: { _ in
+                XCTFail("An expired unverified token must not silently change provider accounts")
+                throw MintTokenError.exchangeFailed
+            }, now: instant)
+            XCTFail("Expired imported token was accepted")
+        } catch { XCTAssertEqual(error as? MintTokenError, .tokenExpired) }
+        XCTAssertThrowsError(try InferenceCredential.environmentToken(profile: profile, mint: { _ in imported }, now: instant)) {
+            XCTAssertEqual($0 as? MintTokenError, .tokenExpired)
+        }
     }
 }

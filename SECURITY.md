@@ -42,3 +42,9 @@ Claudock accepts official Claude subscription profiles. Explicit provider wrappe
 Explicit folder imports, new shared-profile setup, and native launches validate account settings with bounded regular-file reads. External-provider flags, API credential/helper overrides, and external base URLs are rejected without logging their values. The direct HTTPS Anthropic endpoint is allowed. This is supported-configuration validation, not isolation against a malicious local user or arbitrary explicit Claude arguments.
 
 Shell v3 supplies `claude-auto` through literal `claudock auto --` argument forwarding. Existing user aliases/functions/executables and legacy profiles with that name are preserved. Older owned adapters upgrade without changing `.zshrc`; current shells load the new adapter on their next source/restart. Shared session lookup retains Claude's native current-project `--continue` and explicit `--resume` semantics. A running source requires `--fork-session` to avoid sharing its writer identity.
+
+## Existing inference token import
+
+The token dialog defaults to direct paste. Clipboard reads occur only after the user presses Paste; the app never reads the clipboard on startup. The parser accepts a supported raw OAuth token or an exact literal environment assignment, without shell evaluation. Imported tokens use the same bounded, separate Keychain namespace as browser-created tokens, and remain out of scripts, registry JSON, logs, and process arguments.
+
+Pasted tokens have manual provenance. Their account identity and expiry cannot be established from an opaque string; unknown expiry is represented explicitly. A cached profile identity, when available at import, is only a local binding and not proof that the token belongs to that account. Browser-created tokens retain their strict account/organization checks. The user assigns an imported token to a profile; use its matching quota login when relying on account-specific limits.

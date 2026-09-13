@@ -138,8 +138,8 @@ struct ProfileManagerView: View {
                                     .buttonStyle(.bordered).controlSize(.small)
                                     .disabled(actionsUnavailable || account.profile.isVertex || account.profile.discoveryNote != nil)
                                     .accessibilityIdentifier("mintToken-\(account.id)")
-                                    .accessibilityLabel("Mint or renew inference token for \(account.profile.name)")
-                                    .help("Create or renew this profile's separate inference token")
+                                    .accessibilityLabel("Set or replace inference token for \(account.profile.name)")
+                                    .help("Paste an existing inference token or create one in your browser")
                             }
                         }.padding(.vertical, 13)
                             .task(id: account.profile) { await readMintStatus(account.profile) }
@@ -168,8 +168,8 @@ struct ProfileManagerView: View {
     private func resetEditor() { editing = nil; name = ""; configPath = "" }
     private func mintButtonTitle(_ profile: Profile) -> String {
         switch mintStatuses[profile.id] {
-        case .active?, .expired?: return "Renew token…"
-        default: return "Mint token…"
+        case .active?, .expired?, .imported?: return "Manage token…"
+        default: return "Set token…"
         }
     }
     private func beginMint(_ profile: Profile) {
@@ -186,6 +186,11 @@ struct ProfileManagerView: View {
         case .active(let expiry):
             return "Inference token \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
         case .expired(let expiry): return "Inference token expired \(expiry.formatted(date: .abbreviated, time: .shortened))"
+        case .imported(let expiry):
+            if let expiry {
+                return "Pasted token · account unverified · \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
+            }
+            return "Pasted token · expiry unknown · account unverified"
         }
     }
     private func readMintStatus(_ profile: Profile) async {

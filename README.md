@@ -118,11 +118,15 @@ Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles. Ex
 
 ## Fewer login interruptions
 
-Choose **Mint token** in Manage profiles. Claudock opens Claude's browser authorization, accepts the returned authorization code, and saves the long-lived inference token in a separate macOS Keychain entry. The default requested lifetime is one year; the actual expiry comes from Claude's response. No token needs to be pasted into `.zshrc`.
+Already have an inference token? Open **Manage profiles → Set token…**, paste it, and choose **Save to Keychain**. You can paste the token itself or the `export CLAUDE_CODE_OAUTH_TOKEN=…` line from Claude. No browser round trip or existing OAuth login is required to import it, and no token is written to `.zshrc`.
 
-Claudock-managed `claude-{slug}` shortcuts, **Open in Terminal**, and Auto prefer that profile's saved long-lived token. A renamed profile keeps its token. Minting requires a one-time browser sign-in for each account; it cannot silently convert every existing login.
+<img src="docs/screenshots/token-setup.png" width="500" alt="Claudock token setup with Paste token selected, an editable token field, and a Paste button; synthetic profile with no token entered">
 
-Long-lived tokens grant inference only. **Quota monitoring still uses the profile's normal OAuth login**, renewed in the background by the resident app. If that login becomes non-renewable, re-login restores monitoring while a valid minted token can continue running Claude. Removing a profile preserves its data and credentials; it does not revoke tokens at Anthropic.
+Need a new token? The same dialog offers **Create in browser**, with a separate authorization-code field. Browser-created tokens use Claude's reported expiry and verified account/organization. Pasted tokens are assigned to the profile you choose; their account identity and expiry cannot be established from the opaque string, so they are labeled accordingly.
+
+Claudock-managed shortcuts, **Open in Terminal**, and Auto prefer the saved inference token. Renames preserve it. Existing user-authored wrappers remain unchanged; use `claudock run NAME` to launch those profiles with their saved token.
+
+Inference tokens do not replace the normal OAuth login used to read quota. The resident app renews that monitoring login when possible. Removing a profile preserves its data and credentials; it does not revoke tokens at Anthropic.
 
 ## Terminal, when you want it
 

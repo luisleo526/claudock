@@ -7,6 +7,7 @@ public enum MintTokenError: Error, LocalizedError, Equatable {
     case unsupportedProfile, loginRequired, invalidCode, stateMismatch, invalidResponse
     case accountMismatch, accountChanged, identityUnavailable, network, exchangeFailed
     case keychainUnavailable, keychainWriteFailed, tokenTooLarge
+    case invalidToken, invalidExpiry, tokenExpired
 
     public var errorDescription: String? {
         switch self {
@@ -14,15 +15,18 @@ public enum MintTokenError: Error, LocalizedError, Equatable {
         case .loginRequired: return "Sign in to this profile with Claude Code first, then create its inference token."
         case .invalidCode: return "Paste the complete authorization code, including its #state suffix."
         case .stateMismatch: return "This code belongs to a different sign-in attempt. Open the browser again and use the new code."
-        case .invalidResponse: return "Claude returned an incomplete inference token. Open the browser again to retry."
-        case .accountMismatch: return "The browser account does not match this profile. Use the profile's existing Claude account."
-        case .accountChanged: return "This profile's login changed during authorization. Start again with its current account."
+        case .invalidResponse: return "The inference token or its saved information is invalid. Replace the token or restart browser authorization."
+        case .accountMismatch: return "The account information does not match this profile. Use the matching account or replace its token."
+        case .accountChanged: return "This profile's login changed while saving its token. Try again with the current account."
         case .identityUnavailable: return "Claude did not return a verifiable account identity. Keep using the normal Claude Code login."
         case .network: return "Could not complete authorization with Claude. Open the browser again to retry."
         case .exchangeFailed: return "Claude rejected this authorization. Open the browser again and use a fresh code."
         case .keychainUnavailable: return "The inference token's Keychain item is unavailable. Unlock your Mac and try again."
         case .keychainWriteFailed: return "The inference token could not be saved and verified in Keychain. Your existing Claude login was preserved."
         case .tokenTooLarge: return "This token exceeds the supported secure storage size. Your existing Claude login was preserved."
+        case .invalidToken: return "Paste the raw sk-ant-oat01- token, or one complete export CLAUDE_CODE_OAUTH_TOKEN assignment. Do not include other commands."
+        case .invalidExpiry: return "The token expiration date is invalid. Leave it unknown unless you know the actual expiration."
+        case .tokenExpired: return "The imported inference token has expired. Replace it in Manage token."
         }
     }
 }
@@ -62,10 +66,46 @@ struct MintAccountIdentity: Codable, Equatable, Sendable {
     }
 }
 
+public enum MintTokenProvenance: String, Codable, Sendable {
+    case browser, pasted
+}
+
 public struct MintToken: Sendable {
     let accessToken: String
-    public let expiresAt: Date
-    let identity: MintAccountIdentity
+    public let expiresAt: Date?
+    public let provenance: MintTokenProvenance
+    /// Pasted tokens are opaque. A cached local binding never verifies their
+    /// provider account; only the checked browser exchange establishes identity.
+    public var identityVerified: Bool { provenance == .browser && identity != nil }
+    let identity: MintAccountIdentity?
+
+    init(accessToken: String, expiresAt: Date?, identity: MintAccountIdentity?, provenance: MintTokenProvenance = .browser) {
+        self.accessToken = accessToken; self.expiresAt = expiresAt
+        self.identity = identity; self.provenance = provenance
+    }
+
+    static func imported(raw: String, expiresAt: Date?, identity: MintAccountIdentity?) throws -> MintToken {
+        guard raw.utf8.count <= 32_768 else { throw MintTokenError.tokenTooLarge }
+        var token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let prefix = token.range(of: #"\Aexport[ \t]+CLAUDE_CODE_OAUTH_TOKEN="#, options: .regularExpression) {
+            token = String(token[prefix.upperBound...])
+            if let quote = token.first, quote == "'" || quote == "\"" {
+                guard token.count >= 2, token.last == quote else { throw MintTokenError.invalidToken }
+                token = String(token.dropFirst().dropLast())
+            }
+        }
+        guard validImportedToken(token) else { throw MintTokenError.invalidToken }
+        if let expiresAt {
+            guard expiresAt.timeIntervalSince1970.isFinite, expiresAt.timeIntervalSince1970 > 0 else { throw MintTokenError.invalidExpiry }
+        }
+        return MintToken(accessToken: token, expiresAt: expiresAt, identity: identity, provenance: .pasted)
+    }
+
+    static func validImportedToken(_ token: String) -> Bool {
+        let prefix = "sk-ant-oat01-"
+        return token.hasPrefix(prefix) && token.utf8.count > prefix.utf8.count && token.utf8.count <= 16_384 &&
+            token.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || "._~+/=-".utf8.contains($0) }
+    }
 
     static func parseResponse(_ data: Data, now: Date, expected: MintAccountIdentity) throws -> MintToken {
         guard data.count <= 131_072,
@@ -193,14 +233,17 @@ public enum MintTokenStatus: Equatable, Sendable {
     case notConfigured
     case active(expiresAt: Date)
     case expired(expiresAt: Date)
+    /// Expiration may be unknown and the provider account is not verified.
+    case imported(expiresAt: Date?)
 }
 
 public enum MintTokenStore {
     private struct Stored: Codable {
         let version: Int
         let accessToken: String
-        let expiresAt: TimeInterval
-        let identity: MintAccountIdentity
+        let expiresAt: TimeInterval?
+        let identity: MintAccountIdentity?
+        let provenance: MintTokenProvenance?
     }
     private static let writeLock = NSLock()
 
@@ -215,7 +258,33 @@ public enum MintTokenStore {
 
     public static func status(profile: Profile) throws -> MintTokenStatus {
         guard let token = try read(profile: profile) else { return .notConfigured }
-        return token.expiresAt > Date() ? .active(expiresAt: token.expiresAt) : .expired(expiresAt: token.expiresAt)
+        return status(token, now: Date())
+    }
+
+    static func status(_ token: MintToken, now: Date) -> MintTokenStatus {
+        if let expiry = token.expiresAt, expiry <= now { return .expired(expiresAt: expiry) }
+        if token.provenance == .pasted { return .imported(expiresAt: token.expiresAt) }
+        guard let expiry = token.expiresAt else { return .notConfigured }
+        return .active(expiresAt: expiry)
+    }
+
+    /// Parse pasted text as data and save it only in this profile's separate
+    /// inference-token Keychain namespace. No browser or OAuth login is needed.
+    public static func importToken(raw: String, profile: Profile, expiresAt: Date? = nil) throws -> MintToken {
+        try importToken(raw: raw, profile: profile, expiresAt: expiresAt,
+                        identity: MintAccountIdentity.cached, save: MintTokenStore.save)
+    }
+
+    static func importToken(raw: String, profile: Profile, expiresAt: Date? = nil,
+                            identity: (Profile) throws -> MintAccountIdentity,
+                            save: (MintToken, Profile) throws -> Void) throws -> MintToken {
+        try validateProfile(profile)
+        // Parse invalid clipboard contents before reading even optional metadata.
+        let parsed = try MintToken.imported(raw: raw, expiresAt: expiresAt, identity: nil)
+        let token = MintToken(accessToken: parsed.accessToken, expiresAt: parsed.expiresAt,
+                              identity: try? identity(profile), provenance: .pasted)
+        try save(token, profile)
+        return token
     }
 
     static func read(profile: Profile, securityRead: (String) throws -> (data: Data, status: Int32),
@@ -227,32 +296,71 @@ public enum MintTokenStore {
         if result.status == 44 { return nil }
         guard result.status == 0 else { throw MintTokenError.keychainUnavailable }
         let token = try decode(result.data)
-        guard token.identity == (try identity(profile)) else { throw MintTokenError.accountMismatch }
+        if token.provenance == .browser {
+            guard token.identity == (try identity(profile)) else { throw MintTokenError.accountMismatch }
+        } else if let localBinding = token.identity, let current = try? identity(profile), current != localBinding {
+            throw MintTokenError.accountMismatch
+        }
         return token
     }
 
     public static func save(_ token: MintToken, profile: Profile) throws {
+        try save(token, profile: profile, identity: MintAccountIdentity.cached,
+                 securityWrite: write, securityRead: { try CredentialStore.runSecurity(service: $0, timeout: 2) })
+    }
+
+    static func save(_ token: MintToken, profile: Profile, identity: (Profile) throws -> MintAccountIdentity,
+                     securityWrite: (Data) throws -> Void,
+                     securityRead: (String) throws -> (data: Data, status: Int32)) throws {
         try validateProfile(profile)
-        guard token.identity == (try MintAccountIdentity.cached(profile: profile)) else { throw MintTokenError.accountChanged }
+        try verifyLocalBinding(token, profile: profile, identity: identity)
         let data = try encode(token)
         let service = serviceName(for: profile)
         let command = try securityWriteCommand(data, account: NSUserName(), service: service)
         try writeLock.withLock {
-            try write(command)
-            let result = try CredentialStore.runSecurity(service: service, timeout: 2)
+            try verifyLocalBinding(token, profile: profile, identity: identity)
+            try securityWrite(command)
+            let result = try securityRead(service)
             guard result.status == 0 else { throw MintTokenError.keychainWriteFailed }
             let verified = try decode(result.data)
             guard verified.accessToken == token.accessToken, verified.identity == token.identity,
-                  abs(verified.expiresAt.timeIntervalSince(token.expiresAt)) < 0.001,
-                  try MintAccountIdentity.cached(profile: profile) == token.identity else { throw MintTokenError.keychainWriteFailed }
+                  verified.provenance == token.provenance,
+                  sameExpiry(verified.expiresAt, token.expiresAt) else { throw MintTokenError.keychainWriteFailed }
+            try verifyLocalBinding(token, profile: profile, identity: identity)
+        }
+    }
+
+    private static func verifyLocalBinding(_ token: MintToken, profile: Profile,
+                                            identity: (Profile) throws -> MintAccountIdentity) throws {
+        if token.provenance == .browser {
+            guard token.identity != nil, token.identity == (try identity(profile)) else { throw MintTokenError.accountChanged }
+        } else if let localBinding = token.identity, let current = try? identity(profile), current != localBinding {
+            throw MintTokenError.accountChanged
+        }
+    }
+
+    private static func sameExpiry(_ first: Date?, _ second: Date?) -> Bool {
+        switch (first, second) {
+        case (nil, nil): return true
+        case (.some(let a), .some(let b)): return abs(a.timeIntervalSince(b)) < 0.001
+        default: return false
         }
     }
 
     static func encode(_ token: MintToken) throws -> Data {
-        guard OAuthRefreshResult.validToken(token.accessToken), token.expiresAt.timeIntervalSince1970.isFinite else { throw MintTokenError.invalidResponse }
+        guard OAuthRefreshResult.validToken(token.accessToken) else { throw MintTokenError.invalidResponse }
+        if let expiry = token.expiresAt {
+            guard expiry.timeIntervalSince1970.isFinite, expiry.timeIntervalSince1970 > 0 else { throw MintTokenError.invalidResponse }
+        }
+        if token.provenance == .browser {
+            guard token.expiresAt != nil, token.identity != nil else { throw MintTokenError.invalidResponse }
+        } else {
+            guard MintToken.validImportedToken(token.accessToken) else { throw MintTokenError.invalidToken }
+        }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(Stored(version: 1, accessToken: token.accessToken,
-                                         expiresAt: token.expiresAt.timeIntervalSince1970, identity: token.identity))
+        return try encoder.encode(Stored(version: 2, accessToken: token.accessToken,
+                                         expiresAt: token.expiresAt?.timeIntervalSince1970, identity: token.identity,
+                                         provenance: token.provenance))
     }
 
     static func decode(_ data: Data) throws -> MintToken {
@@ -271,12 +379,34 @@ public enum MintTokenStore {
                 payload.append(byte); index = end
             }
         }
-        guard let saved = try? JSONDecoder().decode(Stored.self, from: payload), saved.version == 1,
-              OAuthRefreshResult.validToken(saved.accessToken), saved.expiresAt.isFinite, saved.expiresAt > 0,
-              let identity = try? MintAccountIdentity(accountUUID: saved.identity.accountUUID, organizationUUID: saved.identity.organizationUUID) else {
+        guard let saved = try? JSONDecoder().decode(Stored.self, from: payload), [1, 2].contains(saved.version),
+              OAuthRefreshResult.validToken(saved.accessToken) else {
             throw MintTokenError.invalidResponse
         }
-        return MintToken(accessToken: saved.accessToken, expiresAt: Date(timeIntervalSince1970: saved.expiresAt), identity: identity)
+        let provenance: MintTokenProvenance
+        if saved.version == 1 {
+            guard saved.provenance == nil || saved.provenance == .browser else { throw MintTokenError.invalidResponse }
+            provenance = .browser
+        } else {
+            guard let source = saved.provenance else { throw MintTokenError.invalidResponse }
+            provenance = source
+        }
+        let expiry: Date?
+        if let seconds = saved.expiresAt {
+            guard seconds.isFinite, seconds > 0 else { throw MintTokenError.invalidResponse }
+            expiry = Date(timeIntervalSince1970: seconds)
+        } else { expiry = nil }
+        let identity: MintAccountIdentity?
+        if let storedIdentity = saved.identity {
+            guard let valid = try? MintAccountIdentity(accountUUID: storedIdentity.accountUUID, organizationUUID: storedIdentity.organizationUUID) else { throw MintTokenError.invalidResponse }
+            identity = valid
+        } else { identity = nil }
+        if provenance == .browser {
+            guard expiry != nil, identity != nil else { throw MintTokenError.invalidResponse }
+        } else {
+            guard MintToken.validImportedToken(saved.accessToken) else { throw MintTokenError.invalidResponse }
+        }
+        return MintToken(accessToken: saved.accessToken, expiresAt: expiry, identity: identity, provenance: provenance)
     }
 
     static func securityWriteCommand(_ data: Data, account: String, service: String) throws -> Data {
@@ -318,8 +448,11 @@ public enum InferenceCredential {
                      oauth: (Profile) throws -> Credentials,
                      now: Date = Date()) async throws -> Credentials {
         try MintTokenStore.validateProfile(profile)
-        if let mint = try mint(profile), mint.expiresAt > now {
-            return Credentials(accessToken: mint.accessToken, expiresAt: mint.expiresAt, plan: nil, scopes: ["user:inference"])
+        if let mint = try mint(profile) {
+            if mint.expiresAt.map({ $0 > now }) ?? (mint.provenance == .pasted) {
+                return Credentials(accessToken: mint.accessToken, expiresAt: mint.expiresAt, plan: nil, scopes: ["user:inference"])
+            }
+            if mint.provenance == .pasted { throw MintTokenError.tokenExpired }
         }
         let credentials = try oauth(profile)
         if let expires = credentials.expiresAt, expires <= now {
@@ -337,7 +470,12 @@ public enum InferenceCredential {
 
     static func environmentToken(profile: Profile, mint: (Profile) throws -> MintToken?, now: Date = Date()) throws -> String? {
         try MintTokenStore.validateProfile(profile)
-        guard let token = try mint(profile), token.expiresAt > now else { return nil }
+        guard let token = try mint(profile) else { return nil }
+        if let expiry = token.expiresAt, expiry <= now {
+            if token.provenance == .pasted { throw MintTokenError.tokenExpired }
+            return nil
+        }
+        guard token.expiresAt != nil || token.provenance == .pasted else { throw MintTokenError.invalidResponse }
         return token.accessToken
     }
 }
