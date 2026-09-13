@@ -31,7 +31,7 @@ Claudock is a Swift package with a macOS menu bar executable (`ClaudockApp`), a 
 5. Replace the successful reading, or retain it with an explicit stale/error state.
 6. After the account pass, schedule the next automatic check using the selected 1-, 5-, or 15-minute interval. Manual refresh has a separate one-minute cooldown.
 
-There is no background web service, database, or credential synchronization. Usage readings are in memory. Dismissing the popover or closing the dashboard leaves polling active until the menu bar app quits. Polling resumes after sleep when the next check is due.
+The monitor needs no background web service, database, or credential synchronization. Explicit Auto sessions create a per-session loopback listener. Usage readings are in memory. Dismissing the popover or closing the dashboard leaves polling active until the menu bar app quits. Polling resumes after sleep when the next check is due.
 
 ## Local analytics
 
@@ -108,3 +108,15 @@ Before dispatch, the app durably publishes a private, secret-free `.claudock-ref
 A successful exchange that cannot be saved stays in memory for a later save attempt, avoiding another POST with the old refresh token. Matching tokens on a changed authoritative backend can receive the pending result while retaining that backend's other fields. Exiting the app loses an unsaved result; the durable marker prevents blind reuse and directs the user to Claude Code or re-login. Credential contention/save failures back off for a minute; an explicit invalid grant is not retried while the token pair remains unchanged. Cancellation before dispatch is not cached. No token or raw OAuth error body belongs in diagnostics.
 
 The one-shot `claudock usage` command reads quota without rotating credentials. It directs users with an expired token to the resident app or their Claude profile, so exiting the command cannot discard a pending rotation.
+
+## Auto routing and mint authentication
+
+`BalancedSession` starts the gateway, launches Claude with literal `posix_spawn` arguments in the existing foreground process group, forwards termination signals, preserves the child exit status, and closes the listener after exit. `TerminalLauncher` calls the bundled CLI so GUI and zsh launches select the same minted credential.
+
+`AccountPool` tracks model-specific remaining headroom, conversation affinity, active request leases, and cooldowns. It reads quota at most every five minutes per Auto process with three concurrent reads. Auto never rotates credentials; the resident app owns refresh, so exiting a CLI session cannot discard a rotation. Missing/stale quota is unknown, not zero; explicit upstream rejection remains authoritative. `BalancedGateway` retries status-phase 401/429 before committing output, up to three distinct credential services. It never retries a dispatched transport error or a partial stream. Remote files/containers require a named profile because Auto has no resource-ownership registry. Different Auto processes do not coordinate their leases.
+
+`LoopbackHTTPServer` implements bounded one-request-per-connection HTTP/1.1 over Network.framework. `GatewayUpstream` preserves evolving capability headers and streams Anthropic responses without content logging. The fixed HTTPS destination rejects redirects; local credentials and cookies are never forwarded upstream.
+
+`SubscriptionPlan` recognizes exact Claude Code metadata mappings for Max 5×/20× and Team Premium; unknown seat mappings remain explicit. Quota percentages are never converted into presumed plan capacity.
+
+Long-lived mint credentials are separate from full-scope refreshable credentials. Browser PKCE authorization requests `user:inference` and a one-year lifetime. The server-reported expiry is stored; normal quota OAuth remains available for background refresh. Minting cannot eliminate the usage API's scope requirement.

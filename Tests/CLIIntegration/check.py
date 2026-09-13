@@ -31,12 +31,13 @@ def check(base):
         if result.returncode:
             raise RuntimeError(result.stderr)
 
-    sources = [PROJECT / "Sources/ClaudockCLI/main.swift", PROJECT / "Sources/UsageCore/Profile.swift", PROJECT / "Sources/UsageCore/LaunchCommand.swift"]
+    sources = [PROJECT / "Sources/ClaudockCLI/ClaudockCLI.swift", PROJECT / "Sources/UsageCore/Profile.swift", PROJECT / "Sources/UsageCore/LaunchCommand.swift",
+               PROJECT / "Sources/UsageCore/SubscriptionPlan.swift"]
     compile_swift(["-emit-library", "-emit-module", "-module-name", "UsageCore", "-o", str(base / "libUsageCore.dylib"),
-                   str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2])])
+                   str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2]), str(sources[3])])
     binary = base / "claudock"
     compile_swift(["-parse-as-library", "-I", str(base), "-L", str(base), "-lUsageCore", "-Xlinker", "-rpath", "-Xlinker", str(base),
-                   "-o", str(binary), str(sources[0])])
+                   "-o", str(binary), str(sources[0]), str(PROJECT / "Sources/ClaudockCLI/BalancedSession.swift")])
 
     launch_source = sources[2].read_text()
     cleared_keys = re.findall(r'"([A-Z_]+)"', launch_source.split("public static func quote")[0])
@@ -61,14 +62,15 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["nonsense"], 2), (["run"], 2), (["run", "smoke", "--resume"], 2), (["profile", "add"], 2),
              (["profile", "add", "bad name"], 2), (["profile", "add", "work", "--directory", "relative"], 2),
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
-             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2)]
+             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
+             (["auto", "bad"], 2), (["auto", "--profiles"], 2), (["auto", "--profiles", "a,,b"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
         assert result.returncode == expected_status, (arguments, result.returncode, result.stderr)
         assert not marker.exists(), (arguments, "unexpected profile store access")
         if arguments in (["version"], ["--version"]):
-            assert result.stdout.strip() == "Claudock 1.4.0"
+            assert result.stdout.strip() == "Claudock 1.5.0"
         passed.append("parser " + repr(arguments))
 
     result = run(["shell", "profile-names"])
@@ -96,6 +98,36 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["argv"] == ["auth", "login", "--claudeai"]
     passed.append("login argv")
+    result = run(["launch-bound", "fixture-stable", "Claude Code-credentials-aabbccdd", "run", "--", "--resume", "fixture.jsonl"], conflicts)
+    assert result.returncode == 0 and json.loads(result.stdout)["env"]["CLAUDE_CONFIG_DIR"] == "/synthetic/account space"
+    passed.append("GUI launch binds immutable registry identity and credential service")
+    result = run(["launch-bound", "fixture-stable", "Claude Code-credentials-12345678", "run", "--"], conflicts)
+    assert result.returncode == 2 and not result.stdout
+    passed.append("GUI changed profile binding rejected before Claude launch")
+
+    result = run(["run", "smoke"], {**conflicts, "CLAUDOCK_TEST_MINT": "1"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["env"] == {"CLAUDE_CONFIG_DIR": "/synthetic/account space", "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-mint-token"}
+    passed.append("mint used only through child environment")
+    result = run(["profile", "login", "smoke"], {**conflicts, "CLAUDOCK_TEST_MINT": "1"})
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in json.loads(result.stdout)["env"]
+    passed.append("relogin is isolated from stored mint")
+
+    result = run(["auto", "--profiles", "smoke", "--", *arguments], {**conflicts, "TEST_KEEP": "preserved", "CLAUDOCK_TEST_EXIT": "37"})
+    assert result.returncode == 37, result.stderr
+    value = json.loads(result.stdout)
+    assert value["argv"] == arguments and value["cwd"] == str(base)
+    assert value["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345"
+    assert len(value["env"]["ANTHROPIC_AUTH_TOKEN"]) == 44
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in value["env"] and "CLAUDE_CONFIG_DIR" not in value["env"]
+    passed.append("auto child literal arguments shared workspace local endpoint and exit status")
+    pool_marker = base / "pool-selectors"
+    result = run(["auto", "--profiles", "claude-smoke", "--", "--version"], {"CLAUDOCK_TEST_POOL_MARK": str(pool_marker)})
+    assert result.returncode == 0 and pool_marker.read_text() == "claude-smoke", result.stderr
+    passed.append("auto exact selector does not widen pool through colliding short name")
+    result = run(["auto", "--profiles", "default"])
+    assert result.returncode == 1 and "ambiguous" in result.stderr
+    passed.append("auto ambiguous profile name rejected")
 
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout
@@ -140,6 +172,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
 
     result = run(["usage"])
     assert result.returncode == 0 and "25.00" in result.stdout and "skipped" in result.stderr
+    assert result.stdout.startswith("PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC\n")
+    assert "Max 20×" in result.stdout
     passed.append("synthetic quota TSV and skipped unsupported")
 
     result = run(["usage"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})

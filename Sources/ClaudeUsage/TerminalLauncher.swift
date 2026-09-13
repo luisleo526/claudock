@@ -21,15 +21,28 @@ enum TerminalLauncher {
     }
 
     @MainActor static func login(profile: Profile) async throws {
-        try await launch(profile: profile, arguments: ["auth", "login", "--claudeai"], directory: NSHomeDirectory())
+        guard let cli = bundledCLI else { throw MonitorError.unsupported("Reinstall the complete Claudock app to sign in.") }
+        try await open(profile: profile, binary: cli, arguments: boundArguments(profile: profile, login: true), directory: NSHomeDirectory())
     }
     @MainActor static func launch(profile: Profile, arguments: [String] = [], directory: String = NSHomeDirectory()) async throws {
-        guard let executable else { throw MonitorError.unsupported("Claude Code was not found. Install it or select its executable in Settings.") }
+        guard let cli = bundledCLI else { throw MonitorError.unsupported("Reinstall the complete Claudock app to launch a profile.") }
+        try await open(profile: profile, binary: cli, arguments: boundArguments(profile: profile, login: false) + arguments, directory: directory)
+    }
+    private static func boundArguments(profile: Profile, login: Bool) -> [String] {
+        ["launch-bound", profile.id, CredentialStore.serviceName(for: profile), login ? "login" : "run", "--"]
+    }
+    @MainActor static func auto(arguments: [String] = [], directory: String = NSHomeDirectory()) async throws {
+        guard let cli = bundledCLI else { throw MonitorError.unsupported("Reinstall the complete Claudock app to use Auto.") }
+        let profile = Profile(command: "claude", configDirectory: NSHomeDirectory() + "/.claude")
+        try await open(profile: profile, binary: cli, arguments: ["auto", "--"] + arguments, directory: directory)
+    }
+    @MainActor private static func open(profile: Profile, binary: String, arguments: [String], directory: String) async throws {
+        guard executable != nil else { throw MonitorError.unsupported("Claude Code was not found. Install it or select its executable in Settings.") }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw MonitorError.unsupported("The project folder no longer exists. Choose an existing project.")
         }
-        let script = try LaunchCommand.script(profile: profile, executable: executable, arguments: arguments, workingDirectory: directory)
+        let script = try LaunchCommand.script(profile: profile, executable: binary, arguments: arguments, workingDirectory: directory)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Claudock-\(NSUserName())", isDirectory: true)
         // Refuse a pre-existing link/non-directory at this predictable parent.
         if let values = try? folder.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]), values.isSymbolicLink == true || values.isDirectory != true {

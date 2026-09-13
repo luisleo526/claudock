@@ -6,7 +6,7 @@ struct AccountState: Identifiable {
     var id: String { profile.id }
     let profile: Profile
     var email: String?
-    var plan: String?
+    var plan: SubscriptionPlan?
     var snapshot: UsageSnapshot?
     var error: MonitorError?
     var retryAt: Date?
@@ -15,7 +15,7 @@ struct AccountState: Identifiable {
 
 struct AccountReading: Sendable {
     var email: String?
-    var plan: String?
+    var plan: SubscriptionPlan?
     var snapshot: UsageSnapshot?
     var error: MonitorError?
 }
@@ -26,7 +26,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var result = AccountReading(email: CredentialStore.email(for: profile))
     do {
         let credentials = try CredentialStore.read(profile: profile)
-        result.plan = credentials.plan
+        result.plan = credentials.subscriptionPlan
         result.snapshot = try await UsageClient.fetch(profile: profile, credentials: credentials)
     } catch let error as MonitorError { result.error = error }
     catch { result.error = .invalidResponse }
@@ -115,7 +115,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     func refresh(manual: Bool = false) {
         if isDemo {
             accounts = DemoData.profiles.enumerated().map { index, profile in
-                AccountState(profile: profile, plan: index == 2 ? "pro" : "max", snapshot: DemoData.usage(index: index))
+                AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4], snapshot: DemoData.usage(index: index))
             }
             now = Date(); lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return

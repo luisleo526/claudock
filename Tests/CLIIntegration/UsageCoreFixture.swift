@@ -4,10 +4,33 @@ import Foundation
 // LaunchCommand are compiled from the unmodified production sources.
 public enum MonitorError: Error, LocalizedError {
     case unsupported(String)
+    case invalidResponse
     public var errorDescription: String? {
         if case .unsupported(let value) = self { return value }
         return nil
     }
+}
+
+public enum InferenceCredential {
+    public static func environmentToken(profile: Profile) throws -> String? {
+        ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
+    }
+}
+public struct LocalHTTPRequest: Sendable {}
+public actor LocalHTTPResponseWriter {}
+public final class LoopbackHTTPServer: @unchecked Sendable {
+    public init(token: String, handler: @escaping @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void) {}
+    public func start() async throws -> UInt16 { 12345 }
+    public func stop() {}
+}
+public actor BalancedGateway {
+    public init(selectors: Set<String>?) {
+        if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_POOL_MARK"] {
+            try? Data((selectors?.sorted().joined(separator: ",") ?? "all").utf8).write(to: URL(fileURLWithPath: path))
+        }
+    }
+    public func prepare() async throws {}
+    public func handle(_ request: LocalHTTPRequest, writer: LocalHTTPResponseWriter) async {}
 }
 
 public enum ProfileStore {
@@ -22,7 +45,8 @@ public enum ProfileStore {
         markAccess()
         return [
             Profile(command: "claude", configDirectory: "/synthetic/default"),
-            Profile(command: "claude-smoke", configDirectory: "/synthetic/account space", managed: true),
+            Profile(command: "claude-smoke", configDirectory: "/synthetic/account space", registryID: "fixture-stable", managed: true),
+            Profile(command: "claude-claude-smoke", configDirectory: "/synthetic/collision", managed: true),
             Profile(command: "claude-default", configDirectory: "/synthetic/legacy", managed: true),
             Profile(command: "claude-測試", configDirectory: "/synthetic/unicode"),
             Profile(command: "claude-vertex", configDirectory: "/synthetic/vertex", isVertex: true),
@@ -49,8 +73,11 @@ public enum ClaudeExecutable {
     public static func find() -> String? { ProcessInfo.processInfo.environment["CLAUDOCK_TEST_EXECUTABLE"] }
 }
 
-public struct Credentials {}
+public struct Credentials {
+    public var subscriptionPlan: SubscriptionPlan { .max20x }
+}
 public enum CredentialStore {
+    public static func serviceName(for profile: Profile) -> String { profile.registryID == "fixture-stable" ? "Claude Code-credentials-aabbccdd" : "Claude Code-credentials" }
     public static func read(profile: Profile) throws -> Credentials {
         if ProcessInfo.processInfo.environment["CLAUDOCK_TEST_FAIL_USAGE"] == "1" {
             throw MonitorError.unsupported("Synthetic quota error")

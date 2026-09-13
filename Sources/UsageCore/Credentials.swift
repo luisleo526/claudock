@@ -6,16 +6,23 @@ public struct Credentials: Sendable {
     let accessToken: String
     public let expiresAt: Date?
     public let plan: String?
+    public let rateLimitTier: String?
+    public let seatTier: String?
+    public var subscriptionPlan: SubscriptionPlan {
+        SubscriptionPlan(subscriptionType: plan, rateLimitTier: rateLimitTier, seatTier: seatTier)
+    }
     let refreshToken: String?
     let refreshTokenExpiresAt: Date?
     let scopes: [String]
     let clientID: String?
 
     init(accessToken: String, expiresAt: Date?, plan: String?, refreshToken: String? = nil,
-         refreshTokenExpiresAt: Date? = nil, scopes: [String] = [], clientID: String? = nil) {
+         refreshTokenExpiresAt: Date? = nil, scopes: [String] = [], clientID: String? = nil,
+         rateLimitTier: String? = nil, seatTier: String? = nil) {
         self.accessToken = accessToken; self.expiresAt = expiresAt; self.plan = plan
         self.refreshToken = refreshToken; self.refreshTokenExpiresAt = refreshTokenExpiresAt
         self.scopes = scopes; self.clientID = clientID
+        self.rateLimitTier = rateLimitTier; self.seatTier = seatTier
     }
 
     func hasSameTokens(as other: Credentials) -> Bool {
@@ -35,7 +42,9 @@ public struct Credentials: Sendable {
         return Credentials(accessToken: token, expiresAt: date("expiresAt"), plan: oauth["subscriptionType"] as? String,
                            refreshToken: refresh, refreshTokenExpiresAt: date("refreshTokenExpiresAt"),
                            scopes: oauth["scopes"] as? [String] ?? [],
-                           clientID: (oauth["clientId"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                           clientID: (oauth["clientId"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                           rateLimitTier: oauth["rateLimitTier"] as? String,
+                           seatTier: oauth["seatTier"] as? String)
     }
 }
 

@@ -2,11 +2,11 @@
 
 # Claudock
 
-**Your Claude accounts, one menu bar.** Track Fable limits, manage profiles, and explore local token activity.
+**Your Claude accounts, one menu bar.** See Fable headroom, keep long-lived tokens in Keychain, and let Auto switch accounts when a quota runs out.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.4.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.5.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.4.0).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.0/Claudock-1.5.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.0).
 
 <details>
 <summary>Build from source</summary>
@@ -65,7 +65,22 @@ Renaming preserves account data. Removing a profile keeps its Claude folders, co
   <img src="docs/screenshots/profiles-light.png" width="620" alt="Claudock profile manager with account setup, re-login controls, and optional zsh integration, using synthetic profiles">
 </picture>
 
-*Synthetic demo with account actions disabled; setup wording shown predates the shared-history default in 1.4.0.*
+*Synthetic demo profiles. Rename, Remove, and authentication actions are available directly on each row.*
+
+## Stay in the same session
+
+Click **Start Auto**, or use:
+
+```sh
+claudock auto
+claudock auto --profiles work,personal -- --resume
+```
+
+Auto starts Claude in your shared workspace. It prefers available headroom for the requested model, keeps a conversation on its current account, and tries another account after a quota or authentication rejection. **No Terminal restart. No lost local conversation.** You can also choose Auto from **Sessions → Continue as…**.
+
+Each Auto session owns a small authenticated loopback proxy that closes when Claude exits. It tries at most three profiles per request. Output streams as it arrives; once an answer has started, Auto never replays it or repeats its tool output. Requests referencing account-owned files or server-side containers must use their original named profile; Auto does not know those resources' owners. Independent Auto sessions do not share a central scheduler.
+
+Profile badges distinguish **Max 5×**, **Max 20×**, and verified **Team Premium** accounts. An unrecognized Team seat is labeled **tier unknown** rather than guessed to be Standard.
 
 ## See what your sessions used
 
@@ -93,11 +108,13 @@ Your original session keeps running. The new session uses the selected profile's
 
 Continuation is a **preview feature** that depends on compatible Claude Code JSONL resume support. [Compatibility details](docs/GUIDE.md#continue-a-saved-session).
 
-## Keep logins fresh
+## Fewer login interruptions
 
-The resident app automatically renews eligible expired logins using each profile's saved refresh token. When renewal needs your attention, the account row explains what to do.
+Choose **Mint token** in Manage profiles. Claudock opens Claude's browser authorization, accepts the returned authorization code, and saves the long-lived inference token in a separate macOS Keychain entry. The default requested lifetime is one year; the actual expiry comes from Claude's response. No token needs to be pasted into `.zshrc`.
 
-macOS may ask for Keychain access. If a renewal cannot be confirmed, open that profile in Claude Code or re-login. Claudock avoids resending a refresh token that may already have been consumed. [Authentication details](docs/GUIDE.md#privacy-and-permissions).
+Claudock-managed `claude-{slug}` shortcuts, **Open in Terminal**, and Auto prefer that profile's saved long-lived token. A renamed profile keeps its token. Minting requires a one-time browser sign-in for each account; it cannot silently convert every existing login.
+
+Long-lived tokens grant inference only. **Quota monitoring still uses the profile's normal OAuth login**, renewed in the background by the resident app. If that login becomes non-renewable, re-login restores monitoring while a valid minted token can continue running Claude. Removing a profile preserves its data and credentials; it does not revoke tokens at Anthropic.
 
 ## Terminal, when you want it
 
@@ -129,7 +146,7 @@ Automatic renewal runs in the resident app. The one-shot `claudock usage` comman
 
 - **No Claudock account or hosted backend.** Profiles live on your Mac.
 - **No telemetry or transcript uploads from the monitor.** Local activity is read locally.
-- **Existing Claude authentication.** Credentials are used to request limits and renew eligible logins through Anthropic, then saved to the existing credential store.
+- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens use a separate Keychain item; Auto sends model requests directly to Anthropic.
 
 Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).
 

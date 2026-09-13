@@ -23,12 +23,32 @@ private enum Command {
     case help, version, list, importShell
     case add(String, String?), rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
+    case auto(Set<String>?, [String])
+    case boundLaunch(String, String, Bool, [String])
 
     static func parse(_ arguments: [String]) throws -> Command {
         guard let first = arguments.first else { return .help }
         if ["help", "--help", "-h"].contains(first), arguments.count == 1 { return .help }
         if ["version", "--version"].contains(first), arguments.count == 1 { return .version }
         if first == "usage", arguments.count == 1 { return .usage }
+        if first == "launch-bound", arguments.count >= 5 {
+            let id = try name(arguments[1]), service = arguments[2]
+            guard service.range(of: #"\AClaude Code-credentials(?:-[a-f0-9]{8})?\z"#, options: .regularExpression) != nil,
+                  ["run", "login"].contains(arguments[3]), arguments[4] == "--",
+                  arguments[3] != "login" || arguments.count == 5 else { throw CLIError.arguments("Invalid bound profile launch.") }
+            return .boundLaunch(id, service, arguments[3] == "login", Array(arguments.dropFirst(5)))
+        }
+        if first == "auto" {
+            var rest = Array(arguments.dropFirst()), selectors: Set<String>?
+            if rest.first == "--profiles" {
+                guard rest.count >= 2 else { throw CLIError.arguments("--profiles needs comma-separated profile selectors.") }
+                let values = rest[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+                selectors = Set(try values.map(name)); rest.removeFirst(2)
+            }
+            if rest.isEmpty { return .auto(selectors, []) }
+            guard rest.first == "--" else { throw CLIError.arguments("Separate Claude arguments with '--': claudock auto -- CLAUDE_ARGS.") }
+            return .auto(selectors, Array(rest.dropFirst()))
+        }
         if first == "profile", arguments.count >= 2 {
             switch arguments[1] {
             case "list" where arguments.count == 2: return .list
@@ -99,7 +119,7 @@ private struct ClaudockCLI {
     private static func execute(_ command: Command) async throws {
         switch command {
         case .help: print(help)
-        case .version: print("Claudock 1.4.0")
+        case .version: print("Claudock 1.5.0")
         case .list:
             let profiles = try ProfileStore.load()
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
@@ -122,7 +142,17 @@ private struct ClaudockCLI {
         case .login(let name):
             try launch(profile: resolve(name), arguments: ["auth", "login", "--claudeai"])
         case .run(let name, let arguments):
-            try launch(profile: resolve(name), arguments: arguments)
+            try launch(profile: resolve(name), arguments: arguments, useMint: true)
+        case .auto(let selectors, let arguments):
+            let result = try await BalancedSession.run(selectors: selectors, arguments: arguments)
+            exit(result)
+        case .boundLaunch(let id, let service, let login, let arguments):
+            let profiles = try ProfileStore.load()
+            let matches = profiles.filter { $0.id == id }
+            guard matches.count == 1, let profile = matches.first, CredentialStore.serviceName(for: profile) == service else {
+                throw CLIError.arguments("The selected profile changed. Choose it again in Claudock.")
+            }
+            try launch(profile: profile, arguments: login ? ["auth", "login", "--claudeai"] : arguments, useMint: !login)
         case .usage:
             try await usage()
         case .shellEnable:
@@ -162,9 +192,10 @@ private struct ClaudockCLI {
         return profile
     }
 
-    private static func launch(profile: Profile, arguments: [String]) throws {
+    private static func launch(profile: Profile, arguments: [String], useMint: Bool = false) throws {
         guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
-        let environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
+        var environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
+        if useMint, let token = try InferenceCredential.environmentToken(profile: profile) { environment["CLAUDE_CODE_OAUTH_TOKEN"] = token }
         let argumentStrings = [executable] + arguments
         guard argumentStrings.allSatisfy({ !$0.contains("\0") }), environment.allSatisfy({ !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
             throw CLIError.invalidEnvironment
@@ -192,7 +223,7 @@ private struct ClaudockCLI {
         let profiles = try ProfileStore.load()
         let formatter = ISO8601DateFormatter()
         var failed = false
-        print("PROFILE\tWINDOW\tUSED_PERCENT\tRESETS_UTC")
+        print("PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC")
         for profile in profiles {
             guard profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else {
                 writeError("\(field(profile.name)): skipped; this profile does not support subscription usage.")
@@ -203,7 +234,7 @@ private struct ClaudockCLI {
                 let snapshot = try await UsageClient.fetch(credentials: credentials)
                 for window in snapshot.windows {
                     let percent = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), window.percent)
-                    print([profile.name, window.title, percent, window.resetsAt.map(formatter.string(from:)) ?? "unknown"].map(field).joined(separator: "\t"))
+                    print([profile.name, credentials.subscriptionPlan.displayName, window.title, percent, window.resetsAt.map(formatter.string(from:)) ?? "unknown"].map(field).joined(separator: "\t"))
                 }
             } catch {
                 failed = true
@@ -232,6 +263,7 @@ private struct ClaudockCLI {
       claudock profile login NAME
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
+      claudock auto [--profiles NAME,NAME] [-- CLAUDE_ARGS...]
       claudock usage
       claudock shell enable|disable|status
       claudock version
@@ -242,6 +274,9 @@ private struct ClaudockCLI {
     takes precedence; ambiguous display names require the selector from 'list'.
     Selectors are profile identifiers; they do not create shell commands.
     'run' and 'profile login' use the current terminal and working directory.
+    'auto' keeps the same Claude session and switches profiles on quota rejection
+    before output starts. Already streamed answers are never replayed. It uses
+    the default shared workspace; --profiles restricts the account pool.
     'usage' requests subscription quota once for each supported profile; output
     is tab-separated and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
