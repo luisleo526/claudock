@@ -11,7 +11,32 @@ final class LoopbackHTTPServerTests: XCTestCase {
         func append(_ request: LocalHTTPRequest) { requests.append(request) }
     }
 
+    private actor BearerStore {
+        var current = "fixture-oauth-before-rotation"
+        var candidates: [String] = []
+        func rotate(to value: String) { current = value }
+        func authorize(_ candidate: String) -> Bool {
+            candidates.append(candidate)
+            return candidate == current
+        }
+    }
+
+    private actor AuthorizationGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var opened = false
+        func wait() async {
+            if opened { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func open() { opened = true; continuation?.resume(); continuation = nil }
+    }
+
     private enum SocketFailure: Error { case open, connect, read }
+
+    // Models a synchronous credential backend inside the injected async closure.
+    private static func blockingCredentialRead(_ release: DispatchSemaphore) -> Bool {
+        release.wait(timeout: .now() + 3) == .success
+    }
 
     private func socket(port: UInt16) throws -> Int32 {
         let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
@@ -273,5 +298,254 @@ final class LoopbackHTTPServerTests: XCTestCase {
         server.stop()
         do { _ = try await server.start(); XCTFail("Expected stopped server") }
         catch { XCTAssertEqual(error as? LoopbackHTTPError, .stopped) }
+    }
+
+    func testDynamicAuthorizationUsesCurrentBearerAndRemovesCredentialHeaders() async throws {
+        let store = BearerStore(), recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { await store.authorize($0) }) { request, writer in
+            await recorder.append(request)
+            try? await writer.writeHead(status: 200)
+            try? await writer.write(Data("authorized".utf8))
+            try? await writer.finish()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let old = "fixture-oauth-before-rotation", new = "fixture-oauth-after-rotation"
+        let (_, before) = try await http(port: port, auth: old)
+        XCTAssertEqual(before.statusCode, 200)
+        await store.rotate(to: new)
+        let (rejection, stale) = try await http(port: port, auth: old)
+        XCTAssertEqual(stale.statusCode, 403)
+        XCTAssertEqual(String(decoding: rejection, as: UTF8.self),
+                       "Claudock could not verify the default Claude login. Unlock Keychain or restart claude-auto after signing in again.\n")
+        XCTAssertFalse(String(decoding: rejection, as: UTF8.self).contains(old))
+        let (_, after) = try await http(port: port, auth: new)
+        XCTAssertEqual(after.statusCode, 200)
+        let requests = await recorder.requests
+        XCTAssertEqual(requests.count, 2)
+        for request in requests {
+            XCTAssertNil(request.headers["authorization"])
+            XCTAssertNil(request.headers["x-api-key"])
+            XCTAssertEqual(request.body, Data("{}".utf8))
+        }
+        let candidates = await store.candidates
+        XCTAssertEqual(candidates, [old, old, new])
+    }
+
+    func testDynamicMalformedRequestsNeverInvokeAuthorizerOrHandler() async throws {
+        let store = BearerStore(), recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { await store.authorize($0) }) { request, writer in
+            await recorder.append(request); await writer.abort()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let bearer = "Authorization: Bearer fixture-oauth-before-rotation\r\n"
+        let host = "Host: 127.0.0.1:\(port)\r\n"
+        let variants: [(String, String, Int)] = [
+            ("/v1/messages", host + "Content-Length: 0\r\n", 401),
+            ("/v1/messages", host + "x-api-key: fixture-oauth-before-rotation\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + bearer + "x-api-key: fixture-oauth-before-rotation\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + bearer + "authorization: Bearer another\r\nContent-Length: 0\r\n", 400),
+            ("/v1/messages", host + "Authorization: Basic fixture\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + "Authorization: Bearer \r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + "Authorization: Bearer has space\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + "Authorization: Bearer has\ttab\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + "Authorization: Bearer " + String(repeating: "a", count: 16385) + "\r\nContent-Length: 0\r\n", 401),
+            ("/v1/messages", host + bearer + "Origin: http://example.com\r\nContent-Length: 0\r\n", 403),
+            ("/v1/messages", host + bearer + "Content-Length: 33554433\r\n", 413),
+            ("/v1/messages", host + bearer + "Transfer-Encoding: chunked\r\nContent-Length: 0\r\n", 400),
+            ("/v1/messages", host + bearer + "Content-Length: 0\r\nX-Large: " + String(repeating: "a", count: 32768) + "\r\n", 431),
+            ("/not-permitted", host + bearer + "Content-Length: 0\r\n", 404),
+            ("/v1/messages", "Host: example.com\r\n" + bearer + "Content-Length: 0\r\n", 400)
+        ]
+        for (target, headers, status) in variants {
+            let reply = try await raw(port: port, text: "POST \(target) HTTP/1.1\r\n" + headers + "\r\n")
+            XCTAssertTrue(reply.hasPrefix("HTTP/1.1 \(status) "), "Expected \(status), got \(reply.prefix(40))")
+            XCTAssertFalse(reply.contains("fixture-oauth"))
+        }
+        let candidates = await store.candidates, requests = await recorder.requests
+        XCTAssertTrue(candidates.isEmpty)
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testDynamicBearerLengthBoundary() async throws {
+        let store = BearerStore(), recorder = Recorder()
+        let maximumBearer = String(repeating: "a", count: 16_384)
+        await store.rotate(to: maximumBearer)
+        let server = LoopbackHTTPServer(authorizeBearer: { await store.authorize($0) }) { request, writer in
+            await recorder.append(request)
+            try? await writer.writeHead(status: 200); try? await writer.finish()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let (_, accepted) = try await http(port: port, auth: maximumBearer)
+        XCTAssertEqual(accepted.statusCode, 200)
+        let (_, rejected) = try await http(port: port, auth: maximumBearer + "a")
+        XCTAssertEqual(rejected.statusCode, 401)
+        let candidates = await store.candidates, requests = await recorder.requests
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates.first?.utf8.count, 16_384)
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testBlockingAuthorizerDoesNotBlockNetworkQueueOrRunHandlerBeforeAcceptance() async throws {
+        let started = expectation(description: "Authorizer started")
+        let release = DispatchSemaphore(value: 0), recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { _ in
+            started.fulfill()
+            return Self.blockingCredentialRead(release)
+        }) { request, writer in
+            await recorder.append(request)
+            try? await writer.writeHead(status: 200); try? await writer.finish()
+        }
+        defer { release.signal(); server.stop() }
+        let port = try await server.start()
+        let pending = Task { try await http(port: port, auth: "fixture-held-bearer") }
+        await fulfillment(of: [started], timeout: 2)
+        let requestsBefore = await recorder.requests
+        XCTAssertTrue(requestsBefore.isEmpty)
+        // This response requires the Network queue while authorizeBearer is blocked.
+        let reply = try await raw(port: port, text: "POST /not-permitted HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nContent-Length: 0\r\n\r\n")
+        XCTAssertTrue(reply.hasPrefix("HTTP/1.1 404 "))
+        release.signal()
+        let (_, response) = try await pending.value
+        XCTAssertEqual(response.statusCode, 200)
+        let requestsAfter = await recorder.requests
+        XCTAssertEqual(requestsAfter.count, 1)
+    }
+
+    func testAuthorizationTimeoutCancelsAuthorizerAndReleasesAdmissionSlot() async throws {
+        let cancelled = expectation(description: "Timed out authorizer cancelled")
+        let recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { candidate in
+            if candidate == "fixture-current" { return true }
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            catch is CancellationError { cancelled.fulfill() }
+            catch {}
+            return true
+        }, authorizationTimeout: 0.1, maximumConnections: 1) { request, writer in
+            await recorder.append(request)
+            try? await writer.writeHead(status: 200); try? await writer.finish()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let (_, timeout) = try await http(port: port, auth: "fixture-stalled")
+        XCTAssertEqual(timeout.statusCode, 408)
+        await fulfillment(of: [cancelled], timeout: 2)
+        let (_, next) = try await http(port: port, auth: "fixture-current")
+        XCTAssertEqual(next.statusCode, 200)
+        let requests = await recorder.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testUncooperativeAuthorizerCannotRetainSlotOrDispatchAfterTimeout() async throws {
+        let gate = AuthorizationGate(), recorder = Recorder()
+        let ended = expectation(description: "Late authorization returned")
+        let server = LoopbackHTTPServer(authorizeBearer: { candidate in
+            if candidate == "fixture-current" { return true }
+            await gate.wait() // Deliberately ignores cancellation.
+            ended.fulfill()
+            return true
+        }, authorizationTimeout: 0.1, maximumConnections: 1) { request, writer in
+            await recorder.append(request)
+            try? await writer.writeHead(status: 200); try? await writer.finish()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let (_, timeout) = try await http(port: port, auth: "fixture-stalled")
+        XCTAssertEqual(timeout.statusCode, 408)
+        let (_, next) = try await http(port: port, auth: "fixture-current")
+        XCTAssertEqual(next.statusCode, 200)
+        await gate.open()
+        await fulfillment(of: [ended], timeout: 2)
+        let requests = await recorder.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testDisconnectDuringIncompleteBodyCancelsPendingAuthorization() async throws {
+        let started = expectation(description: "Pending authorization started")
+        let cancelled = expectation(description: "Disconnected authorizer cancelled")
+        let recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { _ in
+            started.fulfill()
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            catch is CancellationError { cancelled.fulfill() }
+            catch {}
+            return true
+        }) { request, writer in await recorder.append(request); await writer.abort() }
+        defer { server.stop() }
+        let port = try await server.start(), fd = try socket(port: port)
+        let request = Data("POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nAuthorization: Bearer fixture-pending\r\nContent-Length: 1048576\r\n\r\nx".utf8)
+        let sent = request.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, $0.count, 0) }
+        XCTAssertEqual(sent, request.count)
+        await fulfillment(of: [started], timeout: 2)
+        close(fd)
+        await fulfillment(of: [cancelled], timeout: 2)
+        let requests = await recorder.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testServerStopCancelsPendingAuthorizationAfterCompleteBody() async throws {
+        let started = expectation(description: "Pending authorization started")
+        let cancelled = expectation(description: "Stopped authorizer cancelled")
+        let recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { _ in
+            started.fulfill()
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            catch is CancellationError { cancelled.fulfill() }
+            catch {}
+            return true
+        }) { request, writer in await recorder.append(request); await writer.abort() }
+        defer { server.stop() }
+        let port = try await server.start()
+        let pending = Task { try await http(port: port, auth: "fixture-pending") }
+        await fulfillment(of: [started], timeout: 2)
+        server.stop()
+        await fulfillment(of: [cancelled], timeout: 2)
+        _ = try? await pending.value
+        let requests = await recorder.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testClientCancellationAfterCompleteBodyCancelsPendingAuthorization() async throws {
+        let started = expectation(description: "Pending authorization started")
+        let cancelled = expectation(description: "Client cancelled authorizer")
+        let recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { _ in
+            started.fulfill()
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            catch is CancellationError { cancelled.fulfill() }
+            catch {}
+            return true
+        }) { request, writer in await recorder.append(request); await writer.abort() }
+        defer { server.stop() }
+        let port = try await server.start()
+        let pending = Task { try await http(port: port, auth: "fixture-pending") }
+        await fulfillment(of: [started], timeout: 2)
+        pending.cancel()
+        _ = try? await pending.value
+        await fulfillment(of: [cancelled], timeout: 2)
+        let requests = await recorder.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testBodyReceiveDeadlineRemainsActiveDuringAuthorization() async throws {
+        let cancelled = expectation(description: "Body deadline cancels authorizer")
+        let recorder = Recorder()
+        let server = LoopbackHTTPServer(authorizeBearer: { _ in
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            catch is CancellationError { cancelled.fulfill() }
+            catch {}
+            return true
+        }, receiveTimeout: 0.1, authorizationTimeout: 2) { request, writer in
+            await recorder.append(request); await writer.abort()
+        }
+        defer { server.stop() }
+        let port = try await server.start()
+        let reply = try await raw(port: port, text: "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nAuthorization: Bearer fixture-pending\r\nContent-Length: 10\r\n\r\nx")
+        XCTAssertTrue(reply.hasPrefix("HTTP/1.1 408 "))
+        await fulfillment(of: [cancelled], timeout: 2)
+        let requests = await recorder.requests
+        XCTAssertTrue(requests.isEmpty)
     }
 }

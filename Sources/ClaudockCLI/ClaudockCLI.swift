@@ -119,7 +119,7 @@ private struct ClaudockCLI {
     private static func execute(_ command: Command) async throws {
         switch command {
         case .help: print(help)
-        case .version: print("Claudock 1.5.1")
+        case .version: print("Claudock 1.5.2")
         case .list:
             let profiles = try ProfileStore.load()
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
@@ -277,7 +277,9 @@ private struct ClaudockCLI {
     'run' and 'profile login' use the current terminal and working directory.
     'auto' keeps the same Claude session and switches profiles on quota rejection
     before output starts. Already streamed answers are never replayed. It uses
-    the default shared workspace; --profiles restricts the account pool.
+    the default shared workspace; --profiles restricts the inference account pool.
+    Claude.ai connectors keep the normal default login when available. Otherwise
+    Auto starts in inference-only mode; --bare deliberately skips connectors.
     'usage' requests subscription quota once for each supported profile; output
     is tab-separated and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh

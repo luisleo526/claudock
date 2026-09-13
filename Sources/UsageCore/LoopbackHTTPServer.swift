@@ -21,21 +21,49 @@ public enum LoopbackHTTPError: Error, Equatable, Sendable {
 /// only 127.0.0.1 and never accepts browser-origin or unauthenticated requests.
 public final class LoopbackHTTPServer: @unchecked Sendable {
     public typealias Handler = @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void
+    public typealias BearerAuthorizer = @Sendable (String) async -> Bool
     private let state: LocalHTTPServerState
 
     public init(token: String, handler: @escaping Handler) {
-        state = LocalHTTPServerState(token: token, handler: handler, receiveTimeout: 30, maximumConnections: 32)
+        state = LocalHTTPServerState(authorization: .fixed(token), handler: handler, receiveTimeout: 30,
+                                     authorizationTimeout: 5, maximumConnections: 32)
+    }
+
+    /// Keeps the client's normal OAuth authentication intact. The authorizer runs
+    /// away from the Network queue and must cooperate with task cancellation.
+    /// A request is closed after five seconds even if the authorizer does not return.
+    public init(authorizeBearer: @escaping BearerAuthorizer, handler: @escaping Handler) {
+        state = LocalHTTPServerState(authorization: .dynamic(authorizeBearer), handler: handler,
+                                     receiveTimeout: 30, authorizationTimeout: 5, maximumConnections: 32)
     }
 
     // Test deadlines and admission without weakening the public defaults.
     init(token: String, receiveTimeout: TimeInterval, maximumConnections: Int = 32, handler: @escaping Handler) {
-        state = LocalHTTPServerState(token: token, handler: handler, receiveTimeout: receiveTimeout,
+        state = LocalHTTPServerState(authorization: .fixed(token), handler: handler, receiveTimeout: receiveTimeout,
+                                     authorizationTimeout: 5,
+                                     maximumConnections: maximumConnections)
+    }
+
+    init(authorizeBearer: @escaping BearerAuthorizer, receiveTimeout: TimeInterval = 30,
+         authorizationTimeout: TimeInterval, maximumConnections: Int = 32, handler: @escaping Handler) {
+        state = LocalHTTPServerState(authorization: .dynamic(authorizeBearer), handler: handler,
+                                     receiveTimeout: receiveTimeout, authorizationTimeout: authorizationTimeout,
                                      maximumConnections: maximumConnections)
     }
 
     deinit { state.stop() }
     public func start() async throws -> UInt16 { try await state.start() }
     public func stop() { state.stop() }
+}
+
+private enum LocalHTTPAuthorization: Sendable {
+    case token([UInt8])
+    case dynamic(LoopbackHTTPServer.BearerAuthorizer)
+
+    static func fixed(_ token: String) -> Self {
+        precondition(!token.isEmpty && token.utf8.count <= 4096 && token.utf8.allSatisfy { $0 > 32 && $0 < 127 })
+        return .token(Array(token.utf8))
+    }
 }
 
 /// Sends ordered chunks, awaiting Network.framework backpressure for every write.
@@ -131,9 +159,10 @@ public actor LocalHTTPResponseWriter {
 
 private final class LocalHTTPServerState: @unchecked Sendable {
     private let queue = DispatchQueue(label: "Claudock.loopback-http")
-    private let token: [UInt8]
+    private let authorization: LocalHTTPAuthorization
     private let handler: LoopbackHTTPServer.Handler
     private let receiveTimeout: TimeInterval
+    private let authorizationTimeout: TimeInterval
     private let maximumConnections: Int
     private var listener: NWListener?
     private var port: UInt16?
@@ -141,10 +170,11 @@ private final class LocalHTTPServerState: @unchecked Sendable {
     private var startContinuation: CheckedContinuation<UInt16, Error>?
     private var connections: [UUID: LocalHTTPConnection] = [:]
 
-    init(token: String, handler: @escaping LoopbackHTTPServer.Handler, receiveTimeout: TimeInterval, maximumConnections: Int) {
-        precondition(!token.isEmpty && token.utf8.count <= 4096 && token.utf8.allSatisfy { $0 > 32 && $0 < 127 })
-        self.token = Array(token.utf8); self.handler = handler
-        self.receiveTimeout = receiveTimeout; self.maximumConnections = maximumConnections
+    init(authorization: LocalHTTPAuthorization, handler: @escaping LoopbackHTTPServer.Handler,
+         receiveTimeout: TimeInterval, authorizationTimeout: TimeInterval, maximumConnections: Int) {
+        self.authorization = authorization; self.handler = handler
+        self.receiveTimeout = receiveTimeout; self.authorizationTimeout = authorizationTimeout
+        self.maximumConnections = maximumConnections
     }
 
     func start() async throws -> UInt16 {
@@ -178,7 +208,8 @@ private final class LocalHTTPServerState: @unchecked Sendable {
                               self.connections.count < self.maximumConnections else { connection.cancel(); return }
                         let id = UUID()
                         let context = LocalHTTPConnection(connection: connection, queue: self.queue, port: port,
-                                                          token: self.token, receiveTimeout: self.receiveTimeout,
+                                                          authorization: self.authorization, receiveTimeout: self.receiveTimeout,
+                                                          authorizationTimeout: self.authorizationTimeout,
                                                           handler: self.handler, closed: { [weak self] in self?.connections[id] = nil })
                         self.connections[id] = context
                         context.start()
@@ -207,21 +238,30 @@ private final class LocalHTTPConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let queue: DispatchQueue
     private let port: UInt16
-    private let token: [UInt8]
+    private let authorization: LocalHTTPAuthorization
     private let receiveTimeout: TimeInterval
+    private let authorizationTimeout: TimeInterval
     private let handler: LoopbackHTTPServer.Handler
     private let closed: () -> Void
     private var buffer = Data()
     private var parsed: (method: String, target: String, headers: [String: String], length: Int)?
     private var deadline: DispatchWorkItem?
+    private var authorizationDeadline: DispatchWorkItem?
+    private var authorizationTask: Task<Void, Never>?
+    private var authorizationStarted = false
+    private var authorized = false
+    private var receivePending = false
     private var handlerTask: Task<Void, Never>?
     private var dispatched = false
     private var closing = false
+    private var rejecting = false
 
-    init(connection: NWConnection, queue: DispatchQueue, port: UInt16, token: [UInt8], receiveTimeout: TimeInterval,
+    init(connection: NWConnection, queue: DispatchQueue, port: UInt16, authorization: LocalHTTPAuthorization,
+         receiveTimeout: TimeInterval, authorizationTimeout: TimeInterval,
          handler: @escaping LoopbackHTTPServer.Handler, closed: @escaping () -> Void) {
-        self.connection = connection; self.queue = queue; self.port = port; self.token = token
-        self.receiveTimeout = receiveTimeout; self.handler = handler; self.closed = closed
+        self.connection = connection; self.queue = queue; self.port = port; self.authorization = authorization
+        self.receiveTimeout = receiveTimeout; self.authorizationTimeout = authorizationTimeout
+        self.handler = handler; self.closed = closed
     }
 
     func start() {
@@ -244,23 +284,38 @@ private final class LocalHTTPConnection: @unchecked Sendable {
     func close(cancelHandler: Bool) {
         guard !closing else { return }
         closing = true; deadline?.cancel(); deadline = nil
+        authorizationDeadline?.cancel(); authorizationDeadline = nil
+        authorizationTask?.cancel(); authorizationTask = nil
         if cancelHandler { handlerTask?.cancel() }
         connection.stateUpdateHandler = nil
         connection.cancel(); closed()
     }
 
     private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
-            guard let self, !self.closing else { return }
+        guard !closing, !rejecting, !receivePending else { return }
+        receivePending = true
+        // Once the declared body is complete, read only one byte to detect EOF
+        // or forbidden pipelining while authorization/the handler is pending.
+        let maximumLength = dispatched ? 1 : min(65_536, parsed.map { max(1, $0.length - buffer.count + 1) } ?? 65_536)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { [weak self] data, _, complete, error in
+            guard let self else { return }
+            self.receivePending = false
+            guard !self.closing, !self.rejecting else { return }
+            if error != nil || complete { self.close(cancelHandler: true); return }
+            if self.dispatched {
+                if !(data?.isEmpty ?? true) { self.close(cancelHandler: true) }
+                else { self.receive() }
+                return
+            }
             if let data, !data.isEmpty { self.buffer.append(data) }
             if self.consume() { return }
-            if error != nil || complete { self.close(cancelHandler: true); return }
             self.receive()
         }
     }
 
     /// Returns true when this connection dispatched or rejected its single request.
     private func consume() -> Bool {
+        guard !closing, !rejecting, !dispatched else { return true }
         if parsed == nil {
             guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else {
                 if buffer.count > Self.headerLimit { reject(431); return true }
@@ -275,9 +330,15 @@ private final class LocalHTTPConnection: @unchecked Sendable {
         }
         guard let parsed else { return false }
         guard buffer.count <= parsed.length else { reject(400); return true }
+        if !authorizationStarted { beginAuthorization(headers: parsed.headers) }
+        guard authorized else { return false }
         guard buffer.count == parsed.length else { return false }
         dispatched = true; deadline?.cancel(); deadline = nil
-        let request = LocalHTTPRequest(method: parsed.method, target: parsed.target, headers: parsed.headers, body: buffer)
+        var headers = parsed.headers
+        if case .dynamic = authorization {
+            headers["authorization"] = nil; headers["x-api-key"] = nil
+        }
+        let request = LocalHTTPRequest(method: parsed.method, target: parsed.target, headers: headers, body: buffer)
         buffer = Data()
         let writer = LocalHTTPResponseWriter(connection: connection, closed: { [weak self] in
             guard let self else { return }
@@ -288,24 +349,51 @@ private final class LocalHTTPConnection: @unchecked Sendable {
             await handler(request, writer)
             await writer.completeHandler()
         }
-        watchDisconnect()
+        receive()
         return true
     }
 
-    private func watchDisconnect() {
-        // HTTP clients must keep their connection open while reading the response.
-        // Further bytes are pipelining; EOF/cancellation means there is no consumer.
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] data, _, complete, error in
-            guard let self, !self.closing else { return }
-            if error != nil || complete || !(data?.isEmpty ?? true) { self.close(cancelHandler: true) }
-            else { self.watchDisconnect() }
+    private func beginAuthorization(headers: [String: String]) {
+        authorizationStarted = true
+        guard case .dynamic(let authorize) = authorization else { authorized = true; return }
+        // parseHead has already validated the single, bounded Bearer value.
+        let bearer = String(headers["authorization"]!.dropFirst(7))
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self, !self.authorized, !self.closing, !self.rejecting else { return }
+            self.reject(408)
+        }
+        authorizationDeadline = deadline
+        queue.asyncAfter(deadline: .now() + authorizationTimeout, execute: deadline)
+        let queue = self.queue
+        authorizationTask = Task.detached { [weak self] in
+            guard !Task.isCancelled else { return }
+            let accepted = await authorize(bearer)
+            guard !Task.isCancelled else { return }
+            queue.async { [weak self] in
+                guard let self, !self.closing, !self.rejecting else { return }
+                self.authorizationDeadline?.cancel(); self.authorizationDeadline = nil
+                self.authorizationTask = nil
+                guard accepted else {
+                    self.reject(403, detail: "Claudock could not verify the default Claude login. Unlock Keychain or restart claude-auto after signing in again.")
+                    return
+                }
+                self.authorized = true
+                if !self.consume() { self.receive() }
+            }
         }
     }
 
-    private func reject(_ status: Int) {
-        guard !closing else { return }
+    private func reject(_ status: Int, detail: String? = nil) {
+        guard !closing, !rejecting else { return }
+        rejecting = true
         deadline?.cancel(); deadline = nil
-        let body = Data((statusReason(status) + "\n").utf8)
+        authorizationDeadline?.cancel(); authorizationDeadline = nil
+        authorizationTask?.cancel(); authorizationTask = nil
+        // A stalled reader must not keep an admission slot after rejection.
+        let closeDeadline = DispatchWorkItem { [weak self] in self?.close(cancelHandler: true) }
+        deadline = closeDeadline
+        queue.asyncAfter(deadline: .now() + 1, execute: closeDeadline)
+        let body = Data(((detail ?? statusReason(status)) + "\n").utf8)
         var response = Data("HTTP/1.1 \(status) \(statusReason(status))\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\n\r\n".utf8)
         response.append(body)
         // No request handler is invoked for protocol or authorization errors.
@@ -342,11 +430,17 @@ private final class LocalHTTPConnection: @unchecked Sendable {
             return String(value.dropFirst(7))
         }
         let apiKey = headers["x-api-key"]
-        let bearerOK = constantTimeEqual(bearer ?? "", token)
-        let apiKeyOK = constantTimeEqual(apiKey ?? "", token)
-        // If a client sends both credential forms, both must match this server.
-        guard (bearerOK || apiKeyOK), headers["authorization"] == nil || bearerOK,
-              apiKey == nil || apiKeyOK else { throw HTTPRejection(401) }
+        switch authorization {
+        case .token(let token):
+            let bearerOK = constantTimeEqual(bearer ?? "", token)
+            let apiKeyOK = constantTimeEqual(apiKey ?? "", token)
+            // If a client sends both credential forms, both must match this server.
+            guard (bearerOK || apiKeyOK), headers["authorization"] == nil || bearerOK,
+                  apiKey == nil || apiKeyOK else { throw HTTPRejection(401) }
+        case .dynamic:
+            guard apiKey == nil, let bearer, !bearer.isEmpty, bearer.utf8.count <= 16_384,
+                  bearer.utf8.allSatisfy({ $0 > 32 && $0 < 127 }) else { throw HTTPRejection(401) }
+        }
         let length: Int
         if let value = headers["content-length"] {
             guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }), let parsed = Int(value) else { throw HTTPRejection(400) }

@@ -21,18 +21,38 @@ enum BalancedSession {
         }
         let gateway = BalancedGateway(selectors: commands)
         try await gateway.prepare()
-        var random = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw MonitorError.invalidResponse }
-        let token = Data(random).base64EncodedString()
-        let server = LoopbackHTTPServer(token: token) { request, writer in await gateway.handle(request, writer: writer) }
+        // Native --bare deliberately skips OAuth and connectors. Otherwise keep
+        // the default Claude login active so its organization connectors load.
+        let bare = arguments.prefix(while: { $0 != "--" }).contains("--bare")
+        let connectors = bare ? nil : await ConnectorSession.defaultSession()
+        let server: LoopbackHTTPServer
+        var localToken: String?
+        if let connectors {
+            server = LoopbackHTTPServer(authorizeBearer: { await connectors.authorize($0) }) {
+                request, writer in await gateway.handle(request, writer: writer)
+            }
+        } else {
+            var random = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw MonitorError.invalidResponse }
+            let token = Data(random).base64EncodedString()
+            localToken = token
+            server = LoopbackHTTPServer(token: token) { request, writer in await gateway.handle(request, writer: writer) }
+        }
         let port = try await server.start()
         defer { server.stop() }
         let shared = Profile(command: "claude", configDirectory: NSHomeDirectory() + "/.claude")
         var environment = try LaunchCommand.environment(profile: shared)
         environment["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:\(port)"
-        environment["ANTHROPIC_AUTH_TOKEN"] = token
+        if let localToken { environment["ANTHROPIC_AUTH_TOKEN"] = localToken }
+        // Send local OAuth-authenticated requests directly to this listener even
+        // when a corporate proxy is required for ordinary external connections.
+        let proxyExclusions = [environment["NO_PROXY"], environment["no_proxy"], "127.0.0.1", "localhost"]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ",")
+        environment["NO_PROXY"] = proxyExclusions; environment["no_proxy"] = proxyExclusions
         environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-        FileHandle.standardError.write(Data("Claudock Auto · quota failover enabled · shared Claude workspace\n".utf8))
+        let mode = connectors != nil ? "claude.ai connectors use the default login" :
+            (bare ? "inference only (--bare skips connectors)" : "inference only (no usable default connector login)")
+        FileHandle.standardError.write(Data("Claudock Auto · quota failover enabled · shared Claude workspace · \(mode)\n".utf8))
         return try await child(executable: executable, arguments: arguments, environment: environment)
     }
 

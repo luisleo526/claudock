@@ -130,3 +130,9 @@ Profile discovery classifies explicit Vertex/Bedrock/Foundry selection using the
 ## Paste-first token setup
 
 `MintTokenView` separates direct token import from browser authorization. Direct import is the default and needs no existing OAuth metadata. Pasted opaque tokens carry manual provenance and optional expiry/identity metadata; browser-created credentials retain verified identity and server-reported expiry. Existing credential records remain readable. `InferenceCredential` accepts an imported token with unknown expiry without claiming it never expires; actual server rejection remains authoritative.
+
+## Auto connector anchor
+
+`ConnectorSession` pins the default account/organization at startup and authorizes local native OAuth requests without becoming a refresh client. `LoopbackHTTPServer` admits dynamic bearer requests through a detached, deadline-bound authorization phase, strips credentials, then calls the existing inference handler. `BalancedSession` sets only the local base URL in connector mode; `AccountPool` remains independent. Missing suitable OAuth or explicit bare mode selects the existing static-nonce inference-only transport. Credential rotation has a bounded one-token grace for requests already prepared by Claude; it never changes the anchor.
+
+Builds use a private SwiftPM scratch directory rather than placing its SQLite database in a potentially cloud-synced checkout. CLI integration fixtures also use the system temporary directory.

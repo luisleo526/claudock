@@ -27,13 +27,12 @@ if [ -e "$APP" ] || [ -L "$APP" ]; then
 fi
 
 cd "$ROOT"
-xcrun swift build -c release
-BINARY_DIR=$(xcrun swift build -c release --show-bin-path)
-mkdir -p "$ROOT/.build"
-# Sign outside the checkout so cloud-synced source folders cannot attach
-# Finder metadata to the bundle between cleanup and signature verification.
+# Keep SwiftPM's SQLite database and all generated files out of cloud-synced
+# source folders, which can invalidate an active build database or signature.
 STAGE=$(mktemp -d "${TMPDIR:-/private/tmp}/claudock-app.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
+xcrun swift build -c release --scratch-path "$STAGE/build"
+BINARY_DIR=$(xcrun swift build -c release --scratch-path "$STAGE/build" --show-bin-path)
 BUNDLE="$STAGE/Claudock.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BINARY_DIR/ClaudockApp" "$BUNDLE/Contents/MacOS/ClaudockApp"
@@ -57,8 +56,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Claudock</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.5.1</string>
-    <key>CFBundleVersion</key><string>9</string>
+    <key>CFBundleShortVersionString</key><string>1.5.2</string>
+    <key>CFBundleVersion</key><string>10</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -67,7 +66,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-xcrun swift -module-cache-path "$ROOT/.build/icon-module-cache" "$ROOT/scripts/make-icon.swift" "$STAGE/Claudock.iconset"
+xcrun swift -module-cache-path "$STAGE/icon-module-cache" "$ROOT/scripts/make-icon.swift" "$STAGE/Claudock.iconset"
 /usr/bin/iconutil -c icns "$STAGE/Claudock.iconset" -o "$BUNDLE/Contents/Resources/AppIcon.icns"
 /usr/bin/plutil -lint "$BUNDLE/Contents/Info.plist"
 

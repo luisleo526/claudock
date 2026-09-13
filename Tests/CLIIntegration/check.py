@@ -23,6 +23,9 @@ FIXTURES = Path(__file__).resolve().parent
 
 def check(base):
     environment = os.environ.copy()
+    # Proxy fixtures below are synthetic; never capture a user's proxy exclusions.
+    environment.pop("NO_PROXY", None)
+    environment.pop("no_proxy", None)
     if "DEVELOPER_DIR" not in environment and Path("/Applications/Xcode.app/Contents/Developer").is_dir():
         environment["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
 
@@ -49,7 +52,7 @@ print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": {
     if key in ALLOWED_KEYS
 }}))
 sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
-'''.replace("ALLOWED_KEYS", repr(cleared_keys + ["TEST_KEEP"])))
+'''.replace("ALLOWED_KEYS", repr(cleared_keys + ["TEST_KEEP", "NO_PROXY", "no_proxy"])))
     fake.chmod(0o700)
     marker = base / "store-marker"
     environment["CLAUDOCK_TEST_MARK"] = str(marker)
@@ -72,7 +75,7 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
         assert result.returncode == expected_status, (arguments, result.returncode, result.stderr)
         assert not marker.exists(), (arguments, "unexpected profile store access")
         if arguments in (["version"], ["--version"]):
-            assert result.stdout.strip() == "Claudock 1.5.1"
+            assert result.stdout.strip() == "Claudock 1.5.2"
         passed.append("parser " + repr(arguments))
 
     result = run(["shell", "profile-names"])
@@ -123,6 +126,20 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert len(value["env"]["ANTHROPIC_AUTH_TOKEN"]) == 44
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in value["env"] and "CLAUDE_CONFIG_DIR" not in value["env"]
     passed.append("auto child literal arguments shared workspace local endpoint and exit status")
+    assert "inference only" in result.stderr
+    result = run(["auto", "--profiles", "smoke", "--", *arguments], {**conflicts, "CLAUDOCK_TEST_CONNECTORS": "1", "NO_PROXY": "internal.example"})
+    assert result.returncode == 0, result.stderr
+    connected = json.loads(result.stdout)
+    assert connected["argv"] == arguments and connected["cwd"] == str(base)
+    assert connected["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345"
+    assert not any(key in connected["env"] for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"])
+    assert "internal.example" in connected["env"]["NO_PROXY"] and "127.0.0.1" in connected["env"]["NO_PROXY"]
+    assert connected["env"]["NO_PROXY"] == connected["env"]["no_proxy"]
+    assert "connectors use the default login" in result.stderr
+    passed.append("auto retains native default OAuth and connector identity even with a restricted inference pool")
+    result = run(["auto", "--", "--bare", "--version"], {**conflicts, "CLAUDOCK_TEST_CONNECTORS": "1"})
+    assert result.returncode == 0 and "ANTHROPIC_AUTH_TOKEN" in json.loads(result.stdout)["env"] and "--bare skips connectors" in result.stderr
+    passed.append("explicit bare mode retains usable inference-only authentication")
     pool_marker = base / "pool-selectors"
     result = run(["auto", "--profiles", "claude-smoke", "--", "--version"], {"CLAUDOCK_TEST_POOL_MARK": str(pool_marker)})
     assert result.returncode == 0 and pool_marker.read_text() == "claude-smoke", result.stderr
@@ -169,7 +186,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     result = subprocess.run([str(packaged_cli), "shell", "enable"], cwd=base,
                             env={**environment, "CLAUDOCK_TEST_SHELL_MARK": str(shell_marker)}, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert shell_marker.read_text() == str(packaged_cli.resolve())
+    # Foundation and Python spell /var versus /private/var differently on macOS.
+    # The selected executable must be the exact CLI file, never the GUI sibling.
+    assert os.path.samefile(shell_marker.read_text(), packaged_cli)
+    assert Path(shell_marker.read_text()).name == "claudock"
     passed.append("packaged shell enable selects CLI rather than GUI executable")
 
     result = run(["usage"])
@@ -188,8 +208,6 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
 
 
 if __name__ == "__main__":
-    build = PROJECT / ".build"
-    build.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="cli-integration-", dir=build) as temporary:
+    with tempfile.TemporaryDirectory(prefix="claudock-cli-integration-") as temporary:
         receipt = check(Path(temporary).resolve())
     print(json.dumps(receipt, indent=2))

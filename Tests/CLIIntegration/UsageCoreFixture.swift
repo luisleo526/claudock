@@ -18,8 +18,15 @@ public enum InferenceCredential {
 }
 public struct LocalHTTPRequest: Sendable {}
 public actor LocalHTTPResponseWriter {}
+public actor ConnectorSession {
+    public static func defaultSession() async -> ConnectorSession? {
+        ProcessInfo.processInfo.environment["CLAUDOCK_TEST_CONNECTORS"] == "1" ? ConnectorSession() : nil
+    }
+    public func authorize(_ bearer: String) async -> Bool { false }
+}
 public final class LoopbackHTTPServer: @unchecked Sendable {
     public init(token: String, handler: @escaping @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void) {}
+    public init(authorizeBearer: @escaping @Sendable (String) async -> Bool, handler: @escaping @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void) {}
     public func start() async throws -> UInt16 { 12345 }
     public func stop() {}
 }

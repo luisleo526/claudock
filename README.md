@@ -4,9 +4,9 @@
 
 **Your Claude accounts, one menu bar.** See Fable headroom, keep long-lived tokens in Keychain, and let Auto switch accounts when a quota runs out.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.5.1 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.5.2 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.1/Claudock-1.5.1-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.1).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.2).
 
 <details>
 <summary>Build from source</summary>
@@ -81,6 +81,8 @@ claudock auto --profiles work,personal -- --resume
 ```
 
 With zsh integration enabled, `claude-auto` behaves like your `claude-{slug}` commands and forwards normal Claude arguments unchanged. Auto starts Claude in your shared workspace. It prefers available headroom for the requested model, keeps a conversation on its current account, and tries another account after a quota or authentication rejection. **No Terminal restart. No lost local conversation.** You can also choose Auto from **Sessions → Continue as…**.
+
+**Claude.ai connectors stay on your default Claude login.** When that login has the required connector permissions, Auto preserves native OAuth for connector discovery and access while the inference pool can switch accounts. Minted pool tokens do not replace the connector login. If a usable default login is unavailable, or you pass `--bare`, Auto clearly starts in inference-only mode.
 
 Each Auto session owns a small authenticated loopback proxy that closes when Claude exits. It tries at most three profiles per request. Output streams as it arrives; once an answer has started, Auto never replays it or repeats its tool output. Requests referencing account-owned files or server-side containers must use their original named profile; Auto does not know those resources' owners. Independent Auto sessions do not share a central scheduler.
 

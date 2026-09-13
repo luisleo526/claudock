@@ -49,7 +49,8 @@ final class SubscriptionConfigurationTests: XCTestCase {
 
     func testEveryEnabledExternalProviderFlagIsRejectedInEitherFile() throws {
         for name in ["settings.json", "settings.local.json"] {
-            for flag in ["CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY"] {
+            for flag in ["CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY",
+                         "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE"] {
                 for value: Any in ["true", "1", "TRUE", " true ", true, 1] {
                     try fixture { root in
                         try write(["env": [flag: value]], root: root, name: name)
@@ -74,7 +75,11 @@ final class SubscriptionConfigurationTests: XCTestCase {
         for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
                     "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
                     "CLAUDE_CODE_OAUTH_CLIENT_ID", "CLAUDE_CODE_OAUTH_SCOPES", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID",
-                    "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_ORGANIZATION_ID"] {
+                    "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_ORGANIZATION_ID",
+                    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                    "CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR",
+                    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_BG_AUTH_SNAPSHOT_PATH",
+                    "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH", "ANTHROPIC_UNIX_SOCKET"] {
             try fixture { root in
                 try write(["env": [key: secret]], root: root)
                 assertUnsupported(root, forbiddenText: secret)

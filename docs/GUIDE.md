@@ -274,3 +274,13 @@ Quota monitoring still uses normal OAuth. A monitoring re-login warning does not
 ## Account plan badges
 
 Claudock reads `subscriptionType` and `rateLimitTier`, using the mappings verified in Claude Code 2.1.270. Max 5×, Max 20×, and Team Premium display distinct badges. Missing or unrecognized Max/Team subtypes remain **tier unknown**. A lower quota or an unfamiliar Team rate is not enough evidence to call a seat Standard.
+
+## Claude.ai connectors with Auto
+
+Auto preserves your default Claude.ai login for connectors while selecting inference accounts independently. Keep that default login signed in with its normal OAuth permissions; pasted inference tokens alone cannot load claude.ai connectors. Auto's startup line says whether it is using the default connector login or starting in inference-only mode.
+
+The warning about `ANTHROPIC_API_KEY or another auth source` in Auto 1.5.1 was caused by its local proxy auth override. Auto 1.5.2 removes that override when the default login supports connectors. Existing running sessions retain their launch environment: start a new `claude-auto` session, or resume the existing conversation with `--resume SESSION_ID --fork-session`.
+
+`--bare` intentionally skips native connectors and uses inference-only authentication. User-disabled connectors or inaccessible connector services are not overridden by Claudock. Changing which inference account is selected does not change the default account's connectors.
+
+In Auto, Claude's account-specific status/usage views describe its default login. Use Claudock to inspect limits across the inference pool.
