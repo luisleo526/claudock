@@ -90,7 +90,10 @@ final class ClaudeCredentialLockTests: XCTestCase {
             let lease = try await ClaudeCredentialLock.acquire(paths: [path], heartbeatInterval: 0.05)
             defer { lease.release() }
             let initial = try modificationTime(path)
-            try await Task.sleep(for: .milliseconds(160))
+            let heartbeatDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while try modificationTime(path) <= initial, ContinuousClock.now < heartbeatDeadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
             XCTAssertGreaterThan(try modificationTime(path), initial)
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: path), [])
             try lease.assertOwned()
