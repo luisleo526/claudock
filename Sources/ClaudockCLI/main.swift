@@ -22,7 +22,7 @@ private enum CLIError: LocalizedError {
 private enum Command {
     case help, version, list, importShell
     case add(String, String?), rename(String, String), remove(String), login(String), run(String, [String])
-    case usage, shellEnable, shellDisable, shellStatus
+    case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
 
     static func parse(_ arguments: [String]) throws -> Command {
         guard let first = arguments.first else { return .help }
@@ -56,6 +56,7 @@ private enum Command {
             case "enable": return .shellEnable
             case "disable": return .shellDisable
             case "status": return .shellStatus
+            case "profile-names": return .shellProfileNames
             default: break
             }
         }
@@ -98,7 +99,7 @@ private struct ClaudockCLI {
     private static func execute(_ command: Command) async throws {
         switch command {
         case .help: print(help)
-        case .version: print("Claudock 1.3.1")
+        case .version: print("Claudock 1.4.0")
         case .list:
             let profiles = try ProfileStore.load()
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
@@ -117,7 +118,7 @@ private struct ClaudockCLI {
             print("Renamed to \(renamed.name). Claude data and login were preserved.")
         case .remove(let name):
             try ProfileStore.remove(profile: resolve(name))
-            print("Removed \(name) from Claudock. Claude data, credentials, and existing shell wrappers were preserved.")
+            print("Removed \(name) from Claudock. Claude data, credentials, and your own shell commands were preserved.")
         case .login(let name):
             try launch(profile: resolve(name), arguments: ["auth", "login", "--claudeai"])
         case .run(let name, let arguments):
@@ -126,12 +127,16 @@ private struct ClaudockCLI {
             try await usage()
         case .shellEnable:
             try ShellIntegration.enable(cliPath: currentExecutable())
-            print("Claudock shell integration enabled. Open a new Terminal tab to use 'claudock'.")
+            print("Claudock shell integration enabled. Open a new Terminal tab to use 'claudock' and managed 'claude-NAME' shortcuts.")
         case .shellDisable:
             try ShellIntegration.disable()
             print("Claudock shell integration disabled. Open a new Terminal tab to unload it.")
         case .shellStatus:
             print(try ShellIntegration.status() ? "enabled" : "disabled")
+        case .shellProfileNames:
+            let names = try ProfileStore.shellProfileNames()
+            print("claudock-profile-names-v1")
+            for name in names { print(name) }
         }
     }
 
@@ -246,6 +251,7 @@ private struct ClaudockCLI {
       claudock profile add work
       claudock profile login work
       claudock run work
+      claude-work                    After enabling shell integration
       claudock run work -- --resume
     """
 }

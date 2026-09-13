@@ -11,6 +11,7 @@ public enum MonitorError: Error, LocalizedError {
 }
 
 public enum ProfileStore {
+    public static func shellProfileNames() throws -> [String] { ["claude-smoke"] }
     private static func markAccess() {
         if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MARK"] {
             _ = FileManager.default.createFile(atPath: path, contents: Data("store".utf8))

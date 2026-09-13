@@ -344,7 +344,8 @@ final class ProfileStoreTests: XCTestCase {
             }
             let attributes = try FileManager.default.attributesOfItem(atPath: registry(home).path)
             XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: added.configDirectory), [])
+            XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: added.configDirectory)), ["projects", "history.jsonl", "settings.json", "plugins", "skills", "agents", "commands", "hooks"])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: URL(fileURLWithPath: added.configDirectory).appendingPathComponent(".credentials.json").path))
         }
     }
 

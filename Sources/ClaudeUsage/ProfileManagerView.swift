@@ -36,7 +36,7 @@ struct ProfileManagerView: View {
                     }
                     if editing == nil {
                         HStack {
-                            Text(configPath.isEmpty ? "An isolated Claude folder will be created for this account" : configPath)
+                            Text(configPath.isEmpty ? "Shared sessions and settings, with a separate account login" : configPath)
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Button(configPath.isEmpty ? "Import folder…" : "Change…") { chooseFolder() }
@@ -66,7 +66,7 @@ struct ProfileManagerView: View {
                     }
                     Text(shellEnabled ? "The Claudock block is enabled in .zshrc. Open a new Terminal, or source ~/.config/claudock/init.zsh in an existing one." : "Optional. Enabling adds a labeled Claudock block to .zshrc and keeps your existing commands intact. The app works without it.")
                         .font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
-                    if let shellFailure { Text(shellFailure).font(.caption).foregroundStyle(.red) }
+                    if let message = shellFailure ?? store.shellIntegrationError { Text(message).font(.caption).foregroundStyle(.red) }
                 }.padding(8)
             }
             if let notice { Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -121,7 +121,7 @@ struct ProfileManagerView: View {
             .alert("Remove \(deleting?.name ?? "profile") from Claudock?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Remove profile", role: .destructive) { remove() }
-            } message: { Text("This removes the profile from Claudock's list. Existing shell commands, Claude conversations, config folder, and saved login will be kept.") }
+            } message: { Text("This removes the profile from Claudock's list. Claude conversations, config folder, saved login, and your own shell commands will be kept.") }
     }
     private func chooseFolder() {
         let picker = NSOpenPanel(); picker.canChooseDirectories = true; picker.canChooseFiles = false
@@ -189,6 +189,7 @@ struct ProfileManagerView: View {
                     else { try ShellIntegration.disable() }
                 }.value
                 await readShellStatus()
+                store.shellIntegrationError = nil
             } catch { shellFailure = error.localizedDescription }
             busy = false
         }

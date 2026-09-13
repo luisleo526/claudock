@@ -16,6 +16,18 @@ public enum ProfileStore {
         try withState(home: home) { state in state.profiles }
     }
 
+    /// Data-only input for the optional zsh adapter. Prompt hooks must not create
+    /// a registry, discover shell files, read credentials, or rewrite account state.
+    public static func shellProfileNames(home: String = NSHomeDirectory()) throws -> [String] {
+        let snapshot = try Snapshot(directory(home: home).appendingPathComponent("profiles.json"))
+        guard let data = snapshot.data else { return [] }
+        guard let state = try? JSONDecoder().decode(State.self, from: data) else { throw Failure.invalidManagedFiles }
+        try validate(state)
+        return sorted(state.profiles).filter {
+            $0.managed && !$0.isVertex && $0.discoveryNote == nil && $0.command != "claude"
+        }.map(\.command)
+    }
+
     /// Merge newly discovered wrappers without reintroducing removed/renamed profiles.
     /// Existing registry records are authoritative; same-name or same-credential-store imports are skipped.
     public static func importShellProfiles(home: String = NSHomeDirectory()) throws -> [Profile] {
@@ -148,28 +160,14 @@ public enum ProfileStore {
             let data = try encoder.encode(state) + Data("\n".utf8)
             guard data.count <= maximumBytes else { throw Failure.invalidManagedFiles }
             guard snapshot.unchanged() else { throw Failure.concurrentChange }
+            // Prepare shared sessions/settings before publishing the new profile.
+            // Explicit folder imports pass no createAccount and remain untouched.
+            let workspace = try createAccount.map { try SharedProfileWorkspace.prepare(accountParent: $0, home: home) }
+            defer { workspace?.rollback() }
+            try workspace?.validate()
+            guard snapshot.unchanged() else { throw Failure.concurrentChange }
             if data != snapshot.data { try atomicWrite(data, to: snapshot.url) }
-            if let parent = createAccount {
-                do {
-                    // Commit first, then create private config storage. If the process
-                    // stops between these steps, Claude can create the committed path.
-                    try ensurePrivateDirectory(parent.deletingLastPathComponent())
-                    guard mkdir(parent.path, 0o700) == 0 else { throw Failure.ioFailure }
-                    do {
-                        guard mkdir(parent.appendingPathComponent("claude").path, 0o700) == 0 else { throw Failure.ioFailure }
-                    } catch {
-                        _ = rmdir(parent.path)
-                        throw error
-                    }
-                } catch {
-                    // Never replace a newer edit while rolling back our registry write.
-                    if (try? Snapshot(snapshot.url).data) == data {
-                        if let previous = snapshot.data { try atomicWrite(previous, to: snapshot.url) }
-                        else if unlink(snapshot.url.path) != 0 { throw Failure.ioFailure }
-                    } else { throw Failure.concurrentChange }
-                    throw error
-                }
-            }
+            workspace?.commit()
             return result
         } catch let failure as Failure {
             throw failure

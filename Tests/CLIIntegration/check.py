@@ -61,15 +61,19 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["nonsense"], 2), (["run"], 2), (["run", "smoke", "--resume"], 2), (["profile", "add"], 2),
              (["profile", "add", "bad name"], 2), (["profile", "add", "work", "--directory", "relative"], 2),
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
-             (["shell", "enable", "extra"], 2), (["usage", "extra"], 2)]
+             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
         assert result.returncode == expected_status, (arguments, result.returncode, result.stderr)
         assert not marker.exists(), (arguments, "unexpected profile store access")
         if arguments in (["version"], ["--version"]):
-            assert result.stdout.strip() == "Claudock 1.3.1"
+            assert result.stdout.strip() == "Claudock 1.4.0"
         passed.append("parser " + repr(arguments))
+
+    result = run(["shell", "profile-names"])
+    assert result.returncode == 0 and result.stdout == "claudock-profile-names-v1\nclaude-smoke\n"
+    passed.append("data-only shell profile names protocol")
 
     # Synthetic inherited auth/provider values; never inspect or print real values.
     conflicts = dict.fromkeys(cleared_keys, "synthetic-conflict")

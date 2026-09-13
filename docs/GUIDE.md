@@ -1,6 +1,6 @@
 # Claudock user guide
 
-A native Mac menu bar app that puts your Claude Code accounts in one place. Check subscription limits, explore recorded token activity, continue a saved session with another profile, and manage profiles from one app-owned registry. Optional shell integration adds the `claudock` command while preserving the `claude-{profile}` wrappers you already use.
+A native Mac menu bar app that puts your Claude Code accounts in one place. Check subscription limits, explore recorded token activity, continue a saved session with another profile, and manage profiles from one app-owned registry. Optional shell integration adds `claudock` and missing `claude-{profile}` shortcuts while preserving the commands you already use.
 
 Built with SwiftUI and AppKit, with no third-party package dependencies. Requires macOS 14 or newer.
 
@@ -52,7 +52,7 @@ The **Overview** tab summarizes recorded activity across profile config folders 
 
 Recorded tokens are the sum of input, output, cache read, and cache creation counters in local Claude session logs. Reused context counts on each request, so the total is not a count of unique text. Cache reuse is cache-read tokens divided by input plus cache-read plus cache-write tokens. These figures describe local recorded activity; they do not measure account billing or subscription allowance.
 
-The scanner reads main session JSONL files under each profile's `projects` folder, plus direct subagent logs and recognized workflow logs under `<project>/<sessionUUID>/subagents/workflows/wf_*/`. It supports an explicitly shared or symlinked `projects` root. When multiple profiles point to the same history folder, the app scans it once and labels its totals **Shared history**. Claude's local logs do not provide a reliable account identifier, so shared history cannot be split accurately between those accounts.
+The scanner reads main session JSONL files under each profile's `projects` folder, plus direct subagent logs and recognized workflow logs under `<project>/<sessionUUID>/subagents/workflows/wf_*/`. It supports shared or symlinked `projects` roots. New profiles created by Claudock share the default `~/.claude` history. When multiple profiles point to the same history folder, the app scans it once and labels its totals **Shared history**. Claude's local logs do not provide a reliable account identifier, so shared history cannot be split accurately between those accounts.
 
 Per-profile totals are available when history folders are isolated. Duplicate message history across main, subagent, copied, and forked logs is counted once using message identifiers; attribution among isolated copies goes to the oldest local file copy. This is a local attribution heuristic, not proof of which account was originally billed. Deleted logs, other computers, unsupported records, and unrecognized log locations are outside the totals.
 
@@ -93,13 +93,15 @@ Claudock saves names and directory bindings in:
 ~/Library/Application Support/Claudock/accounts/<stable-id>/claude/
 ```
 
-New accounts receive a private, stable directory independent of their display name. Imported accounts keep their existing directory, including existing credentials and session history. Renaming never moves an account directory. Removing a profile only removes its Claudock registration; it preserves Claude conversations, settings, credentials, and original shell wrappers. The default account and Vertex profiles are protected from rename and removal.
+New accounts receive a private, stable config directory whose UUID does not depend on the display name. This keeps each account's login separate. The directory links its projects and history, plus common settings, plugins, and skills, to the default `~/.claude` setup. You can keep using the same conversations and preferences across accounts; changes to shared settings affect the profiles linked to them.
+
+Importing an explicit existing folder preserves its paths, credentials, history, and layout without adding these links. Renaming never moves an account directory. Removing a profile only removes its Claudock registration; it preserves Claude conversations, settings, credentials, and original shell wrappers. The default account and Vertex profiles are protected from rename and removal.
 
 When upgrading from Claude Usage, active shell declarations are imported, including the old `~/.config/claude-usage/profiles.zsh` when it is sourced by zsh. Legacy files remain intact; an orphaned old JSON registry with no active wrapper is not automatically imported, so use Import folder for those accounts. Claudock does not rewrite old generated wrappers or remove their source line. Existing external `claude-NAME` wrappers continue to be owned by their original shell configuration; renaming or removing a Claudock entry does not rewrite those commands.
 
 ### Optional shell integration
 
-Open **Manage profiles → Enable claudock in zsh** if you also want the `claudock` command in Terminal. Place the app in its final location first. Enabling creates `~/.config/claudock/init.zsh` and adds only this named loader block to `.zshrc`, with an exact backup before changing an existing shell file:
+Open **Manage profiles → Enable claudock in zsh** to install the `claudock` command and shortcuts such as `claude-work`. Place the app in its final location first. Enabling creates `~/.config/claudock/init.zsh` and adds only this named loader block to `.zshrc`, with an exact backup before changing an existing shell file:
 
 ```zsh
 # >>> Claudock shell integration >>>
@@ -107,18 +109,31 @@ Open **Manage profiles → Enable claudock in zsh** if you also want the `claudo
 # <<< Claudock shell integration <<<
 ```
 
-Open a new Terminal tab once to load it. The namespaced `claudock` function calls the CLI bundled inside the app; each invocation reads the current registry, so later profile changes take effect immediately without another shell reload. It does not override `claude` or existing `claude-NAME` wrappers. Disabling integration removes only Claudock's marked block and managed init file; existing shell code stays intact. Already-open shells retain loaded functions until you open a new tab.
+**First setup:** open a new Terminal tab to load the integration. It creates missing `claude-NAME` functions for available profiles. Existing aliases, functions, and executables keep their names; `claude` itself is preserved. When a name is already in use, select the account explicitly with `claudock run NAME`.
+
+**After upgrading to 1.4.0:** launch the updated app. It upgrades an enabled, unchanged Claudock-owned integration v1 to v2 without turning integration on for users who left it off. Upgrade failures appear in Manage profiles. An already-open Terminal still has its old function definitions: open a new tab, or run this once in each existing tab:
+
+```zsh
+source ~/.config/claudock/init.zsh
+```
+
+**Later profile changes:** once v2 is loaded, shortcuts synchronize when the file is sourced, before each prompt (`precmd`), and before the next entered command (`preexec`). A profile added through the GUI while Terminal is idle is available before you run your next command. Renamed or removed profiles clean up only generated functions whose bodies still match Claudock's recorded definitions; custom edits and other user commands remain intact. These updates change the running shell's functions, not `.zshrc`.
 
 ```sh
 claudock profile list
 claudock profile add work
 claudock profile login work
+claude-work
 claudock profile rename work office
-claudock run office
+claude-office
 claudock run office -- --resume
 claudock usage
 claudock profile remove office
 ```
+
+The namespaced command and generated shortcuts call the CLI bundled inside the app. Shortcuts forward the full profile selector, such as `claude-office`, so similarly named profiles remain distinct. The internal `claudock shell profile-names` helper reads the existing registry and emits selectors as data; it does not discover accounts, create or write the registry, access credentials, or make network requests.
+
+Disabling integration removes Claudock's marked loader block and managed integration files. Open a new Terminal tab afterward to unload its functions and hooks; already-open shells retain what they loaded. Existing user shell declarations remain unchanged.
 
 Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login` and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
 
@@ -137,6 +152,8 @@ function claudock() {
   command '/Applications/Claudock.app/Contents/MacOS/claudock' "$@"
 }
 ```
+
+This minimal manual setup provides only `claudock`. Use `claudock run NAME`, or define your own shortcuts through your dotfile manager.
 
 ## Privacy and permissions
 
@@ -159,9 +176,11 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | HTTP 429 / cooldown | Wait for the displayed retry time. Repeated refreshes will not bypass it. |
 | Unrecognized usage response | The upstream endpoint may have changed. Report the app version and message; do not attach credentials or raw responses. |
 | `claudock` is unavailable | Enable **Manage profiles → Enable claudock in zsh**, then open a new Terminal tab. If the app moved, enable integration again from its new location. |
+| Profile exists in the app, but `claude-work5` is not defined | Confirm integration is enabled. After upgrading, launch the new app and open a new tab or run `source ~/.config/claudock/init.zsh` once. Then try `claude-work5`; `claudock run work5` also works. |
+| A shortcut runs my original wrapper or executable | Existing commands take priority. Use `claudock run NAME` to select the Claudock profile explicitly. |
 | Token totals look larger than expected | Totals include cache reads/writes and count context reused on separate requests. They are not unique tokens, billed cost, or quota. |
 | Partial history | The bounded local scan skipped data. Select 7 days for a smaller window; totals remain a partial view. |
-| Tokens appear under Shared history | Multiple profiles use the same resolved `projects` folder. Its logs are counted once; account attribution is unavailable. |
+| Tokens appear under Shared history | New profiles share the default Claude history. Profiles with the same resolved `projects` folder contribute one set of logs; account attribution is unavailable. |
 | Continue as… is unavailable | The saved log has no usable project path. A project folder must exist to continue there. |
 | Claude rejects a resume file | Confirm your Claude version supports absolute JSONL paths with `--resume`; the app's compatibility check used 2.1.263. |
 | Launch at login needs approval | Check System Settings → General → Login Items & Extensions. |

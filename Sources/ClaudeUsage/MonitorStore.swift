@@ -37,6 +37,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     let isDemo = CommandLine.arguments.contains("--demo")
     @Published var accounts: [AccountState] = []
     @Published var profileError: String?
+    @Published var shellIntegrationError: String?
     @Published var refreshing = false
     @Published var now = Date()
     @Published var lastRefresh: Date?
@@ -91,6 +92,14 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var canRefresh: Bool { !refreshing && now >= manualRefreshAt }
 
     func start() {
+        if !isDemo {
+            Task {
+                do {
+                    _ = try await Task.detached(priority: .utility) { try ShellIntegration.upgradeIfEnabled() }.value
+                    shellIntegrationError = nil
+                } catch { shellIntegrationError = error.localizedDescription }
+            }
+        }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in

@@ -4,9 +4,9 @@
 
 **Your Claude accounts, one menu bar.** Track Fable limits, manage profiles, and explore local token activity.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.3.1/Claudock-1.3.1-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.3.1 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.4.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.3.1/Claudock-1.3.1-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.3.1/Claudock-1.3.1-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.3.1).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.4.0/Claudock-1.4.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.4.0).
 
 <details>
 <summary>Build from source</summary>
@@ -54,7 +54,7 @@ Open the profile you need with **Open in Terminal**, or use **Copy** for its lau
 
 ## Keep your accounts organized
 
-Add, import, rename, re-login, and remove profiles from **Manage profiles**. New accounts get isolated Claude folders; imported accounts keep their existing paths and logins.
+Add, import, rename, re-login, and remove profiles from **Manage profiles**. New profiles keep independent logins while sharing session history, settings, plugins, and skills with your default `~/.claude` setup. Imported folders keep their existing layout and logins.
 
 Renaming preserves account data. Removing a profile keeps its Claude folders, conversations, and credentials.
 
@@ -65,7 +65,7 @@ Renaming preserves account data. Removing a profile keeps its Claude folders, co
   <img src="docs/screenshots/profiles-light.png" width="620" alt="Claudock profile manager with account setup, re-login controls, and optional zsh integration, using synthetic profiles">
 </picture>
 
-*Synthetic demo with account actions disabled.*
+*Synthetic demo with account actions disabled; setup wording shown predates the shared-history default in 1.4.0.*
 
 ## See what your sessions used
 
@@ -76,7 +76,7 @@ Explore 7- or 30-day activity: input, output, cache reads, cache writes, and sub
   <img src="docs/screenshots/overview-light.png" width="620" alt="Claudock token activity dashboard with processed tokens, daily activity, cache reuse, and profile totals">
 </picture>
 
-Recorded tokens include reused context. They describe local activity, not billing or subscription allowance. Shared histories are counted once and labeled clearly; they cannot be reliably divided between accounts. The dashboard shows scan coverage and marks incomplete history.
+Recorded tokens include reused context. They describe local activity, not billing or subscription allowance. New profiles share history by default. Shared histories are counted once and labeled clearly; they cannot be reliably divided between accounts. The dashboard shows scan coverage and marks incomplete history.
 
 [How local tokens are counted](docs/GUIDE.md#local-token-activity)
 
@@ -107,11 +107,19 @@ In **Manage profiles**, turn on **Enable claudock in zsh**, then open a new Term
 claudock profile list
 claudock profile add work
 claudock profile login work
-claudock run work
+claude-work
 claudock usage
 ```
 
-Claudock adds one clearly marked loader block and keeps your existing `claude-*` commands intact. Profile changes take effect on the next `claudock` command. The GUI works without this integration.
+Integration adds the `claudock` command and missing shortcuts such as `claude-work`. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
+
+**If shell integration was already enabled:** open the updated Claudock app, then open a new Terminal tab or run this once in each existing tab:
+
+```zsh
+source ~/.config/claudock/init.zsh
+```
+
+Once the new integration is loaded, profiles added in the GUI become available before your next command, including in an idle Terminal tab. Renames and removals update only shortcuts still owned by Claudock. Profile changes never rewrite `.zshrc`, and the GUI works without shell integration.
 
 Automatic renewal runs in the resident app. The one-shot `claudock usage` command reads quota without rotating credentials.
 
