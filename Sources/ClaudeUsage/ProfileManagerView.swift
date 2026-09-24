@@ -99,51 +99,12 @@ struct ProfileManagerView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.accounts) { account in
-                        let _ = PerfProbe.count("manager.row")
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack {
-                                Text(account.profile.name).font(.system(.body, design: .monospaced)).fontWeight(.medium)
-                                    .lineLimit(1).truncationMode(.middle).help(account.profile.command)
-                                Text(account.profile.managed ? "MANAGED" : "IMPORTED").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                                Spacer()
-                                if !account.profile.isVertex && account.profile.discoveryNote == nil {
-                                    Button("Re-login") { login(account.profile) }.disabled(actionsUnavailable)
-                                        .accessibilityLabel("Re-login to \(account.profile.name)")
-                                        .help("Opens this profile’s Claude sign-in in Terminal")
-                                }
-                                if account.profile.command != "claude" && !account.profile.isVertex {
-                                    Button("Rename…") { beginRename(account.profile) }
-                                        .disabled(actionsUnavailable || account.profile.discoveryNote != nil)
-                                        .accessibilityLabel("Rename \(account.profile.name)")
-                                        .accessibilityIdentifier("renameProfile-\(account.id)")
-                                        .help("Change the profile name while keeping its login and shared workspace")
-                                    Button("Remove…", role: .destructive) { requestRemoval(account.profile) }
-                                        .disabled(actionsUnavailable)
-                                        .accessibilityLabel("Remove \(account.profile.name) from Claudock")
-                                        .accessibilityIdentifier("removeProfile-\(account.id)")
-                                        .help("Remove this registration. Shared history, settings, and the saved login are kept.")
-                                }
-                                Menu {
-                                    Button("Copy launch command") { copyCommand(account.profile) }
-                                    if !account.profile.configDirectory.isEmpty {
-                                        Button("Show config folder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: account.profile.configDirectory) }
-                                    }
-                                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                                    .disabled(actionsUnavailable).help("More actions for \(account.profile.name)")
-                            }.buttonStyle(.bordered).controlSize(.small)
-                            Text(account.profile.discoveryNote ?? account.profile.configDirectory).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
-                            HStack(spacing: 12) {
-                                Text(mintStatusDescription(account.profile)).font(.system(size: 10)).foregroundStyle(.secondary)
-                                    .accessibilityLabel(mintStatusDescription(account.profile))
-                                Spacer(minLength: 8)
-                                Button(mintButtonTitle(account.profile)) { beginMint(account.profile) }
-                                    .buttonStyle(.bordered).controlSize(.small)
-                                    .disabled(actionsUnavailable || account.profile.isVertex || account.profile.discoveryNote != nil)
-                                    .accessibilityIdentifier("mintToken-\(account.id)")
-                                    .accessibilityLabel("Set or replace inference token for \(account.profile.name)")
-                                    .help("Paste an existing inference token or create one in your browser")
-                            }
-                        }.padding(.vertical, 13)
+                        ProfileRow(profile: account.profile, tokenStatus: mintStatusDescription(account.profile),
+                                   tokenButton: mintButtonTitle(account.profile), actionsUnavailable: actionsUnavailable,
+                                   login: { login(account.profile) }, rename: { beginRename(account.profile) },
+                                   remove: { requestRemoval(account.profile) }, copy: { copyCommand(account.profile) },
+                                   setToken: { beginMint(account.profile) })
+                            .equatable()
                         Divider()
                     }
                 }
@@ -371,5 +332,73 @@ struct ProfileManagerView: View {
             } catch { failure = error.localizedDescription }
             busy = false
         }
+    }
+}
+
+/// One profile in Manage profiles. Inputs are plain values, compared by `==`, so sheet
+/// updates skip rows that did not change. The action closures are not compared; they
+/// only reach the sheet's state and the store, which stay the same objects.
+private struct ProfileRow: View, Equatable {
+    let profile: Profile
+    let tokenStatus: String
+    let tokenButton: String
+    let actionsUnavailable: Bool
+    let login: () -> Void
+    let rename: () -> Void
+    let remove: () -> Void
+    let copy: () -> Void
+    let setToken: () -> Void
+
+    static func == (lhs: ProfileRow, rhs: ProfileRow) -> Bool {
+        lhs.profile == rhs.profile && lhs.tokenStatus == rhs.tokenStatus && lhs.tokenButton == rhs.tokenButton
+            && lhs.actionsUnavailable == rhs.actionsUnavailable
+    }
+
+    var body: some View {
+        let _ = PerfProbe.count("manager.row")
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(profile.name).font(.system(.body, design: .monospaced)).fontWeight(.medium)
+                    .lineLimit(1).truncationMode(.middle).help(profile.command)
+                Text(profile.managed ? "MANAGED" : "IMPORTED").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                Spacer()
+                if !profile.isVertex && profile.discoveryNote == nil {
+                    Button("Re-login", action: login).disabled(actionsUnavailable)
+                        .accessibilityLabel("Re-login to \(profile.name)")
+                        .help("Opens this profile’s Claude sign-in in Terminal")
+                }
+                if profile.command != "claude" && !profile.isVertex {
+                    Button("Rename…", action: rename)
+                        .disabled(actionsUnavailable || profile.discoveryNote != nil)
+                        .accessibilityLabel("Rename \(profile.name)")
+                        .accessibilityIdentifier("renameProfile-\(profile.id)")
+                        .help("Change the profile name while keeping its login and shared workspace")
+                    Button("Remove…", role: .destructive, action: remove)
+                        .disabled(actionsUnavailable)
+                        .accessibilityLabel("Remove \(profile.name) from Claudock")
+                        .accessibilityIdentifier("removeProfile-\(profile.id)")
+                        .help("Remove this registration. Shared history, settings, and the saved login are kept.")
+                }
+                Menu {
+                    Button("Copy launch command", action: copy)
+                    if !profile.configDirectory.isEmpty {
+                        Button("Show config folder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: profile.configDirectory) }
+                    }
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                    .disabled(actionsUnavailable).help("More actions for \(profile.name)")
+            }.buttonStyle(.bordered).controlSize(.small)
+            Text(profile.discoveryNote ?? profile.configDirectory).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+            HStack(spacing: 12) {
+                Text(tokenStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .accessibilityLabel(tokenStatus)
+                Spacer(minLength: 8)
+                Button(tokenButton, action: setToken)
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(actionsUnavailable || profile.isVertex || profile.discoveryNote != nil)
+                    .accessibilityIdentifier("mintToken-\(profile.id)")
+                    .accessibilityLabel("Set or replace inference token for \(profile.name)")
+                    .help("Paste an existing inference token or create one in your browser")
+            }
+        }.padding(.vertical, 13)
     }
 }

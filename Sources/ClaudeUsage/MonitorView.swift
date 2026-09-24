@@ -102,7 +102,13 @@ struct MonitorView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(accounts) { account in
-                            accountRow(account)
+                            AccountRow(account: account, resetLabels: resetLabels(for: account), accentName: store.accentName,
+                                       isDemo: store.isDemo, compact: store.compact, showEmails: store.showEmails,
+                                       opening: openingProfile == account.id, openingAny: openingProfile != nil,
+                                       opened: openedProfile == account.id, copied: copied == account.id,
+                                       actionError: profileActionError?.id == account.id ? profileActionError?.message ?? "" : nil,
+                                       open: { openProfile(account.profile) }, copy: { copyCommand(account) })
+                                .equatable()
                             if account.id != accounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
                         }
                     }
@@ -180,7 +186,85 @@ struct MonitorView: View {
             }.buttonStyle(.plain).font(.system(size: 14)).foregroundStyle(muted).padding(.top, 9)
         }.padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 14)
     }
-    private func accountRow(_ account: AccountState) -> some View {
+    private func openProfile(_ profile: Profile) {
+        guard !store.isDemo, openingProfile == nil else { return }
+        openingProfile = profile.id
+        openedProfile = nil
+        profileActionError = nil
+        Task {
+            do {
+                try await TerminalLauncher.launch(profile: profile)
+                openedProfile = profile.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if openedProfile == profile.id { openedProfile = nil } }
+            } catch {
+                profileActionError = (profile.id, error.localizedDescription)
+            }
+            openingProfile = nil
+        }
+    }
+    private func copyCommand(_ account: AccountState) {
+        store.copyCommand(account.profile); copied = account.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if copied == account.id { copied = nil } }
+    }
+    /// Reset countdowns are computed here, against `store.now`, so a row only re-renders
+    /// when one of its labels actually changes.
+    private func resetLabels(for account: AccountState) -> [String: String] {
+        Dictionary(account.snapshot?.windows.map { ($0.id, resetLabel($0.resetsAt)) } ?? [], uniquingKeysWith: { first, _ in first })
+    }
+    private func resetLabel(_ date: Date?) -> String {
+        guard let date else { return "Reset time unavailable" }
+        let remaining = Int(date.timeIntervalSince(store.now))
+        if remaining <= 0 { return "Reset due · awaiting update" }
+        let days = remaining / 86_400; let hours = (remaining % 86_400) / 3600; let minutes = (remaining % 3600) / 60
+        if days > 0 { return "Resets in \(days)d \(hours)h" }
+        if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
+        return "Resets in \(max(1, minutes))m"
+    }
+    private var footer: some View {
+        HStack(spacing: 5) {
+            Button { showManager = true } label: { Label("Manage profiles", systemImage: "person.2") }
+                .buttonStyle(.plain).foregroundStyle(accent).accessibilityIdentifier("manageProfilesButton")
+            Spacer()
+            if store.isDemo { Text("DEMO").font(.system(size: 9, design: .monospaced)).foregroundStyle(accent) }
+            if store.refreshing { Text("Refreshing…") }
+            else if store.lastRefresh != nil {
+                Text("Next check in \(max(1, Int(ceil(store.nextRefresh.timeIntervalSince(store.now) / 60))))m")
+            } else { Text("Every \(store.refreshMinutes) minutes") }
+        }.font(.system(size: 10)).foregroundStyle(muted)
+            .padding(.horizontal, 24).padding(.vertical, 13)
+            .background(canvas)
+            .overlay(alignment: .top) { Rectangle().fill(ink.opacity(0.08)).frame(height: 1) }
+    }
+}
+
+/// One account in the Accounts list. Inputs are plain values, compared by `==`, so a
+/// parent update (a clock tick, another account's refresh) skips rows that did not
+/// change. The action closures are not compared; they only reach state and the store,
+/// which stay the same objects.
+private struct AccountRow: View, Equatable {
+    let account: AccountState
+    let resetLabels: [String: String]
+    /// Accent colors are read from preferences; the name makes a change re-render rows.
+    let accentName: String
+    let isDemo: Bool
+    let compact: Bool
+    let showEmails: Bool
+    let opening: Bool
+    let openingAny: Bool
+    let opened: Bool
+    let copied: Bool
+    let actionError: String?
+    let open: () -> Void
+    let copy: () -> Void
+
+    static func == (lhs: AccountRow, rhs: AccountRow) -> Bool {
+        lhs.account == rhs.account && lhs.resetLabels == rhs.resetLabels && lhs.accentName == rhs.accentName
+            && lhs.isDemo == rhs.isDemo && lhs.compact == rhs.compact && lhs.showEmails == rhs.showEmails
+            && lhs.opening == rhs.opening && lhs.openingAny == rhs.openingAny && lhs.opened == rhs.opened
+            && lhs.copied == rhs.copied && lhs.actionError == rhs.actionError
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             let _ = PerfProbe.count("monitor.row")
             HStack(alignment: .center) {
@@ -200,37 +284,34 @@ struct MonitorView: View {
                         .font(.system(size: 8, weight: .bold, design: .monospaced)).tracking(0.7).foregroundStyle(accent)
                 }
                 HStack(spacing: 8) {
-                    Button { openProfile(account.profile) } label: {
+                    Button(action: open) {
                         HStack(spacing: 5) {
-                            if openingProfile == account.id { ProgressView().controlSize(.mini) }
+                            if opening { ProgressView().controlSize(.mini) }
                             else { Image(systemName: "terminal") }
-                            Text(openingProfile == account.id ? "Opening…" : openedProfile == account.id ? "Opened Terminal" : "Open in Terminal")
+                            Text(opening ? "Opening…" : opened ? "Opened Terminal" : "Open in Terminal")
                         }
                         .font(.system(size: 11)).padding(.horizontal, 6).frame(minHeight: 28).contentShape(Rectangle())
                     }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(store.isDemo || openingProfile != nil || account.profile.isVertex || account.profile.discoveryNote != nil)
-                    .help(store.isDemo ? "Preview mode does not open real sessions" : account.profile.isVertex || account.profile.discoveryNote != nil ? "Copy this command and run it in zsh to preserve its custom setup" : "Open \(account.profile.command) in a new Terminal")
+                    .disabled(isDemo || openingAny || account.profile.isVertex || account.profile.discoveryNote != nil)
+                    .help(isDemo ? "Preview mode does not open real sessions" : account.profile.isVertex || account.profile.discoveryNote != nil ? "Copy this command and run it in zsh to preserve its custom setup" : "Open \(account.profile.command) in a new Terminal")
                     .accessibilityLabel("Open \(account.profile.command) in Terminal")
                     .accessibilityIdentifier("openProfile-\(account.id)")
-                    Button {
-                        store.copyCommand(account.profile); copied = account.id
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if copied == account.id { copied = nil } }
-                    } label: {
-                        Label(copied == account.id ? "Copied" : "Copy", systemImage: copied == account.id ? "checkmark" : "doc.on.doc")
+                    Button(action: copy) {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 11)).padding(.horizontal, 6).frame(minHeight: 28).contentShape(Rectangle())
                     }
-                    .buttonStyle(.bordered).controlSize(.small).foregroundStyle(copied == account.id ? accent : muted)
+                    .buttonStyle(.bordered).controlSize(.small).foregroundStyle(copied ? accent : muted)
                     .help(account.profile.discoveryNote == nil && !account.profile.isVertex ? "Copy a Claudock command for \(account.profile.name)" : "Copy \(account.profile.command) to clipboard")
-                    .accessibilityLabel(copied == account.id ? "Copied launch command for \(account.profile.name)" : "Copy launch command for \(account.profile.name)")
+                    .accessibilityLabel(copied ? "Copied launch command for \(account.profile.name)" : "Copy launch command for \(account.profile.name)")
                     .accessibilityIdentifier("copyProfile-\(account.id)")
                 }
             }
-            if profileActionError?.id == account.id {
-                Label(profileActionError?.message ?? "", systemImage: "exclamationmark.circle")
+            if let actionError {
+                Label(actionError, systemImage: "exclamationmark.circle")
                     .font(.system(size: 11)).foregroundStyle(accent).textSelection(.enabled)
             }
-            if store.showEmails, let email = account.email {
+            if showEmails, let email = account.email {
                 Text(email).font(.system(size: 11)).foregroundStyle(muted).textSelection(.enabled).padding(.top, -9)
             }
             if let snapshot = account.snapshot {
@@ -266,23 +347,7 @@ struct MonitorView: View {
                     }
                 }.font(.system(size: 11)).foregroundStyle(account.profile.isVertex ? muted : accent).lineSpacing(3)
             }
-        }.padding(.horizontal, 24).padding(.vertical, store.compact ? 12 : 16)
-    }
-    private func openProfile(_ profile: Profile) {
-        guard !store.isDemo, openingProfile == nil else { return }
-        openingProfile = profile.id
-        openedProfile = nil
-        profileActionError = nil
-        Task {
-            do {
-                try await TerminalLauncher.launch(profile: profile)
-                openedProfile = profile.id
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if openedProfile == profile.id { openedProfile = nil } }
-            } catch {
-                profileActionError = (profile.id, error.localizedDescription)
-            }
-            openingProfile = nil
-        }
+        }.padding(.horizontal, 24).padding(.vertical, compact ? 12 : 16)
     }
     private func meter(_ window: UsageWindow, stale: Bool, featured: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -295,18 +360,18 @@ struct MonitorView: View {
                     .foregroundStyle(stale ? muted : featured ? usageColor(window.percent) : ink)
             }
             progressBar(window, stale: stale, height: featured ? 6 : 4)
-            Text(resetLabel(window.resetsAt)).font(.system(size: 10)).foregroundStyle(muted)
+            Text(resetLabel(window)).font(.system(size: 10)).foregroundStyle(muted)
                 .help(window.resetsAt?.formatted(date: .complete, time: .standard) ?? "No reset time reported")
         }.frame(maxWidth: .infinity)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(window.title), \(Int(window.percent.rounded())) percent used. \(resetLabel(window.resetsAt)). \(stale ? "Stale reading." : "")")
+            .accessibilityLabel("\(window.title), \(Int(window.percent.rounded())) percent used. \(resetLabel(window)). \(stale ? "Stale reading." : "")")
     }
     private func compactMeter(_ window: UsageWindow, stale: Bool) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 9) {
                 Text(window.title).lineLimit(1).help(window.title)
                 Spacer(minLength: 4)
-                Text(resetLabel(window.resetsAt)).foregroundStyle(muted)
+                Text(resetLabel(window)).foregroundStyle(muted)
                     .help(window.resetsAt?.formatted(date: .complete, time: .standard) ?? "No reset time reported")
                 Text("\(Int(window.percent.rounded()))%").monospacedDigit()
                     .foregroundStyle(stale ? muted : usageColor(window.percent))
@@ -314,7 +379,7 @@ struct MonitorView: View {
             progressBar(window, stale: stale, height: 3)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(window.title), \(Int(window.percent.rounded())) percent used. \(resetLabel(window.resetsAt)). \(stale ? "Stale reading." : "")")
+        .accessibilityLabel("\(window.title), \(Int(window.percent.rounded())) percent used. \(resetLabel(window)). \(stale ? "Stale reading." : "")")
     }
     private func progressBar(_ window: UsageWindow, stale: Bool, height: CGFloat) -> some View {
         GeometryReader { proxy in
@@ -324,28 +389,7 @@ struct MonitorView: View {
             }
         }.frame(height: height)
     }
-    private func resetLabel(_ date: Date?) -> String {
-        guard let date else { return "Reset time unavailable" }
-        let remaining = Int(date.timeIntervalSince(store.now))
-        if remaining <= 0 { return "Reset due · awaiting update" }
-        let days = remaining / 86_400; let hours = (remaining % 86_400) / 3600; let minutes = (remaining % 3600) / 60
-        if days > 0 { return "Resets in \(days)d \(hours)h" }
-        if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
-        return "Resets in \(max(1, minutes))m"
-    }
-    private var footer: some View {
-        HStack(spacing: 5) {
-            Button { showManager = true } label: { Label("Manage profiles", systemImage: "person.2") }
-                .buttonStyle(.plain).foregroundStyle(accent).accessibilityIdentifier("manageProfilesButton")
-            Spacer()
-            if store.isDemo { Text("DEMO").font(.system(size: 9, design: .monospaced)).foregroundStyle(accent) }
-            if store.refreshing { Text("Refreshing…") }
-            else if store.lastRefresh != nil {
-                Text("Next check in \(max(1, Int(ceil(store.nextRefresh.timeIntervalSince(store.now) / 60))))m")
-            } else { Text("Every \(store.refreshMinutes) minutes") }
-        }.font(.system(size: 10)).foregroundStyle(muted)
-            .padding(.horizontal, 24).padding(.vertical, 13)
-            .background(canvas)
-            .overlay(alignment: .top) { Rectangle().fill(ink.opacity(0.08)).frame(height: 1) }
+    private func resetLabel(_ window: UsageWindow) -> String {
+        resetLabels[window.id] ?? "Reset time unavailable"
     }
 }

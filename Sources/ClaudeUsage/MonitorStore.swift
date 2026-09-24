@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import UsageCore
 
-struct AccountState: Identifiable {
+struct AccountState: Identifiable, Equatable {
     var id: String { profile.id }
     let profile: Profile
     var email: String?
