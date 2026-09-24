@@ -92,8 +92,8 @@ def analyze(log):
             marks.setdefault(record["name"], {})[record["phase"]] = record["t"]
             cpu.setdefault(record["name"], {})[record["phase"]] = record.get("cpu_ms", 0)
     frames = [r for r in records if r["type"] == "frame"]
-    source = "display" if len(frames) > 30 else "timer"
-    intervals = frames if source == "display" else [r for r in records if r["type"] == "tick"]
+    ticks = [r for r in records if r["type"] == "tick"]
+    fps = start.get("fps") or 60
     busy = [r for r in records if r["type"] == "busy"]
     counts = [r for r in records if r["type"] == "counts"]
 
@@ -111,14 +111,19 @@ def analyze(log):
             continue
         begin, end = span["begin"], span["end"]
         duration = max(end - begin, 1e-6)
-        inside = [r for r in intervals if begin < r["t"] <= end]
+        # The display link stops while the display sleeps (for example when the screen
+        # locks mid-run); such a phase falls back to the 60 Hz timer and says so.
+        inside = [r for r in frames if begin < r["t"] <= end]
+        source = "display"
+        if len(inside) < 0.5 * duration * fps:
+            inside, source = [r for r in ticks if begin < r["t"] <= end], "timer"
         values = [r["ms"] for r in inside]
         nominal = statistics.median([r.get("nominal", 1000 / 60) for r in inside]) if inside else 1000 / 60
         spans = [r for r in busy if begin < r["t"] <= end]
         stalls = [r["ms"] for r in spans]
         before, after = counts_at(begin), counts_at(end)
         phases[name] = {
-            "seconds": round(duration, 2), "frames": len(values), "nominal_ms": round(nominal, 2),
+            "source": source, "seconds": round(duration, 2), "frames": len(values), "nominal_ms": round(nominal, 2),
             "p50_ms": round(percentile(values, 0.50), 2), "p95_ms": round(percentile(values, 0.95), 2),
             "p99_ms": round(percentile(values, 0.99), 2), "max_ms": round(max(values, default=0), 2),
             "hitches": sum(1 for v in values if v > 1.5 * nominal),
@@ -132,26 +137,36 @@ def analyze(log):
             "cpu_ms": round(cpu[name]["end"] - cpu[name]["begin"], 1),
             "evaluations": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))},
         }
-    return {"source": source, "locked": start.get("locked"), "fps": start.get("fps"), "notes": notes, "phases": phases}
+    sources = {phase["source"] for phase in phases.values()}
+    return {"source": sources.pop() if len(sources) == 1 else "mixed", "locked": start.get("locked"), "fps": start.get("fps"),
+            "notes": notes, "phases": phases}
 
 
 def combine(runs):
+    """Best and median per metric, over runs whose frame source matches the majority."""
     combined = {}
     for name in PHASES:
         samples = [run["phases"][name] for run in runs if name in run["phases"]]
         if not samples:
             continue
+        sources = [sample["source"] for sample in samples]
+        majority = max(set(sources), key=sources.count)
+        if len(set(sources)) > 1:
+            print(f"warning: {name}: ignoring {len(samples) - sources.count(majority)} run(s) measured with a different frame source")
+        samples = [sample for sample in samples if sample["source"] == majority]
         best = {metric: min(sample[metric] for sample in samples) for metric in METRICS}
         median = {metric: statistics.median(sample[metric] for sample in samples) for metric in METRICS}
         keys = sorted({key for sample in samples for key in sample["evaluations"]})
         best["evaluations"] = {key: min(sample["evaluations"].get(key, 0) for sample in samples) for key in keys}
-        combined[name] = {"best": best, "median": median, "runs": len(samples)}
+        combined[name] = {"best": best, "median": median, "runs": len(samples), "source": majority}
     return combined
 
 
 def print_summary(summary):
     print(f"\nframe source: {summary['source']} ({summary['fps']} Hz screen, locked={summary['locked']}); "
           f"best of {summary['runs']} run(s); times in ms")
+    if any(phase["runs"] < summary["runs"] for phase in summary["phases"].values()):
+        print("(some phases use fewer runs; see warnings)")
     header = f"{'phase':<16}{'p50':>7}{'p95':>7}{'p99':>7}{'max':>8}{'hitch':>7}{'>50':>5}{'hitch/s':>9}" \
              f"{'stall':>8}{'cpu':>7}{'>16.7':>7}{'>50':>5}{'busy/s':>8}{'cpu/s':>7}{'cpu':>8}  evaluations"
     print(header)
@@ -171,6 +186,10 @@ def compare(before_path, after_path):
     print(f"{'phase':<16}{'metric':<22}{'before':>10}{'after':>10}{'change':>9}")
     for name in PHASES:
         if name not in before["phases"] or name not in after["phases"]:
+            continue
+        first_source, second_source = before["phases"][name].get("source"), after["phases"][name].get("source")
+        if first_source != second_source:
+            print(f"{name:<16}not comparable: frame source {first_source} vs {second_source}")
             continue
         first, second = before["phases"][name]["best"], after["phases"][name]["best"]
         rows = [(metric, first[metric], second[metric]) for metric in METRICS if metric in first and metric in second]
@@ -219,9 +238,11 @@ def main():
             runs[label].append(run)
             time.sleep(1)
     for label, results in runs.items():
+        phases = combine(results)
+        sources = {phase["source"] for phase in phases.values()}
         summary = {"profiles": arguments.profiles, "passes": arguments.passes, "runs": len(results), "app_arguments": app_arguments,
-                   "binary": str(builds[label]), "source": results[0]["source"],
-                   "fps": results[0]["fps"], "locked": results[0]["locked"], "phases": combine(results)}
+                   "binary": str(builds[label]), "source": sources.pop() if len(sources) == 1 else "mixed",
+                   "fps": results[0]["fps"], "locked": results[0]["locked"], "phases": phases}
         (out / label / "summary.json").write_text(json.dumps(summary, indent=2))
         if label:
             print(f"\n== {label}: {builds[label]}")
