@@ -48,14 +48,14 @@ def binary_path(build):
     return Path(bin_path) / "ClaudockApp"
 
 
-def run_once(binary, directory, profiles, passes, speed, timeout):
+def run_once(binary, directory, profiles, passes, speed, timeout, app_arguments):
     directory.mkdir(parents=True, exist_ok=True)
     log = directory / "perf.jsonl"
     environment = {**os.environ, "CLAUDOCK_PERF_LOG": str(log), "CLAUDOCK_PERF_SCENARIO": "scroll",
                    "CLAUDOCK_PERF_PASSES": str(passes), "CLAUDOCK_PERF_SPEED": str(speed),
                    "CLAUDOCK_PERF_SNAPSHOTS": str(directory)}
     with open(directory / "app.log", "w") as output:
-        process = subprocess.Popen([str(binary), "--demo", "--demo-profiles", str(profiles)], cwd=directory,
+        process = subprocess.Popen([str(binary), "--demo", "--demo-profiles", str(profiles), *app_arguments], cwd=directory,
                                    env=environment, stdout=output, stderr=subprocess.STDOUT)
         try:
             process.wait(timeout=timeout)
@@ -182,6 +182,7 @@ def main():
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--speed", type=float, default=2400, help="scroll speed in points per second")
     parser.add_argument("--timeout", type=float, default=240)
+    parser.add_argument("--sort-by-usage", action="store_true", help="enable Highest usage first for this run only")
     parser.add_argument("--out", type=Path, help="directory for logs, snapshots, and summary.json")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="print a table from two summary.json files")
@@ -192,18 +193,21 @@ def main():
     if sys.platform != "darwin":
         sys.exit("Claudock performance runs require macOS.")
     binary = binary_path(build=not arguments.skip_build)
+    # Settings passed as arguments apply to this process only; saved preferences are untouched.
+    app_arguments = ["-sortByUsage", "YES"] if arguments.sort_by_usage else []
     out = arguments.out or Path(tempfile.mkdtemp(prefix="claudock-perf-"))
     runs = []
     for index in range(arguments.runs):
         directory = out / f"run-{index + 1}"
         print(f"run {index + 1}/{arguments.runs}: {directory}", flush=True)
-        run = analyze(run_once(binary, directory, arguments.profiles, arguments.passes, arguments.speed, arguments.timeout))
+        run = analyze(run_once(binary, directory, arguments.profiles, arguments.passes, arguments.speed, arguments.timeout, app_arguments))
         if run["notes"] or len(run["phases"]) < len(PHASES):
             sys.exit(f"scenario incomplete: {run['notes'] or sorted(run['phases'])}")
         (directory / "analysis.json").write_text(json.dumps(run, indent=2))
         runs.append(run)
         time.sleep(1)
-    summary = {"profiles": arguments.profiles, "passes": arguments.passes, "runs": len(runs), "source": runs[0]["source"],
+    summary = {"profiles": arguments.profiles, "passes": arguments.passes, "runs": len(runs), "app_arguments": app_arguments,
+               "source": runs[0]["source"],
                "fps": runs[0]["fps"], "locked": runs[0]["locked"], "phases": combine(runs)}
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     print_summary(summary)
