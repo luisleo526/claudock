@@ -97,11 +97,13 @@ struct MonitorView: View {
                     Text(store.profileError == nil ? "Loading your profiles…" : "Profile settings need attention. Open Manage profiles for details.").foregroundStyle(muted)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Sort once per update; each row used to re-sort to find the last one.
+                let accounts = store.sortedAccounts
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(store.sortedAccounts) { account in
+                        ForEach(accounts) { account in
                             accountRow(account)
-                            if account.id != store.sortedAccounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
+                            if account.id != accounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
                         }
                     }
                 }
