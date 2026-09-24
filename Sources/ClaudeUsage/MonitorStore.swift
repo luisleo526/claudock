@@ -176,7 +176,8 @@ func readAccount(_ profile: Profile) async -> AccountReading {
         let profiles = accounts.map(\.profile)
         guard !profiles.isEmpty else { return }
         if analyticsBusy { if force { analyticsPending = true }; return }
-        if !force, profiles == analyticsProfiles, let updated = analyticsUpdatedAt, Date().timeIntervalSince(updated) < 300 { return }
+        // A full scan of a multi-gigabyte history costs about a minute of CPU; automatic refreshes reuse it for 30 minutes.
+        if !force, profiles == analyticsProfiles, let updated = analyticsUpdatedAt, Date().timeIntervalSince(updated) < 1800 { return }
         let days = analyticsDays
         let since = Calendar.current.date(byAdding: .day, value: -(analyticsDays - 1), to: Calendar.current.startOfDay(for: Date())) ?? Date()
         let scanDate = Date()
