@@ -13,7 +13,12 @@ probe's 60 Hz main-run-loop timer (for example while the screen is locked).
 
     scripts/perf-scroll.py                      # build, one run, print a summary
     scripts/perf-scroll.py --runs 3 --out DIR   # best of three, keep logs and snapshots
+    scripts/perf-scroll.py --ab BEFORE_BIN AFTER_BIN --runs 3 --out DIR
+                                                # alternate two builds run by run, then compare
     scripts/perf-scroll.py --compare before/summary.json after/summary.json
+
+Machine load drifts between batches of runs; --ab interleaves the builds so drift
+affects both equally.
 """
 
 import argparse
@@ -186,6 +191,8 @@ def main():
     parser.add_argument("--sort-by-usage", action="store_true", help="enable Highest usage first for this run only")
     parser.add_argument("--out", type=Path, help="directory for logs, snapshots, and summary.json")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--binary", type=Path, help="run this ClaudockApp build instead of building the checkout")
+    parser.add_argument("--ab", nargs=2, type=Path, metavar=("BEFORE", "AFTER"), help="alternate two ClaudockApp builds")
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="print a table from two summary.json files")
     arguments = parser.parse_args()
     if arguments.compare:
@@ -193,25 +200,35 @@ def main():
         return
     if sys.platform != "darwin":
         sys.exit("Claudock performance runs require macOS.")
-    binary = binary_path(build=not arguments.skip_build)
+    if arguments.ab:
+        builds = {"before": arguments.ab[0], "after": arguments.ab[1]}
+    else:
+        builds = {"": arguments.binary or binary_path(build=not arguments.skip_build)}
     # Settings passed as arguments apply to this process only; saved preferences are untouched.
     app_arguments = ["-sortByUsage", "YES"] if arguments.sort_by_usage else []
     out = arguments.out or Path(tempfile.mkdtemp(prefix="claudock-perf-"))
-    runs = []
+    runs = {label: [] for label in builds}
     for index in range(arguments.runs):
-        directory = out / f"run-{index + 1}"
-        print(f"run {index + 1}/{arguments.runs}: {directory}", flush=True)
-        run = analyze(run_once(binary, directory, arguments.profiles, arguments.passes, arguments.speed, arguments.timeout, app_arguments))
-        if run["notes"] or len(run["phases"]) < len(PHASES):
-            sys.exit(f"scenario incomplete: {run['notes'] or sorted(run['phases'])}")
-        (directory / "analysis.json").write_text(json.dumps(run, indent=2))
-        runs.append(run)
-        time.sleep(1)
-    summary = {"profiles": arguments.profiles, "passes": arguments.passes, "runs": len(runs), "app_arguments": app_arguments,
-               "source": runs[0]["source"],
-               "fps": runs[0]["fps"], "locked": runs[0]["locked"], "phases": combine(runs)}
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    print_summary(summary)
+        for label, binary in builds.items():
+            directory = out / label / f"run-{index + 1}"
+            print(f"run {index + 1}/{arguments.runs} {label}: {directory}", flush=True)
+            run = analyze(run_once(binary, directory, arguments.profiles, arguments.passes, arguments.speed, arguments.timeout, app_arguments))
+            if run["notes"] or len(run["phases"]) < len(PHASES):
+                sys.exit(f"scenario incomplete: {run['notes'] or sorted(run['phases'])}")
+            (directory / "analysis.json").write_text(json.dumps(run, indent=2))
+            runs[label].append(run)
+            time.sleep(1)
+    for label, results in runs.items():
+        summary = {"profiles": arguments.profiles, "passes": arguments.passes, "runs": len(results), "app_arguments": app_arguments,
+                   "binary": str(builds[label]), "source": results[0]["source"],
+                   "fps": results[0]["fps"], "locked": results[0]["locked"], "phases": combine(results)}
+        (out / label / "summary.json").write_text(json.dumps(summary, indent=2))
+        if label:
+            print(f"\n== {label}: {builds[label]}")
+        print_summary(summary)
+    if arguments.ab:
+        print()
+        compare(out / "before" / "summary.json", out / "after" / "summary.json")
     print(f"\nlogs, snapshots, and summary.json: {out}")
 
 
