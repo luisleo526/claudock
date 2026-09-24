@@ -219,7 +219,7 @@ public enum SessionAnalytics {
                 if files.count >= maximumFiles || entries > maximumDirectoryEntries || timedOut() {
                     truncated = true; break collection
                 }
-                if let file = nextFile(cursor) { files.append(file) }
+                if let file = autoreleasepool(invoking: { nextFile(cursor) }) { files.append(file) }
             }
         }
         // Also interleave reads, prioritizing recent sessions within each independent root.
@@ -322,38 +322,45 @@ public enum SessionAnalytics {
                 } else { truncated = true }
             }
             do {
+                // Each chunk and its parsed records are autoreleased Foundation objects. This runs
+                // on a thread whose pool drains only when the whole scan ends, so drain per chunk;
+                // otherwise a multi-gigabyte history leaves hundreds of megabytes of dirty memory.
                 while fileBytes < initialSize && totalBytes < maximumTotalBytes && !timedOut() {
-                    let capacity = min(262_144, initialSize - fileBytes, maximumTotalBytes - totalBytes)
-                    let chunk = try handle.read(upToCount: capacity) ?? Data()
-                    scannedCommands.insert(files[index].profile)
-                    guard !chunk.isEmpty else { break }
-                    fileBytes += chunk.count; totalBytes += chunk.count
-                    // libc scans bytes in bulk; generic Data collection iteration is expensive
-                    // when real histories contain several gigabytes of progress/tool records.
-                    chunk.withUnsafeBytes { raw in
-                        guard let bytes = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                        var start = 0
-                        while start < raw.count {
-                            let newline = memchr(bytes.advanced(by: start), 10, raw.count - start)
-                            let end = newline.map { Int(bitPattern: $0) - Int(bitPattern: bytes) } ?? raw.count
-                            if !skippingLongLine {
-                                if line.count + end - start <= maximumLineBytes {
-                                    line.append(bytes.advanced(by: start), count: end - start)
-                                } else { truncated = true; line.removeAll(keepingCapacity: true); skippingLongLine = true }
+                    let more = try autoreleasepool { () throws -> Bool in
+                        let capacity = min(262_144, initialSize - fileBytes, maximumTotalBytes - totalBytes)
+                        let chunk = try handle.read(upToCount: capacity) ?? Data()
+                        scannedCommands.insert(files[index].profile)
+                        guard !chunk.isEmpty else { return false }
+                        fileBytes += chunk.count; totalBytes += chunk.count
+                        // libc scans bytes in bulk; generic Data collection iteration is expensive
+                        // when real histories contain several gigabytes of progress/tool records.
+                        chunk.withUnsafeBytes { raw in
+                            guard let bytes = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                            var start = 0
+                            while start < raw.count {
+                                let newline = memchr(bytes.advanced(by: start), 10, raw.count - start)
+                                let end = newline.map { Int(bitPattern: $0) - Int(bitPattern: bytes) } ?? raw.count
+                                if !skippingLongLine {
+                                    if line.count + end - start <= maximumLineBytes {
+                                        line.append(bytes.advanced(by: start), count: end - start)
+                                    } else { truncated = true; line.removeAll(keepingCapacity: true); skippingLongLine = true }
+                                }
+                                if newline != nil {
+                                    if !skippingLongLine { consume(line) }
+                                    line.removeAll(keepingCapacity: true); skippingLongLine = false
+                                    start = end + 1
+                                } else { break }
                             }
-                            if newline != nil {
-                                if !skippingLongLine { consume(line) }
-                                line.removeAll(keepingCapacity: true); skippingLongLine = false
-                                start = end + 1
-                            } else { break }
                         }
+                        return true
                     }
+                    if !more { break }
                 }
                 if fileBytes < initialSize { truncated = true }
                 else {
                     scannedFiles += 1
                     scannedCommands.insert(files[index].profile)
-                    if !skippingLongLine { consume(line, isTail: true) }
+                    if !skippingLongLine { autoreleasepool { consume(line, isTail: true) } }
                 }
             } catch { truncated = true }
         }
