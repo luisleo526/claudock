@@ -144,7 +144,6 @@ struct ProfileManagerView: View {
                                     .help("Paste an existing inference token or create one in your browser")
                             }
                         }.padding(.vertical, 13)
-                            .task(id: account.profile) { await readMintStatus(account.profile) }
                         Divider()
                     }
                 }
@@ -153,6 +152,7 @@ struct ProfileManagerView: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
         }.padding(24).frame(width: 650, height: 730)
             .task { await readShellStatus() }
+            .task(id: mintStatusProfiles) { await readMintStatuses(mintStatusProfiles) }
             .interactiveDismissDisabled(busy)
             .sheet(item: $minting, onDismiss: {
                 if let profile = lastMintedProfile { Task { await readMintStatus(profile) } }
@@ -195,6 +195,9 @@ struct ProfileManagerView: View {
             return "Pasted token · expiry unknown · account unverified"
         }
     }
+    private var mintStatusProfiles: [Profile] {
+        store.accounts.map(\.profile).filter { !$0.isVertex && $0.discoveryNote == nil }
+    }
     private func readMintStatus(_ profile: Profile) async {
         guard !profile.isVertex, profile.discoveryNote == nil else { return }
         let isDemo = store.isDemo
@@ -212,6 +215,48 @@ struct ProfileManagerView: View {
                   store.accounts.contains(where: { $0.profile == profile }) else { return }
             unavailableMintStatuses.insert(profile.id)
         }
+    }
+    /// Reads every listed profile's status once per sheet opening or profile change,
+    /// off the main actor and at most four at a time (each read may start a `security`
+    /// process). Results are published together, at most every 100 ms, so rows do not
+    /// re-render the sheet one by one and a slow read does not hold back the others.
+    /// A newer single-profile read (after the token sheet closes) wins for that profile.
+    private func readMintStatuses(_ profiles: [Profile]) async {
+        guard !profiles.isEmpty else { return }
+        let isDemo = store.isDemo
+        let request = UUID()
+        var requests = mintStatusRequests
+        for profile in profiles { requests[profile.id] = request }
+        mintStatusRequests = requests
+        await withTaskGroup(of: (Profile, MintTokenStatus?).self) { group in
+            var pending = profiles.makeIterator()
+            func readNext() {
+                guard let profile = pending.next() else { return }
+                group.addTask(priority: .utility) {
+                    (profile, try? isDemo ? DemoData.mintStatus(profile: profile) : MintTokenStore.status(profile: profile))
+                }
+            }
+            for _ in 0..<4 { readNext() }
+            var ready: [(Profile, MintTokenStatus?)] = []
+            var published = ContinuousClock.now
+            while let result = await group.next() {
+                ready.append(result)
+                readNext()
+                guard group.isEmpty || published.duration(to: .now) >= .milliseconds(100) else { continue }
+                publishMintStatuses(ready, request: request)
+                ready.removeAll(); published = .now
+            }
+        }
+    }
+    private func publishMintStatuses(_ results: [(Profile, MintTokenStatus?)], request: UUID) {
+        guard !Task.isCancelled else { return }
+        let current = Set(store.accounts.map(\.profile))
+        var statuses = mintStatuses, unavailable = unavailableMintStatuses
+        for (profile, status) in results where mintStatusRequests[profile.id] == request && current.contains(profile) {
+            if let status { statuses[profile.id] = status; unavailable.remove(profile.id) }
+            else { unavailable.insert(profile.id) }
+        }
+        mintStatuses = statuses; unavailableMintStatuses = unavailable
     }
     private func beginRename(_ profile: Profile) {
         guard !actionsUnavailable, profile.command != "claude", !profile.isVertex, profile.discoveryNote == nil else { return }
