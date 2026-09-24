@@ -32,6 +32,7 @@ struct ProfileManagerView: View {
     }
 
     var body: some View {
+        let _ = PerfProbe.count("manager.body")
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -98,6 +99,7 @@ struct ProfileManagerView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.accounts) { account in
+                        let _ = PerfProbe.count("manager.row")
                         VStack(alignment: .leading, spacing: 7) {
                             HStack {
                                 Text(account.profile.name).font(.system(.body, design: .monospaced)).fontWeight(.medium)
@@ -194,11 +196,14 @@ struct ProfileManagerView: View {
         }
     }
     private func readMintStatus(_ profile: Profile) async {
-        guard !store.isDemo, !profile.isVertex, profile.discoveryNote == nil else { return }
+        guard !profile.isVertex, profile.discoveryNote == nil else { return }
+        let isDemo = store.isDemo
         let request = UUID()
         mintStatusRequests[profile.id] = request
         do {
-            let status = try await Task.detached(priority: .utility) { try MintTokenStore.status(profile: profile) }.value
+            let status = try await Task.detached(priority: .utility) {
+                isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile)
+            }.value
             guard !Task.isCancelled, mintStatusRequests[profile.id] == request,
                   store.accounts.contains(where: { $0.profile == profile }) else { return }
             mintStatuses[profile.id] = status; unavailableMintStatuses.remove(profile.id)

@@ -52,6 +52,7 @@ struct MonitorView: View {
     @State private var showWelcome = !CommandLine.arguments.contains("--demo") && !UserDefaults.standard.bool(forKey: "onboardingComplete")
 
     var body: some View {
+        let _ = PerfProbe.count("monitor.body")
         VStack(spacing: 0) {
             header
             Picker("View", selection: $tab) {
@@ -179,6 +180,7 @@ struct MonitorView: View {
     }
     private func accountRow(_ account: AccountState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            let _ = PerfProbe.count("monitor.row")
             HStack(alignment: .center) {
                 Text(account.profile.name).font(.system(size: 15, weight: .semibold))
                     .lineLimit(1).truncationMode(.middle).help(account.profile.command)

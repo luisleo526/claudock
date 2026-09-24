@@ -35,6 +35,13 @@ func readAccount(_ profile: Profile) async -> AccountReading {
 
 @MainActor final class MonitorStore: ObservableObject {
     let isDemo = CommandLine.arguments.contains("--demo")
+    /// `--demo --demo-profiles N` previews a larger synthetic collection (default 4).
+    let demoProfileCount: Int = {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--demo-profiles"), arguments.indices.contains(index + 1),
+              let count = Int(arguments[index + 1]) else { return DemoData.profiles.count }
+        return min(max(count, 1), 200)
+    }()
     @Published var accounts: [AccountState] = []
     @Published var profileError: String?
     @Published var shellIntegrationError: String?
@@ -114,7 +121,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     }
     func refresh(manual: Bool = false) {
         if isDemo {
-            accounts = DemoData.profiles.enumerated().map { index, profile in
+            accounts = DemoData.profiles(count: demoProfileCount).enumerated().map { index, profile in
                 AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4], snapshot: DemoData.usage(index: index))
             }
             now = Date(); lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)

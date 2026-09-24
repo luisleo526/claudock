@@ -8,6 +8,7 @@ import SwiftUI
     private var dashboard: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        PerfProbe.start()
         NSApp.setActivationPolicy(.accessory)
         ApplicationMenu.install()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
