@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import UsageCore
 
 /// Opt-in scroll-performance probe. Set `CLAUDOCK_PERF_LOG=/path/perf.jsonl` (or pass
 /// `--perf-log /path/perf.jsonl`) to record frame intervals, long main run-loop busy
@@ -15,6 +16,16 @@ enum PerfProbe {
     @MainActor static func start() {
         if let path, PerfRecorder.shared == nil { PerfRecorder.shared = PerfRecorder(path: path) }
         if let scenario { PerfScenario.run(scenario) }
+        // CLAUDOCK_PERF_REAL_ANALYTICS=1: keep running the real, read-only local-log scan of the
+        // registered profiles in the background, as a refresh does, while the demo UI is measured.
+        if ProcessInfo.processInfo.environment["CLAUDOCK_PERF_REAL_ANALYTICS"] == "1" {
+            Task.detached(priority: .utility) {
+                while true {
+                    let since = Calendar.current.date(byAdding: .day, value: -6, to: Calendar.current.startOfDay(for: Date())) ?? Date()
+                    _ = SessionAnalytics.scan(profiles: (try? ProfileStore.load()) ?? [], since: since)
+                }
+            }
+        }
     }
 
     /// Counts view-body and row evaluations; call as `let _ = PerfProbe.count("name")`.
