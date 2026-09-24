@@ -28,10 +28,10 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-PHASES = ["accounts-idle", "accounts-scroll", "manager-open", "manager-scroll"]
+PHASES = ["launch", "accounts-idle", "accounts-scroll", "manager-open", "manager-scroll"]
 # Lower is better for every reported metric.
 METRICS = ["p50_ms", "p95_ms", "p99_ms", "max_ms", "hitches", "over_50ms", "hitch_ms_per_s",
-           "stall_max_ms", "stall_cpu_max_ms", "stalls_over_16_7ms", "stalls_over_50ms", "busy_ms_per_s", "cpu_ms_per_s"]
+           "stall_max_ms", "stall_cpu_max_ms", "stalls_over_16_7ms", "stalls_over_50ms", "busy_ms_per_s", "cpu_ms_per_s", "cpu_ms"]
 
 
 # Match scripts/build-app.sh: prefer a full Xcode toolchain when one is installed.
@@ -124,6 +124,7 @@ def analyze(log):
             "stalls_over_16_7ms": sum(1 for v in stalls if v > 16.7), "stalls_over_50ms": sum(1 for v in stalls if v > 50),
             "busy_ms_per_s": round(sum(stalls) / duration, 1),
             "cpu_ms_per_s": round((cpu[name]["end"] - cpu[name]["begin"]) / duration, 1),
+            "cpu_ms": round(cpu[name]["end"] - cpu[name]["begin"], 1),
             "evaluations": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))},
         }
     return {"source": source, "locked": start.get("locked"), "fps": start.get("fps"), "notes": notes, "phases": phases}
@@ -147,7 +148,7 @@ def print_summary(summary):
     print(f"\nframe source: {summary['source']} ({summary['fps']} Hz screen, locked={summary['locked']}); "
           f"best of {summary['runs']} run(s); times in ms")
     header = f"{'phase':<16}{'p50':>7}{'p95':>7}{'p99':>7}{'max':>8}{'hitch':>7}{'>50':>5}{'hitch/s':>9}" \
-             f"{'stall':>8}{'cpu':>7}{'>16.7':>7}{'>50':>5}{'busy/s':>8}{'cpu/s':>7}  evaluations"
+             f"{'stall':>8}{'cpu':>7}{'>16.7':>7}{'>50':>5}{'busy/s':>8}{'cpu/s':>7}{'cpu':>8}  evaluations"
     print(header)
     for name, phase in summary["phases"].items():
         best = phase["best"]
@@ -155,9 +156,9 @@ def print_summary(summary):
         print(f"{name:<16}{best['p50_ms']:>7.1f}{best['p95_ms']:>7.1f}{best['p99_ms']:>7.1f}{best['max_ms']:>8.1f}"
               f"{best['hitches']:>7}{best['over_50ms']:>5}{best['hitch_ms_per_s']:>9.1f}{best['stall_max_ms']:>8.1f}"
               f"{best['stall_cpu_max_ms']:>7.1f}{best['stalls_over_16_7ms']:>7}{best['stalls_over_50ms']:>5}"
-              f"{best['busy_ms_per_s']:>8.1f}{best['cpu_ms_per_s']:>7.1f}  {evaluations}")
+              f"{best['busy_ms_per_s']:>8.1f}{best['cpu_ms_per_s']:>7.1f}{best['cpu_ms']:>8.0f}  {evaluations}")
     print("hitch = frame interval > 1.5x nominal; stall = longest uninterrupted main run-loop span (wall, then its CPU); "
-          "busy/s = main-thread wall ms per second in spans >= 4 ms; cpu/s = main-thread CPU ms per second")
+          "busy/s = main-thread wall ms per second in spans >= 4 ms; cpu/s, cpu = main-thread CPU per second and in total")
 
 
 def compare(before_path, after_path):
@@ -167,7 +168,7 @@ def compare(before_path, after_path):
         if name not in before["phases"] or name not in after["phases"]:
             continue
         first, second = before["phases"][name]["best"], after["phases"][name]["best"]
-        rows = [(metric, first[metric], second[metric]) for metric in METRICS]
+        rows = [(metric, first[metric], second[metric]) for metric in METRICS if metric in first and metric in second]
         rows += [(key, first["evaluations"].get(key, 0), second["evaluations"].get(key, 0))
                  for key in sorted(set(first["evaluations"]) | set(second["evaluations"]))]
         for metric, old, new in rows:

@@ -95,6 +95,7 @@ enum PerfProbe {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { PerfRecorder.shared?.finish() }
         }
+        mark("launch", "begin")
     }
 
     func count(_ name: String) {
@@ -208,7 +209,9 @@ enum PerfProbe {
         guard let dashboard = await wait(timeout: 15, { NSApp.windows.first { $0.isVisible && !$0.isSheet && $0.title == "Claudock" } }) else {
             recorder?.note("dashboard window did not appear"); return
         }
-        await sleep(2)
+        await sleep(1.5)
+        recorder?.mark("launch", "end")
+        await sleep(0.5)
         // Snapshots are taken outside measured phases; rendering one blocks the main thread.
         snapshot(dashboard, name: "accounts")
         await sleep(0.5)
