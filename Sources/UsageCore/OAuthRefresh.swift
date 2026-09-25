@@ -76,7 +76,7 @@ enum OAuthRefreshHTTP {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Claudock/1.5.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("Claudock/1.5.3", forHTTPHeaderField: "User-Agent")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "grant_type": "refresh_token", "refresh_token": token,
             "client_id": credentials.clientID ?? clientID, "scope": credentials.scopes.joined(separator: " ")

@@ -75,7 +75,7 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
         assert result.returncode == expected_status, (arguments, result.returncode, result.stderr)
         assert not marker.exists(), (arguments, "unexpected profile store access")
         if arguments in (["version"], ["--version"]):
-            assert result.stdout.strip() == "Claudock 1.5.2"
+            assert result.stdout.strip() == "Claudock 1.5.3"
         passed.append("parser " + repr(arguments))
 
     result = run(["shell", "profile-names"])

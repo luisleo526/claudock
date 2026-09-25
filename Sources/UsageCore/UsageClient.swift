@@ -35,7 +35,7 @@ public enum UsageClient {
         request.setValue("Bearer " + credentials.accessToken, forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Claudock/1.5.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("Claudock/1.5.3", forHTTPHeaderField: "User-Agent")
         let data: Data; let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
         catch { throw MonitorError.network }

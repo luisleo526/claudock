@@ -4,9 +4,9 @@
 
 **Your Claude accounts, one menu bar.** See Fable headroom, keep long-lived tokens in Keychain, and let Auto switch accounts when a quota runs out.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.5.2 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.5.3 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.2/Claudock-1.5.2-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.2).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.3).
 
 <details>
 <summary>Build from source</summary>
