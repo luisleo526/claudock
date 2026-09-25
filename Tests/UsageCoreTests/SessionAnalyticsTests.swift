@@ -407,6 +407,74 @@ final class SessionAnalyticsTests: XCTestCase {
         }
     }
 
+    /// Each step compares a scan that reuses one persisted cache with a scan from scratch.
+    func testIncrementalScanMatchesFullScanThroughAppendsRewritesReplacementsAndDeletes() throws {
+        try fixture { root in
+            let p = profile("one", root: root)
+            let cacheURL = root.appendingPathComponent("cache/analytics-v1.bin")
+            var cache = SessionAnalyticsCache(url: cacheURL)
+            let since = now.addingTimeInterval(-7 * 86_400)
+            func check(_ step: String, since period: Date? = nil, file: StaticString = #filePath, line: UInt = #line) {
+                let full = SessionAnalytics.scan(profiles: [p], since: period ?? since, now: now)
+                let incremental = SessionAnalytics.scan(profiles: [p], since: period ?? since, now: now, cache: cache)
+                XCTAssertEqual(incremental, full, step, file: file, line: line)
+            }
+            func append(_ text: String, to url: URL) throws {
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.seekToEnd(); try handle.write(contentsOf: Data(text.utf8)); try handle.close()
+                try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+            }
+            let a = try write([try assistant("shared", usage: ["input_tokens": 10], timestamp: "2026-09-08T10:00:00Z"),
+                               try assistant("a1", usage: ["output_tokens": 5], timestamp: "2026-08-20T10:00:00Z")],
+                              profile: p, session: sessionA, created: now.addingTimeInterval(-7_200))
+            // The same message copied into a second file counts once, owned by the older copy.
+            let b = try write([try assistant("shared", usage: ["input_tokens": 12], timestamp: "2026-09-08T10:00:00Z")],
+                              profile: p, session: sessionB, created: now.addingTimeInterval(-3_600))
+            check("initial files")
+            check("unchanged files, warm cache")
+            XCTAssertLessThan(cache.lastReadBytes, 1_024, "an unchanged history is not read again")
+            try append(try assistant("a2", usage: ["input_tokens": 7], timestamp: "2026-09-07T10:00:00Z") + "\n", to: a)
+            check("appended line")
+            let partial = try assistant("b2", usage: ["output_tokens": 9], timestamp: "2026-09-08T11:00:00Z")
+            try append(String(partial.prefix(40)), to: b)
+            check("unfinished final line")
+            try append(String(partial.dropFirst(40)), to: b)
+            check("completed final line without a newline")
+            try append("\n", to: b)
+            check("final line terminated")
+            try append("{not json}\n", to: b)
+            check("invalid complete line")
+            let handle = try FileHandle(forWritingTo: a)
+            try handle.truncate(atOffset: 0); try handle.write(contentsOf: Data((try assistant("a3", usage: ["input_tokens": 3]) + "\n").utf8)); try handle.close()
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: a.path)
+            check("file rewritten in place")
+            try write([try assistant("b3", usage: ["input_tokens": 4])], profile: p, session: sessionB, created: now.addingTimeInterval(-600))
+            check("file replaced with a new inode")
+            try FileManager.default.removeItem(at: a)
+            check("file deleted")
+            try write([try assistant("c1", usage: ["cache_read_input_tokens": 40], timestamp: "2026-08-01T10:00:00Z"),
+                       try assistant("b3", usage: ["input_tokens": 6])],
+                      profile: p, session: "33333333-3333-4333-8333-333333333333")
+            check("new file")
+            check("longer period", since: now.addingTimeInterval(-60 * 86_400))
+            check("period that excludes older records", since: now.addingTimeInterval(-3_600))
+            cache = SessionAnalyticsCache(url: cacheURL)
+            check("cache reloaded from disk")
+            XCTAssertLessThan(cache.lastReadBytes, 1_024)
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: cacheURL.path)[.posixPermissions] as? Int, 0o600)
+            try Data("not a cache".utf8).write(to: cacheURL)
+            cache = SessionAnalyticsCache(url: cacheURL)
+            check("corrupt cache file is rebuilt")
+        }
+    }
+
+    func testCachedRecordsRoundTrip() {
+        let records = [SessionAnalyticsCache.Record(flags: 9, time: 12.5, tokens: TokenTotals(input: 1, output: Int64.max), identity: "message:é"),
+                       SessionAnalyticsCache.Record(flags: 1, time: 0, tokens: TokenTotals(), identity: nil)]
+        XCTAssertEqual(SessionAnalyticsCache.unpack(SessionAnalyticsCache.pack(records)), records)
+        XCTAssertNil(SessionAnalyticsCache.unpack(Data([1, 2, 3])))
+    }
+
     func testUnfinishedLiveTailDoesNotInvalidateCompleteUsageRecords() throws {
         try fixture { root in
             let p = profile("one", root: root)

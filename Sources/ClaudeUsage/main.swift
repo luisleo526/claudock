@@ -25,9 +25,12 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
             var through = Date()
             if let text = option("--through"), let date = UsageSnapshot.parseDate(text) { through = date }
             let fixed = through
+            // --incremental reuses a scan cache (--cache PATH, default: the app's cache file).
+            let cache = args.contains("--incremental")
+                ? SessionAnalyticsCache(url: option("--cache").map { URL(fileURLWithPath: $0) } ?? SessionAnalyticsCache.defaultURL) : nil
             for run in 1...repeats {
                 let meter = ScanMeter()
-                let result = await Task.detached { SessionAnalytics.scan(profiles: profiles, since: since, now: fixed) }.value
+                let result = await Task.detached { SessionAnalytics.scan(profiles: profiles, since: since, now: fixed, cache: cache) }.value
                 let usage = meter.finish()
                 if run == 1 {
                     print("Recorded local tokens: \(result.totals.total); sessions: \(result.sessions.count); partial: \(result.truncated); files: \(result.scannedFiles)/\(result.eligibleFiles); bytes: \(result.scannedBytes)")
@@ -38,8 +41,11 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
                     var dump = ""
                     Swift.dump(result, to: &dump)
                     let hash = SHA256.hash(data: Data(dump.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-                    print(String(format: "scan %d (%d days): wall %.2f s, cpu %.2f s, peak footprint %.0f MB, max RSS %.0f MB, snapshot %@",
-                                 run, days, usage.wall, usage.cpu, usage.peakFootprintMB, usage.maxRSSMB, hash))
+                    let read = cache.map { String(format: ", read %.1f MB", Double($0.lastReadBytes) / 1_048_576) } ?? ""
+                    let size = (cache?.url).flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }
+                        .map { String(format: ", cache file %.1f MB", Double($0) / 1_048_576) } ?? ""
+                    print(String(format: "scan %d (%d days): wall %.2f s, cpu %.2f s, peak footprint %.0f MB, max RSS %.0f MB%@%@, snapshot %@",
+                                 run, days, usage.wall, usage.cpu, usage.peakFootprintMB, usage.maxRSSMB, read, size, hash))
                 }
             }
             exit(0)

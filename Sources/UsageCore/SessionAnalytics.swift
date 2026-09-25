@@ -124,7 +124,8 @@ public enum SessionAnalytics {
     }
 
     // A frozen upper bound supports reproducible audits while active sessions keep writing.
-    public static func scan(profiles: [Profile], since: Date, now: Date) -> AnalyticsSnapshot {
+    // With a cache, unchanged log prefixes are not read again; results are the same as a full scan.
+    public static func scan(profiles: [Profile], since: Date, now: Date, cache: SessionAnalyticsCache? = nil) -> AnalyticsSnapshot {
         let started = ProcessInfo.processInfo.systemUptime
         var truncated = false
         var files: [File] = []
@@ -247,8 +248,83 @@ public enum SessionAnalytics {
         var scannedCommands = Set<String>()
         var scannedFiles = 0
         var totalBytes = 0
+        var readBytes: Int64 = 0
+        let cached = cache?.takeEntries() ?? [:]
+        var kept: [String: SessionAnalyticsCache.Entry] = [:]
+        var cacheChanged = false
         let usageKey = Data("\"usage\"".utf8)
         let unicodeEscape = Data("\\u".utf8)
+        typealias Record = SessionAnalyticsCache.Record
+        struct FileState {
+            var project: String?
+            var parseFailure = false
+            var longLine = false
+            var records: [Record] = []
+        }
+        // Parsing depends only on the file's bytes, so its result can be cached; the period
+        // and the current time are applied when records are replayed below.
+        func parse(_ data: Data, isTail: Bool, into state: inout FileState) {
+            guard !data.isEmpty else { return }
+            // Large progress/tool/content-only records dominate the real history's bytes.
+            // An assistant usage object must contain this key; Unicode-escaped keys fall
+            // back to JSON parsing, as do small records and initial project metadata.
+            if state.project != nil, data.count > 4_096,
+               data.range(of: usageKey) == nil, data.range(of: unicodeEscape) == nil { return }
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                // A live writer may leave an unfinished final line at the frozen boundary.
+                // It has no complete usage record yet and must not become a fabricated total.
+                if !isTail { state.parseFailure = true }
+                return
+            }
+            if state.project == nil, let cwd = object["cwd"] as? String,
+               cwd.hasPrefix("/"), cwd.utf8.count <= 4_096,
+               cwd.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) {
+                state.project = cwd
+            }
+            guard object["type"] as? String == "assistant", let message = object["message"] as? [String: Any],
+                  let usage = message["usage"] as? [String: Any] else { return }
+            var record = Record()
+            defer { state.records.append(record) }
+            guard let timestamp = date(object["timestamp"]) else { record.flags |= Record.invalidTimestamp; return }
+            record.time = timestamp.timeIntervalSinceReferenceDate
+            var counters = [Int64]()
+            for name in ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] {
+                guard let value = usage[name] else { counters.append(0); record.flags |= Record.missingCounter; continue }
+                guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+                      n.doubleValue.isFinite, n.doubleValue >= 0, n.doubleValue.rounded(.down) == n.doubleValue,
+                      n.decimalValue <= Decimal(Int64.max) else { record.flags |= Record.invalidCounter; return }
+                record.flags |= Record.foundCounter; counters.append(n.int64Value)
+            }
+            record.tokens = TokenTotals(input: counters[0], output: counters[1], cacheRead: counters[2], cacheWrite: counters[3])
+            if let id = nonempty(message["id"]) { record.identity = "message:" + id }
+            else if let id = nonempty(object["requestId"]) { record.identity = "request:" + id }
+            else if let id = nonempty(object["uuid"]) { record.identity = "record:" + id }
+        }
+        func replay(_ record: Record, file index: Int) {
+            guard record.flags & Record.invalidTimestamp == 0 else { truncated = true; return }
+            let timestamp = Date(timeIntervalSinceReferenceDate: record.time)
+            guard timestamp <= now else {
+                // Entries after an audit's frozen upper bound are simply outside its period.
+                if timestamp > Date() { truncated = true }
+                return
+            }
+            guard timestamp >= since else { return }
+            guard record.flags & Record.invalidCounter == 0 else { truncated = true; return }
+            guard record.flags & Record.foundCounter != 0 else { return }
+            // Available counters remain useful, but absent fields are not proof of zero use.
+            if record.flags & Record.missingCounter != 0 { truncated = true }
+            guard let identity = record.identity else { truncated = true; return }
+            files[index].hasUsage = true
+            if var existing = messages[identity] {
+                existing.tokens.mergeMaximum(record.tokens)
+                existing.date = min(existing.date, timestamp)
+                if olderOwner(index, existing.owner) { existing.owner = index }
+                existing.isSubagent = existing.isSubagent || files[index].isSubagent
+                messages[identity] = existing
+            } else if messages.count < maximumMessages {
+                messages[identity] = Message(tokens: record.tokens, date: timestamp, owner: index, isSubagent: files[index].isSubagent)
+            } else { truncated = true }
+        }
         for index in files.indices {
             if timedOut() || totalBytes >= maximumTotalBytes { truncated = true; break }
             // O_NOFOLLOW plus fstat excludes symlink replacements, devices, directories, and FIFOs.
@@ -262,66 +338,35 @@ public enum SessionAnalytics {
             let initialSize = Int(stat.st_size)
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             defer { try? handle.close() }
+            let path = files[index].url.path
+            let modified = Double(stat.st_mtimespec.tv_sec) + Double(stat.st_mtimespec.tv_nsec) / 1_000_000_000
+            func bytes(before offset: Int) -> Data {
+                let count = min(64, offset)
+                guard count > 0 else { return Data() }
+                var buffer = [UInt8](repeating: 0, count: count)
+                let read = pread(fd, &buffer, count, off_t(offset - count))
+                readBytes += Int64(max(0, read))
+                return read == count ? Data(buffer) : Data()
+            }
+            var state = FileState()
+            var fileBytes = 0
+            var resumed: SessionAnalyticsCache.Entry?
+            // Resume after the last complete line of an earlier scan when the file is the
+            // same inode, was not rewritten in place, and the budget covers all of it.
+            if let entry = cached[path], entry.device == Int64(stat.st_dev), entry.inode == UInt64(stat.st_ino),
+               entry.offset <= Int64(initialSize), !(entry.size == Int64(initialSize) && entry.modified != modified),
+               totalBytes + initialSize <= maximumTotalBytes, bytes(before: Int(entry.offset)) == entry.fingerprint,
+               let records = SessionAnalyticsCache.unpack(entry.records) {
+                state = FileState(project: entry.project, parseFailure: entry.parseFailure, longLine: entry.longLine, records: records)
+                resumed = entry
+                fileBytes = Int(entry.offset)
+                totalBytes += fileBytes
+            }
+            var completeOffset = fileBytes
             var line = Data()
             var skippingLongLine = false
-            var fileBytes = 0
-            func consume(_ data: Data, isTail: Bool = false) {
-                guard !data.isEmpty else { return }
-                // Large progress/tool/content-only records dominate the real history's bytes.
-                // An assistant usage object must contain this key; Unicode-escaped keys fall
-                // back to JSON parsing, as do small records and initial project metadata.
-                if files[index].project != nil, data.count > 4_096,
-                   data.range(of: usageKey) == nil, data.range(of: unicodeEscape) == nil { return }
-                guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    // A live writer may leave an unfinished final line at the frozen boundary.
-                    // It has no complete usage record yet and must not become a fabricated total.
-                    if !isTail { truncated = true }
-                    return
-                }
-                if files[index].project == nil, let cwd = object["cwd"] as? String,
-                   cwd.hasPrefix("/"), cwd.utf8.count <= 4_096,
-                   cwd.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) {
-                    files[index].project = cwd
-                }
-                guard object["type"] as? String == "assistant", let message = object["message"] as? [String: Any],
-                      let usage = message["usage"] as? [String: Any] else { return }
-                guard let timestamp = date(object["timestamp"]) else { truncated = true; return }
-                guard timestamp <= now else {
-                    // Entries after an audit's frozen upper bound are simply outside its period.
-                    if timestamp > Date() { truncated = true }
-                    return
-                }
-                guard timestamp >= since else { return }
-                let counterNames = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
-                var counters = [Int64](); var found = false; var hasMissingCounter = false
-                for name in counterNames {
-                    guard let value = usage[name] else { counters.append(0); hasMissingCounter = true; continue }
-                    guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
-                          n.doubleValue.isFinite, n.doubleValue >= 0, n.doubleValue.rounded(.down) == n.doubleValue,
-                          n.decimalValue <= Decimal(Int64.max) else { truncated = true; return }
-                    found = true; counters.append(n.int64Value)
-                }
-                guard found else { return }
-                // Available counters remain useful, but absent fields are not proof of zero use.
-                if hasMissingCounter { truncated = true }
-                let identity: String
-                if let id = nonempty(message["id"]) { identity = "message:" + id }
-                else if let id = nonempty(object["requestId"]) { identity = "request:" + id }
-                else if let id = nonempty(object["uuid"]) { identity = "record:" + id }
-                else { truncated = true; return }
-                files[index].hasUsage = true
-                let tokens = TokenTotals(input: counters[0], output: counters[1], cacheRead: counters[2], cacheWrite: counters[3])
-                if var existing = messages[identity] {
-                    existing.tokens.mergeMaximum(tokens)
-                    existing.date = min(existing.date, timestamp)
-                    if olderOwner(index, existing.owner) { existing.owner = index }
-                    existing.isSubagent = existing.isSubagent || files[index].isSubagent
-                    messages[identity] = existing
-                } else if messages.count < maximumMessages {
-                    messages[identity] = Message(tokens: tokens, date: timestamp, owner: index, isSubagent: files[index].isSubagent)
-                } else { truncated = true }
-            }
             do {
+                if fileBytes > 0 { try handle.seek(toOffset: UInt64(fileBytes)) }
                 // Each chunk and its parsed records are autoreleased Foundation objects. This runs
                 // on a thread whose pool drains only when the whole scan ends, so drain per chunk;
                 // otherwise a multi-gigabyte history leaves hundreds of megabytes of dirty memory.
@@ -331,7 +376,8 @@ public enum SessionAnalytics {
                         let chunk = try handle.read(upToCount: capacity) ?? Data()
                         scannedCommands.insert(files[index].profile)
                         guard !chunk.isEmpty else { return false }
-                        fileBytes += chunk.count; totalBytes += chunk.count
+                        let chunkOffset = fileBytes
+                        fileBytes += chunk.count; totalBytes += chunk.count; readBytes += Int64(chunk.count)
                         // libc scans bytes in bulk; generic Data collection iteration is expensive
                         // when real histories contain several gigabytes of progress/tool records.
                         chunk.withUnsafeBytes { raw in
@@ -346,9 +392,10 @@ public enum SessionAnalytics {
                                     } else { truncated = true; line.removeAll(keepingCapacity: true); skippingLongLine = true }
                                 }
                                 if newline != nil {
-                                    if !skippingLongLine { consume(line) }
+                                    if skippingLongLine { state.longLine = true } else { parse(line, isTail: false, into: &state) }
                                     line.removeAll(keepingCapacity: true); skippingLongLine = false
                                     start = end + 1
+                                    completeOffset = chunkOffset + start
                                 } else { break }
                             }
                         }
@@ -360,9 +407,25 @@ public enum SessionAnalytics {
                 else {
                     scannedFiles += 1
                     scannedCommands.insert(files[index].profile)
-                    if !skippingLongLine { autoreleasepool { consume(line, isTail: true) } }
+                    if var entry = resumed, entry.offset == Int64(completeOffset) {
+                        // No new complete line: keep the stored records as they are.
+                        cacheChanged = cacheChanged || entry.size != Int64(initialSize) || entry.modified != modified
+                        entry.size = Int64(initialSize); entry.modified = modified
+                        kept[path] = entry
+                    } else {
+                        cacheChanged = true
+                        kept[path] = SessionAnalyticsCache.Entry(device: Int64(stat.st_dev), inode: UInt64(stat.st_ino), size: Int64(initialSize),
+                                                                 modified: modified, offset: Int64(completeOffset), fingerprint: bytes(before: completeOffset),
+                                                                 project: state.project, parseFailure: state.parseFailure, longLine: state.longLine,
+                                                                 records: SessionAnalyticsCache.pack(state.records))
+                    }
+                    // The unfinished tail is parsed on every scan and never cached.
+                    if !skippingLongLine { autoreleasepool { parse(line, isTail: true, into: &state) } }
                 }
             } catch { truncated = true }
+            if state.parseFailure || state.longLine { truncated = true }
+            files[index].project = state.project
+            for record in state.records { replay(record, file: index) }
         }
         var byFile = Array(repeating: TokenTotals(), count: files.count)
         var totals = TokenTotals()
@@ -403,6 +466,7 @@ public enum SessionAnalytics {
         let profileRows = scannedCommands.sorted().map { command in
             return ProfileTokens(command: command, tokens: byProfile[command, default: TokenTotals()], sessions: profileTotals[command, default: []].count)
         }
+        cache?.store(kept, changed: cacheChanged || kept.count != cached.count, readBytes: readBytes)
         return AnalyticsSnapshot(sessions: sessions,
                                  daily: daily.keys.sorted().map { DailyTokens(day: $0, tokens: daily[$0]!) },
                                  profiles: profileRows, totals: totals, truncated: truncated,

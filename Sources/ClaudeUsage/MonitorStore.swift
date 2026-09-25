@@ -82,6 +82,9 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     private var timer: Timer?
     var interval: TimeInterval { TimeInterval([1, 5, 15].contains(refreshMinutes) ? refreshMinutes * 60 : 300) }
     private var analyticsPending = false
+    /// Earlier scans' per-file results, loaded by the first scan off the main thread; later
+    /// scans (and relaunches) read only bytes appended since.
+    private let analyticsCache = SessionAnalyticsCache(url: SessionAnalyticsCache.defaultURL)
     private var analyticsProfiles: [Profile] = []
     private var refreshPending = false
 
@@ -183,7 +186,8 @@ func readAccount(_ profile: Profile) async -> AccountReading {
         let scanDate = Date()
         analyticsBusy = true
         Task {
-            let result = await Task.detached(priority: .utility) { SessionAnalytics.scan(profiles: profiles, since: since, now: scanDate) }.value
+            let cache = analyticsCache
+            let result = await Task.detached(priority: .utility) { SessionAnalytics.scan(profiles: profiles, since: since, now: scanDate, cache: cache) }.value
             analytics = result; analyticsRangeDays = days; analyticsProfiles = profiles
             analyticsUpdatedAt = scanDate; analyticsBusy = false
             if analyticsPending || analyticsDays != days || accounts.map(\.profile) != profiles {
