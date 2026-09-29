@@ -72,7 +72,7 @@ final class UsageTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.map(\.percent), [4, 5])
     }
 
-    func testFeaturedFableAndSessionWeekPairDoNotDependOnAPIOrder() throws {
+    func testDisplayWindowsDoNotDependOnAPIOrder() throws {
         let entries = [
             #"{"kind":"weekly_scoped","percent":93,"scope":{"model":{"display_name":"Fable 5"}}}"#,
             #"{"kind":"weekly_all","percent":96}"#,
@@ -81,27 +81,33 @@ final class UsageTests: XCTestCase {
         ]
         for order in [[0, 1, 2, 3], [3, 2, 0, 1], [1, 3, 2, 0], [2, 0, 3, 1]] {
             let snapshot = try parse("{\"limits\":[\(order.map { entries[$0] }.joined(separator: ","))]}")
-            let featured = try XCTUnwrap(snapshot.featuredFableWindow)
-            XCTAssertEqual(featured.title, "Weekly · Fable 5")
-            XCTAssertEqual(featured.percent, 93)
-            XCTAssertEqual(snapshot.secondaryWindows.map(\.title), ["5-hour session", "Weekly · all models", "Weekly · Future Model"])
-            XCTAssertEqual(snapshot.secondaryWindows.map(\.percent), [43, 96, 22])
-            XCTAssertFalse(snapshot.secondaryWindows.contains { $0.id == featured.id })
+            let display = snapshot.displayWindows
+            XCTAssertEqual(display.session?.title, "5-hour session")
+            XCTAssertEqual(display.session?.percent, 43)
+            XCTAssertEqual(display.weekly?.title, "Weekly · all models")
+            XCTAssertEqual(display.weekly?.percent, 96)
+            XCTAssertEqual(display.fable?.title, "Weekly · Fable 5")
+            XCTAssertEqual(display.fable?.percent, 93)
+            XCTAssertEqual(display.others.map(\.title), ["Weekly · Future Model"])
+            XCTAssertEqual(display.others.map(\.percent), [22])
+            let rendered = [display.session, display.weekly, display.fable].compactMap { $0 } + display.others
+            XCTAssertEqual(rendered.count, snapshot.windows.count)
+            XCTAssertEqual(Set(rendered.map(\.id)), Set(snapshot.windows.map(\.id)))
         }
     }
 
     func testFableRecognitionAcceptsCaseAndNumericSuffixesWithoutMatchingOtherNames() {
         for title in ["Weekly · Fable", "Weekly · FABLE 5", "Weekly · fable5", "Fable 5.1"] {
             let window = UsageWindow(id: "model", title: title, percent: 0, resetsAt: nil)
-            let snapshot = UsageSnapshot(windows: [window])
-            XCTAssertEqual(snapshot.featuredFableWindow, window, title)
-            XCTAssertTrue(snapshot.secondaryWindows.isEmpty)
+            let display = UsageSnapshot(windows: [window]).displayWindows
+            XCTAssertEqual(display.fable, window, title)
+            XCTAssertTrue(display.others.isEmpty)
         }
         for title in ["Weekly · NotFable", "Weekly · Fableish", "Weekly · Fable5ish", "Weekly · Fabled"] {
             let window = UsageWindow(id: "other", title: title, percent: 91, resetsAt: nil)
-            let snapshot = UsageSnapshot(windows: [window])
-            XCTAssertNil(snapshot.featuredFableWindow, title)
-            XCTAssertEqual(snapshot.secondaryWindows, [window])
+            let display = UsageSnapshot(windows: [window]).displayWindows
+            XCTAssertNil(display.fable, title)
+            XCTAssertEqual(display.others, [window])
         }
     }
 
@@ -116,28 +122,48 @@ final class UsageTests: XCTestCase {
           "five_hour":{"utilization":26}
         }
         """#)
-        XCTAssertNil(snapshot.featuredFableWindow)
-        XCTAssertEqual(snapshot.secondaryWindows.map(\.title), ["5-hour session", "Weekly · all models", "Agent SDK", "Weekly · Future Model"])
-        XCTAssertEqual(snapshot.secondaryWindows.count, snapshot.windows.count)
+        let display = snapshot.displayWindows
+        XCTAssertNil(display.fable)
+        XCTAssertEqual(display.session?.id, "five_hour")
+        XCTAssertEqual(display.session?.percent, 26)
+        XCTAssertEqual(display.weekly?.id, "seven_day")
+        XCTAssertEqual(display.weekly?.percent, 47)
+        XCTAssertEqual(display.others.map(\.title), ["Agent SDK", "Weekly · Future Model"])
 
-        let empty = UsageSnapshot(windows: [])
-        XCTAssertNil(empty.featuredFableWindow)
-        XCTAssertTrue(empty.secondaryWindows.isEmpty)
+        let empty = UsageSnapshot(windows: []).displayWindows
+        XCTAssertNil(empty.session)
+        XCTAssertNil(empty.weekly)
+        XCTAssertNil(empty.fable)
+        XCTAssertTrue(empty.others.isEmpty)
     }
 
-    func testMultipleFableWindowsChooseHighestUsageAndKeepEveryOtherWindowOnce() throws {
+    func testDisplayRecognizesSessionAndOverallWeekByIDOrExactTitle() {
+        for id in ["five_hour", "session-7", "unknown"] {
+            let window = UsageWindow(id: id, title: id == "unknown" ? "5-hour session" : "Renamed session", percent: 12, resetsAt: nil)
+            let display = UsageSnapshot(windows: [window]).displayWindows
+            XCTAssertEqual(display.session, window)
+            XCTAssertNil(display.weekly)
+            XCTAssertTrue(display.others.isEmpty)
+        }
+        for id in ["seven_day", "weekly_all-4", "unknown"] {
+            let window = UsageWindow(id: id, title: id == "unknown" ? "Weekly · all models" : "Renamed week", percent: 34, resetsAt: nil)
+            let display = UsageSnapshot(windows: [window]).displayWindows
+            XCTAssertEqual(display.weekly, window)
+            XCTAssertNil(display.session)
+            XCTAssertTrue(display.others.isEmpty)
+        }
+    }
+
+    func testMultipleFableWindowsChooseHighestUsageAndKeepEveryOtherWindowInOrder() {
         let fable = UsageWindow(id: "fable", title: "Weekly · Fable", percent: 62, resetsAt: nil)
         let fableFive = UsageWindow(id: "fable-five", title: "Weekly · Fable 5", percent: 91, resetsAt: fetchedAt)
         let future = UsageWindow(id: "future", title: "Weekly · Future Model", percent: 99, resetsAt: nil)
         for windows in [[fable, future, fableFive], [fableFive, future, fable]] {
-            let snapshot = UsageSnapshot(windows: windows)
-            let featured = try XCTUnwrap(snapshot.featuredFableWindow)
-            XCTAssertEqual(featured, fableFive)
-            let rendered = [featured] + snapshot.secondaryWindows
-            XCTAssertEqual(rendered.count, windows.count)
-            XCTAssertEqual(Set(rendered.map(\.id)), Set(windows.map(\.id)))
-            XCTAssertTrue(snapshot.secondaryWindows.contains(future))
-            XCTAssertTrue(snapshot.secondaryWindows.contains(fable))
+            let display = UsageSnapshot(windows: windows).displayWindows
+            XCTAssertEqual(display.fable, fableFive)
+            XCTAssertNil(display.session)
+            XCTAssertNil(display.weekly)
+            XCTAssertEqual(display.others, windows.filter { $0 != fableFive })
         }
     }
 
@@ -145,9 +171,62 @@ final class UsageTests: XCTestCase {
         let first = UsageWindow(id: "first", title: "Weekly · Fable", percent: 91, resetsAt: fetchedAt)
         let second = UsageWindow(id: "second", title: "Weekly · Fable", percent: 91, resetsAt: fetchedAt)
         let later = UsageWindow(id: "later", title: "Weekly · Fable", percent: 91, resetsAt: fetchedAt.addingTimeInterval(3600))
+        let unknownReset = UsageWindow(id: "unknown-reset", title: "Weekly · Fable", percent: 91, resetsAt: nil)
         let otherTitle = UsageWindow(id: "other", title: "Weekly · Fable 5", percent: 91, resetsAt: fetchedAt)
-        XCTAssertEqual(UsageSnapshot(windows: [otherTitle, later, second, first]).featuredFableWindow, first)
-        XCTAssertEqual(UsageSnapshot(windows: [first, second, later, otherTitle]).featuredFableWindow, first)
+        XCTAssertEqual(UsageSnapshot(windows: [otherTitle, unknownReset, later, second, first]).displayWindows.fable, first)
+        XCTAssertEqual(UsageSnapshot(windows: [first, second, later, unknownReset, otherTitle]).displayWindows.fable, first)
+    }
+
+    func testDisplayPartitionsRepeatedKindsAndIDsWithoutDroppingOrRepeatingEntries() {
+        let fable = UsageWindow(id: "session-0", title: "Weekly · Fable", percent: 90, resetsAt: nil)
+        let session = UsageWindow(id: "session-1", title: "5-hour session", percent: 20, resetsAt: nil)
+        let anotherSession = UsageWindow(id: "session-2", title: "5-hour session", percent: 30, resetsAt: nil)
+        let weekly = UsageWindow(id: "weekly_all-3", title: "Weekly · all models", percent: 40, resetsAt: nil)
+        let anotherWeekly = UsageWindow(id: "weekly_all-4", title: "Weekly · all models", percent: 50, resetsAt: nil)
+        let duplicateID = UsageWindow(id: fable.id, title: "Future limit", percent: 60, resetsAt: nil)
+        let display = UsageSnapshot(windows: [fable, session, anotherSession, weekly, duplicateID, anotherWeekly]).displayWindows
+        XCTAssertEqual(display.session, session)
+        XCTAssertEqual(display.weekly, weekly)
+        XCTAssertEqual(display.fable, fable)
+        XCTAssertEqual(display.others, [anotherSession, duplicateID, anotherWeekly])
+    }
+
+    func testElapsedFractionUsesKnownDurationsByIDOrTitle() throws {
+        let sessionDuration: TimeInterval = 5 * 3600
+        let weeklyDuration: TimeInterval = 7 * 24 * 3600
+        let cases: [(String, String, TimeInterval)] = [
+            ("five_hour", "Session", sessionDuration),
+            ("session-3", "Session", sessionDuration),
+            ("session", "Session", sessionDuration),
+            ("unknown", "5-hour session", sessionDuration),
+            ("seven_day", "All models", weeklyDuration),
+            ("seven_day_opus", "Opus", weeklyDuration),
+            ("weekly_all-1", "All models", weeklyDuration),
+            ("weekly_scoped-2", "Fable", weeklyDuration),
+            ("unknown", "Weekly · Fable 5", weeklyDuration),
+            ("unknown", "Weekly · Future Model", weeklyDuration)
+        ]
+        for (id, title, duration) in cases {
+            let window = UsageWindow(id: id, title: title, percent: 82, resetsAt: fetchedAt.addingTimeInterval(duration / 2))
+            XCTAssertEqual(try XCTUnwrap(window.elapsedFraction(at: fetchedAt)), 0.5, accuracy: 0.000001, id + title)
+            XCTAssertEqual(try XCTUnwrap(window.elapsedFraction(at: fetchedAt.addingTimeInterval(duration / 4))), 0.75, accuracy: 0.000001)
+        }
+    }
+
+    func testElapsedFractionClampsBeforeStartAndAfterReset() {
+        let window = UsageWindow(id: "session-0", title: "5-hour session", percent: 10, resetsAt: fetchedAt)
+        XCTAssertEqual(window.elapsedFraction(at: fetchedAt.addingTimeInterval(-6 * 3600)), 0)
+        XCTAssertEqual(window.elapsedFraction(at: fetchedAt.addingTimeInterval(-5 * 3600)), 0)
+        XCTAssertEqual(window.elapsedFraction(at: fetchedAt), 1)
+        XCTAssertEqual(window.elapsedFraction(at: fetchedAt.addingTimeInterval(1)), 1)
+    }
+
+    func testElapsedFractionRequiresAResetAndAKnownDuration() {
+        XCTAssertNil(UsageWindow(id: "five_hour", title: "5-hour session", percent: 10, resetsAt: nil).elapsedFraction(at: fetchedAt))
+        for (id, title) in [("monthly_sdk-0", "Agent SDK"), ("unknown", "Fable 5"), ("unknown", "Future window")] {
+            let window = UsageWindow(id: id, title: title, percent: 10, resetsAt: fetchedAt.addingTimeInterval(3600))
+            XCTAssertNil(window.elapsedFraction(at: fetchedAt), id + title)
+        }
     }
 
     func testInvalidExplicitEntryDoesNotHideValidLegacyWindow() throws {

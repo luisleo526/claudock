@@ -183,10 +183,16 @@ struct MonitorView: View {
         store.copyCommand(account.profile); copied = account.id
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if copied == account.id { copied = nil } }
     }
-    /// Reset countdowns are computed here, against `store.now`, so a row only re-renders
-    /// when one of its labels actually changes.
-    private func resetLabels(for account: AccountState) -> [String: String] {
-        Dictionary(account.snapshot?.windows.map { ($0.id, resetLabel($0.resetsAt)) } ?? [], uniquingKeysWith: { first, _ in first })
+    /// Time inputs are computed here, against `store.now`, so rows can skip clock updates
+    /// until a countdown or the spoken whole-percent elapsed label changes.
+    private func resetLabels(for account: AccountState) -> [String: WindowLabels] {
+        Dictionary(account.snapshot?.windows.map { window in
+            let reset = resetLabel(window.resetsAt)
+            let shortReset = reset.hasPrefix("Resets in ") ? String(reset.dropFirst("Resets in ".count))
+                : window.resetsAt == nil ? "Unavailable" : "Reset due"
+            return (window.id, WindowLabels(reset: reset, shortReset: shortReset,
+                                            elapsedFraction: window.elapsedFraction(at: store.now)))
+        } ?? [], uniquingKeysWith: { first, _ in first })
     }
     private func resetLabel(_ date: Date?) -> String {
         guard let date else { return "Reset time unavailable" }
@@ -214,13 +220,26 @@ struct MonitorView: View {
     }
 }
 
+private struct WindowLabels: Equatable {
+    let reset: String
+    let shortReset: String
+    let elapsedFraction: Double?
+    var elapsedPercent: Int? { elapsedFraction.map { Int(($0 * 100).rounded()) } }
+
+    // Coalesce subpercent tick movement with label changes instead of invalidating every
+    // account on each ten-second clock update. The tick uses the exact fraction on render.
+    static func == (lhs: WindowLabels, rhs: WindowLabels) -> Bool {
+        lhs.reset == rhs.reset && lhs.shortReset == rhs.shortReset && lhs.elapsedPercent == rhs.elapsedPercent
+    }
+}
+
 /// One account in the Accounts list. Inputs are plain values, compared by `==`, so a
 /// parent update (a clock tick, another account's refresh) skips rows that did not
 /// change. The action closures are not compared; they only reach state and the store,
 /// which stay the same objects.
 private struct AccountRow: View, Equatable {
     let account: AccountState
-    let resetLabels: [String: String]
+    let resetLabels: [String: WindowLabels]
     /// Accent colors are read from preferences; the name makes a change re-render rows.
     let accentName: String
     let isDemo: Bool
@@ -292,18 +311,15 @@ private struct AccountRow: View, Equatable {
                 Text(email).font(.system(size: 11)).foregroundStyle(muted).textSelection(.enabled).padding(.top, -9)
             }
             if let snapshot = account.snapshot {
-                let secondary = snapshot.secondaryWindows
-                let primary = Array(secondary.prefix(2))
-                if let featured = snapshot.featuredFableWindow {
-                    meter(featured, stale: account.error != nil, featured: true)
+                let display = snapshot.displayWindows
+                if let session = display.session {
+                    meter(session, label: "5-hour", stale: account.error != nil)
                 }
-                if !primary.isEmpty {
-                    HStack(alignment: .top, spacing: 24) {
-                        ForEach(primary) { window in meter(window, stale: account.error != nil) }
-                        if primary.count == 1 { Spacer().frame(maxWidth: .infinity) }
-                    }
+                if let weekly = display.weekly {
+                    meter(weekly, label: "Weekly", stale: account.error != nil)
                 }
-                ForEach(Array(secondary.dropFirst(2))) { window in
+                meter(display.fable, label: "Fable", stale: account.error != nil)
+                ForEach(display.others) { window in
                     compactMeter(window, stale: account.error != nil)
                 }
                 if snapshot.extraUsageEnabled {
@@ -326,22 +342,48 @@ private struct AccountRow: View, Equatable {
             }
         }.padding(.horizontal, 24).padding(.vertical, compact ? 12 : 16)
     }
-    private func meter(_ window: UsageWindow, stale: Bool, featured: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(window.title).font(.system(size: featured ? 12 : 11, weight: featured ? .semibold : .regular))
-                    .foregroundStyle(featured && !stale ? ink : muted)
-                Spacer(minLength: 4)
-                (Text("\(Int(window.percent.rounded()))").font(.system(size: featured ? 32 : 18, weight: .medium, design: .rounded)).monospacedDigit()
-                    + Text("%").font(.system(size: featured ? 13 : 10)).foregroundColor(muted))
-                    .foregroundStyle(stale ? muted : featured ? usageColor(window.percent) : ink)
+    private func meter(_ window: UsageWindow?, label: String, stale: Bool) -> some View {
+        let timing = window.flatMap { resetLabels[$0.id] }
+        let full = (window?.percent ?? 0) >= 100
+        return HStack(spacing: 10) {
+            Text(label).font(.system(size: 11))
+                .foregroundStyle(stale || window == nil ? muted : ink)
+                .frame(width: 48, alignment: .leading)
+                .help(window?.title ?? "Weekly · Fable")
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(ink.opacity(0.09)).frame(height: 6)
+                    if let window {
+                        Capsule().fill(stale ? muted : usageColor(window.percent))
+                            .frame(width: max(0, proxy.size.width * window.fraction), height: 6)
+                    }
+                    if let elapsed = timing?.elapsedFraction {
+                        Rectangle().fill(ink.opacity(0.55)).frame(width: 2, height: 10)
+                            .offset(x: proxy.size.width * elapsed - 1)
+                    }
+                }.frame(height: 10)
+            }.frame(height: 10)
+            HStack(spacing: 4) {
+                Text(window.map { "\(Int($0.percent.rounded()))%" } ?? "—")
+                    .font(.system(size: 15, weight: .medium, design: .rounded)).monospacedDigit()
+                    .fixedSize().frame(width: 46, alignment: .trailing)
+                Label("Full", systemImage: "exclamationmark.circle.fill")
+                    .font(.system(size: 9, weight: .medium)).fixedSize()
+                    .frame(width: 38, alignment: .leading).opacity(full ? 1 : 0)
             }
-            progressBar(window, stale: stale, height: featured ? 6 : 4)
-            Text(resetLabel(window)).font(.system(size: 10)).foregroundStyle(muted)
-                .help(window.resetsAt?.formatted(date: .complete, time: .standard) ?? "No reset time reported")
-        }.frame(maxWidth: .infinity)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(window.title), \(Int(window.percent.rounded())) percent used. \(resetLabel(window)). \(stale ? "Stale reading." : "")")
+            .foregroundStyle(stale || window == nil ? muted : usageColor(window?.percent ?? 0))
+            Text(window == nil ? "Not reported" : timing?.shortReset ?? "Unavailable")
+                .font(.system(size: 10)).foregroundStyle(muted)
+                .fixedSize().frame(width: 64, alignment: .trailing)
+                .help(window?.resetsAt?.formatted(date: .complete, time: .standard) ?? "No reset time reported")
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(meterAccessibilityLabel(window, stale: stale))
+    }
+    private func meterAccessibilityLabel(_ window: UsageWindow?, stale: Bool) -> String {
+        guard let window else { return "Weekly · Fable, Not reported." }
+        let elapsed = resetLabels[window.id]?.elapsedPercent.map { " \($0) percent of the window elapsed." } ?? ""
+        return "\(window.title), \(Int(window.percent.rounded())) percent used. \(window.percent >= 100 ? "Full. " : "")\(resetLabel(window)).\(elapsed)\(stale ? " Stale reading." : "")"
     }
     private func compactMeter(_ window: UsageWindow, stale: Bool) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -367,6 +409,6 @@ private struct AccountRow: View, Equatable {
         }.frame(height: height)
     }
     private func resetLabel(_ window: UsageWindow) -> String {
-        resetLabels[window.id] ?? "Reset time unavailable"
+        resetLabels[window.id]?.reset ?? "Reset time unavailable"
     }
 }

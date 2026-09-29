@@ -9,6 +9,27 @@ public struct UsageWindow: Identifiable, Codable, Equatable, Sendable {
     public init(id: String, title: String, percent: Double, resetsAt: Date?) {
         self.id = id; self.title = title; self.percent = percent; self.resetsAt = resetsAt
     }
+
+    /// Elapsed time is independent of usage. Only known window kinds have a duration.
+    public func elapsedFraction(at now: Date) -> Double? {
+        guard let resetsAt else { return nil }
+        let duration: TimeInterval
+        if id == "five_hour" || id.hasPrefix("session") || title.hasPrefix("5-hour") {
+            duration = 5 * 3600
+        } else if id.hasPrefix("seven_day") || id.hasPrefix("weekly") || title.hasPrefix("Weekly") {
+            duration = 7 * 24 * 3600
+        } else {
+            return nil
+        }
+        return min(1, max(0, 1 - resetsAt.timeIntervalSince(now) / duration))
+    }
+}
+
+public struct UsageDisplayWindows: Equatable, Sendable {
+    public let session: UsageWindow?
+    public let weekly: UsageWindow?
+    public let fable: UsageWindow?
+    public let others: [UsageWindow]
 }
 
 public struct UsageSnapshot: Codable, Equatable, Sendable {
@@ -22,13 +43,15 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     }
     public var peak: Double? { windows.map(\.percent).max() }
 
-    /// The most constrained Fable allowance leads the account row, independent of API ordering.
-    /// A numeric suffix is part of a model name (for example, Fable 5 or Fable5).
-    public var featuredFableWindow: UsageWindow? {
-        windows.filter {
-            $0.title.range(of: #"\bFable(?:[ \t]*[0-9]+(?:\.[0-9]+)*)?\b"#,
+    /// Select the familiar three limits, retaining every other entry in API order.
+    /// Partition by array position so even repeated identities cannot discard a reading.
+    public var displayWindows: UsageDisplayWindows {
+        // A numeric suffix is part of a model name (for example, Fable 5 or Fable5).
+        let fable = windows.indices.filter {
+            windows[$0].title.range(of: #"\bFable(?:[ \t]*[0-9]+(?:\.[0-9]+)*)?\b"#,
                            options: [.caseInsensitive, .regularExpression]) != nil
-        }.sorted { first, second in
+        }.sorted { firstIndex, secondIndex in
+            let first = windows[firstIndex], second = windows[secondIndex]
             if first.percent != second.percent { return first.percent > second.percent }
             let firstTitle = first.title.lowercased(), secondTitle = second.title.lowercased()
             if firstTitle != secondTitle { return firstTitle < secondTitle }
@@ -36,27 +59,25 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
             if firstReset != secondReset { return firstReset < secondReset }
             return first.id < second.id
         }.first
-    }
-
-    /// Keep the familiar session/week pair ahead of additional model limits.
-    /// Excluding by identity ensures the featured window is never rendered a second time.
-    public var secondaryWindows: [UsageWindow] {
-        let featuredID = featuredFableWindow?.id
-        func priority(_ window: UsageWindow) -> Int {
-            if window.id == "five_hour" || window.id.hasPrefix("session-") || window.title == "5-hour session" { return 0 }
-            if window.id == "seven_day" || window.id.hasPrefix("weekly_all-") || window.title == "Weekly · all models" { return 1 }
-            return 2
+        let session = windows.indices.first {
+            let window = windows[$0]
+            return $0 != fable && (window.id == "five_hour" || window.id.hasPrefix("session-") || window.title == "5-hour session")
         }
-        return windows.enumerated().filter { $0.element.id != featuredID }.sorted {
-            let firstPriority = priority($0.element), secondPriority = priority($1.element)
-            return firstPriority == secondPriority ? $0.offset < $1.offset : firstPriority < secondPriority
-        }.map(\.element)
+        let weekly = windows.indices.first {
+            let window = windows[$0]
+            return $0 != fable && $0 != session && (window.id == "seven_day" || window.id.hasPrefix("weekly_all-") || window.title == "Weekly · all models")
+        }
+        let selected = Set([session, weekly, fable].compactMap { $0 })
+        return UsageDisplayWindows(session: session.map { windows[$0] }, weekly: weekly.map { windows[$0] },
+                                   fable: fable.map { windows[$0] },
+                                   others: windows.indices.filter { !selected.contains($0) }.map { windows[$0] })
     }
 
-    /// Account selection follows the same priority as the display. Always label
+    /// Account selection still prefers Fable, then session, then overall weekly. Always label
     /// this reading with its actual title; API array position does not imply session.
     public var preferredLaunchWindow: UsageWindow? {
-        featuredFableWindow ?? secondaryWindows.first
+        let display = displayWindows
+        return display.fable ?? display.session ?? display.weekly ?? display.others.first
     }
 
     public static func parse(_ data: Data, now: Date = Date()) throws -> UsageSnapshot {
