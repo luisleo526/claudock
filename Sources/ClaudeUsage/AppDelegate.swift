@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let store = MonitorStore()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -19,6 +19,7 @@ import SwiftUI
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         popover.behavior = .transient
+        popover.delegate = self
         popover.animates = true
         popover.contentSize = NSSize(width: 510, height: 680)
         popover.contentViewController = NSHostingController(rootView: MonitorView(store: store))
@@ -42,6 +43,12 @@ import SwiftUI
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Closing with a sheet attached (e.g. Set token while the browser is in front) would hide the
+    /// sheet but leave it attached, and the reopened popover would ignore every click.
+    func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        popover.contentViewController?.view.window?.attachedSheet == nil
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
@@ -102,6 +109,9 @@ import SwiftUI
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit Claudock", action: #selector(quit), keyEquivalent: "q").target = self
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY - 4), in: button)
+        } else if popover.isShown, let sheet = popover.contentViewController?.view.window?.attachedSheet {
+            NSApp.activate(ignoringOtherApps: true)
+            sheet.makeKeyAndOrderFront(nil)
         } else if popover.isShown {
             popover.performClose(nil)
         } else {
