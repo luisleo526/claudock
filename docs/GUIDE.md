@@ -111,13 +111,13 @@ Open **Manage profiles → Enable claudock in zsh** to install the `claudock` co
 
 **First setup:** open a new Terminal tab to load the integration. It creates missing `claude-NAME` functions for available profiles. Existing aliases, functions, and executables keep their names; `claude` itself is preserved. When a name is already in use, select the account explicitly with `claudock run NAME`.
 
-**After upgrading to 1.4.0:** launch the updated app. It upgrades an enabled, unchanged Claudock-owned integration v1 to v2 without turning integration on for users who left it off. Upgrade failures appear in Manage profiles. An already-open Terminal still has its old function definitions: open a new tab, or run this once in each existing tab:
+**After upgrading:** launch the updated app. It upgrades an enabled, unchanged Claudock-owned integration v1–v3 to v4 without turning integration on for users who left it off. Adapter v4 creates only named profile shortcuts. When loaded, it removes a previously generated `claude-auto` function only if its body still matches the definition recorded by Claudock; user replacements remain intact. Upgrade failures appear in Manage profiles. An already-open Terminal still has its old function definitions: open a new tab, or run this once in each existing tab:
 
 ```zsh
 source ~/.config/claudock/init.zsh
 ```
 
-**Later profile changes:** once v2 is loaded, shortcuts synchronize when the file is sourced, before each prompt (`precmd`), and before the next entered command (`preexec`). A profile added through the GUI while Terminal is idle is available before you run your next command. Renamed or removed profiles clean up only generated functions whose bodies still match Claudock's recorded definitions; custom edits and other user commands remain intact. These updates change the running shell's functions, not `.zshrc`.
+**Later profile changes:** once v4 is loaded, shortcuts synchronize when the file is sourced, before each prompt (`precmd`), and before the next entered command (`preexec`). A profile added through the GUI while Terminal is idle is available before you run your next command. Renamed or removed profiles clean up only generated functions whose bodies still match Claudock's recorded definitions; custom edits and other user commands remain intact. These updates change the running shell's functions, not `.zshrc`.
 
 ```sh
 claudock profile list
@@ -247,18 +247,6 @@ These commands assume you have configured a `ClaudockNotary` Keychain profile wi
 
 Automatic token renewal runs in the resident menu bar app. The one-shot `claudock usage` command reads quota without rotating credentials; an expired-token message directs you to Claudock or the relevant Claude profile.
 
-## Auto account selection
-
-With zsh integration enabled, run `claude-auto` like any `claude-{slug}` command. No arguments starts a new conversation. `claude-auto --continue` selects the latest conversation in the current project; `claude-auto --resume SESSION_ID` resumes a particular conversation. Add `--fork-session` when the source is still running to continue its history in a new session. Sessions and history are shared with the default Claude workspace. Imported isolated histories can be resumed by absolute JSONL path or through the app's Sessions view.
-
-An unchanged v1/v2 shell adapter upgrades to v3 automatically when the app starts. Existing tabs can run `source ~/.config/claudock/init.zsh` once; new tabs load it automatically. Existing user commands or legacy profiles named `claude-auto` are preserved, so use explicit `claudock auto` when a collision exists.
-
-Choose **Start Auto** in Accounts, or run `claudock auto` from your project directory. Use `claudock auto --profiles work,personal -- --resume` to restrict the pool and continue a shared conversation. **Sessions → Continue as… → Auto** opens a fork in a new Terminal; the original session remains running.
-
-Auto keeps a conversation on its selected account while it has capacity, then switches after a status-phase quota/auth rejection. It considers the requested model's limits together with global session/weekly limits. At most three distinct credential stores are attempted for a request. Existing partial output, uncertain network failures, and account-owned remote state are not replayed on another account. Independent Auto sessions have independent pools; this version does not run a central cross-session scheduler.
-
-Auto is opt-in per launch. Ordinary `claude-{slug}` shortcuts remain pinned to their named profile. Auto uses the default shared Claude workspace and preserves Claude's normal project/tool permission checks.
-
 ## Long-lived inference tokens
 
 Open **Manage profiles → Set token…** (or **Manage token…** for an existing token). **Paste token** is selected by default. Paste a raw `sk-ant-oat01-…` token or its `export CLAUDE_CODE_OAUTH_TOKEN=…` assignment and choose **Save to Keychain**. The input is parsed as data, never executed. Import does not require a browser or a prior normal Claude login.
@@ -267,20 +255,10 @@ Pasted tokens are assigned manually to the selected profile. Their provider acco
 
 The **Create in browser** option remains available for new tokens. It opens Claude authorization and accepts the returned `code#state` in its own field. That flow verifies account/organization against the profile's existing login and uses the expiry reported by Claude, requesting one year by default.
 
-Saved tokens are preferred by GUI launches, managed shortcuts, `claudock run`, and Auto. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
+Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
 
 Quota monitoring still uses normal OAuth. A monitoring re-login warning does not mean an independently saved inference token has expired. Revoked or expired tokens need replacement; an unknown expiry is not a promise of unlimited validity.
 
 ## Account plan badges
 
 Claudock reads `subscriptionType` and `rateLimitTier`, using the mappings verified in Claude Code 2.1.270. Max 5×, Max 20×, and Team Premium display distinct badges. Missing or unrecognized Max/Team subtypes remain **tier unknown**. A lower quota or an unfamiliar Team rate is not enough evidence to call a seat Standard.
-
-## Claude.ai connectors with Auto
-
-Auto preserves your default Claude.ai login for connectors while selecting inference accounts independently. Keep that default login signed in with its normal OAuth permissions; pasted inference tokens alone cannot load claude.ai connectors. Auto's startup line says whether it is using the default connector login or starting in inference-only mode.
-
-The warning about `ANTHROPIC_API_KEY or another auth source` in Auto 1.5.1 was caused by its local proxy auth override. Auto 1.5.2 removes that override when the default login supports connectors. Existing running sessions retain their launch environment: start a new `claude-auto` session, or resume the existing conversation with `--resume SESSION_ID --fork-session`.
-
-`--bare` intentionally skips native connectors and uses inference-only authentication. User-disabled connectors or inaccessible connector services are not overridden by Claudock. Changing which inference account is selected does not change the default account's connectors.
-
-In Auto, Claude's account-specific status/usage views describe its default login. Use Claudock to inspect limits across the inference pool.

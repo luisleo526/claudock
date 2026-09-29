@@ -2,7 +2,7 @@
 
 # Claudock
 
-**Your Claude accounts, one menu bar.** See Fable headroom, keep long-lived tokens in Keychain, and let Auto switch accounts when a quota runs out.
+**Your Claude accounts, one menu bar.** See Fable headroom and keep long-lived tokens in Keychain.
 
 [Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
@@ -67,25 +67,6 @@ Renaming preserves account data. Removing a profile keeps its Claude folders, co
 
 *Synthetic demo profiles. Rename, Remove, and authentication actions are available directly on each row.*
 
-## Stay in the same session
-
-Click **Start Auto**, or use:
-
-```sh
-claude-auto
-claude-auto --continue
-claude-auto --resume SESSION_ID --fork-session
-
-# Restrict the account pool:
-claudock auto --profiles work,personal -- --resume
-```
-
-With zsh integration enabled, `claude-auto` behaves like your `claude-{slug}` commands and forwards normal Claude arguments unchanged. Auto starts Claude in your shared workspace. It prefers available headroom for the requested model, keeps a conversation on its current account, and tries another account after a quota or authentication rejection. **No Terminal restart. No lost local conversation.** You can also choose Auto from **Sessions → Continue as…**.
-
-**Claude.ai connectors stay on your default Claude login.** When that login has the required connector permissions, Auto preserves native OAuth for connector discovery and access while the inference pool can switch accounts. Minted pool tokens do not replace the connector login. If a usable default login is unavailable, or you pass `--bare`, Auto clearly starts in inference-only mode.
-
-Each Auto session owns a small authenticated loopback proxy that closes when Claude exits. It tries at most three profiles per request. Output streams as it arrives; once an answer has started, Auto never replays it or repeats its tool output. Requests referencing account-owned files or server-side containers must use their original named profile; Auto does not know those resources' owners. Independent Auto sessions do not share a central scheduler.
-
 Profile badges distinguish **Max 5×**, **Max 20×**, and verified **Team Premium** accounts. An unrecognized Team seat is labeled **tier unknown** rather than guessed to be Standard.
 
 ## See what your sessions used
@@ -126,7 +107,7 @@ Already have an inference token? Open **Manage profiles → Set token…**, past
 
 Need a new token? The same dialog offers **Create in browser**, with a separate authorization-code field. Browser-created tokens use Claude's reported expiry and verified account/organization. Pasted tokens are assigned to the profile you choose; their account identity and expiry cannot be established from the opaque string, so they are labeled accordingly.
 
-Claudock-managed shortcuts, **Open in Terminal**, and Auto prefer the saved inference token. Renames preserve it. Existing user-authored wrappers remain unchanged; use `claudock run NAME` to launch those profiles with their saved token.
+Claudock-managed shortcuts and **Open in Terminal** prefer the saved inference token. Renames preserve it. Existing user-authored wrappers remain unchanged; use `claudock run NAME` to launch those profiles with their saved token.
 
 Inference tokens do not replace the normal OAuth login used to read quota. The resident app renews that monitoring login when possible. Removing a profile preserves its data and credentials; it does not revoke tokens at Anthropic.
 
@@ -142,7 +123,9 @@ claude-work
 claudock usage
 ```
 
-Integration adds `claudock`, `claude-auto`, and missing profile shortcuts such as `claude-work`. The profile name `auto` is reserved. An existing command or legacy profile with that name is preserved; use `claudock auto` in that case. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
+Integration adds `claudock` and missing profile shortcuts such as `claude-work`. The profile names `default` and `auto` remain reserved. Existing legacy profiles are preserved. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
+
+**Next release:** Claudock Auto has been removed. For one release, `claudock auto` with any arguments only prints a removal notice to stderr and exits with status 2. Use `claudock run PROFILE` to choose an account. Older `claude-auto` shortcuts reach the same notice until you load the updated shell integration.
 
 **If shell integration was already enabled:** open the updated Claudock app, then open a new Terminal tab or run this once in each existing tab:
 
@@ -160,7 +143,7 @@ Automatic renewal runs in the resident app. The one-shot `claudock usage` comman
 
 - **No Claudock account or hosted backend.** Profiles live on your Mac.
 - **No telemetry or transcript uploads from the monitor.** Local activity is read locally.
-- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens use a separate Keychain item; Auto sends model requests directly to Anthropic.
+- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens use a separate Keychain item and are passed to Claude through its launch environment.
 
 Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).
 

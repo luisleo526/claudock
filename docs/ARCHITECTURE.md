@@ -31,7 +31,7 @@ Claudock is a Swift package with a macOS menu bar executable (`ClaudockApp`), a 
 5. Replace the successful reading, or retain it with an explicit stale/error state.
 6. After the account pass, schedule the next automatic check using the selected 1-, 5-, or 15-minute interval. Manual refresh has a separate one-minute cooldown.
 
-The monitor needs no background web service, database, or credential synchronization. Explicit Auto sessions create a per-session loopback listener. Usage readings are in memory. Dismissing the popover or closing the dashboard leaves polling active until the menu bar app quits. Polling resumes after sleep when the next check is due.
+The monitor needs no background web service, database, or credential synchronization. Usage readings are in memory. Dismissing the popover or closing the dashboard leaves polling active until the menu bar app quits. Polling resumes after sleep when the next check is due.
 
 ## Local analytics
 
@@ -67,11 +67,11 @@ New profiles retain a private UUID config root for independent authentication, w
 
 Initial import statically reads active shell declarations, including the prior `~/.config/claude-usage/profiles.zsh` only when sourced. Orphaned legacy JSON registries are preserved but not automatically imported. Those legacy files and source lines remain intact. Later polling loads the registry rather than reinterpreting startup files; a deliberate shell-import action refreshes external declarations. Profile add, rename, and removal operate on the registry and do not write `.zshrc`. Removal preserves the Claude config directory, conversations, credential entry, and external shell wrappers.
 
-Shell integration is a separate, optional mutation. It writes `~/.config/claudock/init.zsh` and a marked loader block in `.zshrc`, taking an exact backup before modifying an existing shell file. Version 2 exposes the `claudock` function bound to the installed app's bundled executable and creates missing `claude-NAME` shortcut functions. Existing user aliases, functions, and executables take priority; the default `claude` command is preserved.
+Shell integration is a separate, optional mutation. It writes `~/.config/claudock/init.zsh` and a marked loader block in `.zshrc`, taking an exact backup before modifying an existing shell file. Version 4 exposes the `claudock` function bound to the installed app's bundled executable and creates missing `claude-NAME` shortcut functions. Existing user aliases, functions, and executables take priority; the default `claude` command is preserved.
 
 Shortcut synchronization runs at source time and through zsh `precmd` and `preexec` hooks. `preexec` covers a GUI profile addition made while the shell is already sitting at a prompt, before that user's next entered command executes. The internal `claudock shell profile-names` emitter reads an existing registry snapshot as data without discovery, registry creation/writes, profile locking, credential access, or networking. Generated shortcuts forward the full selector through `claudock run`, preserving argument boundaries. Rename/removal cleanup only removes functions whose current bodies exactly match the definitions Claudock recorded; externally changed definitions remain intact. Profile CRUD continues to update only the registry and never rewrites `.zshrc`.
 
-The 1.4.0 app upgrades an already-enabled, unchanged owned v1 integration to v2 on startup. It does not enable integration when off, and upgrade failures appear in Manage profiles. An existing v1 Terminal session must source `~/.config/claudock/init.zsh` once or open a new tab to install the new hooks. Subsequent profile changes use those loaded hooks and require no further reload. Disabling integration removes the owned startup files/block; open a new shell to unload previously installed functions and hooks. Re-enable integration after moving the app to update the bundled executable path.
+The app upgrades an already-enabled, unchanged owned v1–v3 integration to v4 on startup. All three legacy renderers retain their exact output for ownership validation. It does not enable integration when off, and upgrade failures appear in Manage profiles. An existing Terminal session must source `~/.config/claudock/init.zsh` once or open a new tab to install the new hooks. Subsequent profile changes use those loaded hooks and require no further reload. Disabling integration removes the owned startup files/block; open a new shell to unload previously installed functions and hooks. Re-enable integration after moving the app to update the bundled executable path.
 
 The app and CLI use the same custom executable preference domain. The bundle identifier remains `io.github.claudeusage.ClaudeUsage` during the Claudock branding migration to preserve existing preferences and login-item identity. Branding does not move account directories or alter credential bindings.
 
@@ -109,30 +109,22 @@ A successful exchange that cannot be saved stays in memory for a later save atte
 
 The one-shot `claudock usage` command reads quota without rotating credentials. It directs users with an expired token to the resident app or their Claude profile, so exiting the command cannot discard a pending rotation.
 
-## Auto routing and mint authentication
+## Subscription plans and mint authentication
 
-`BalancedSession` starts the gateway, launches Claude with literal `posix_spawn` arguments in the existing foreground process group, forwards termination signals, preserves the child exit status, and closes the listener after exit. `TerminalLauncher` calls the bundled CLI so GUI and zsh launches select the same minted credential.
-
-`AccountPool` tracks model-specific remaining headroom, conversation affinity, active request leases, and cooldowns. It reads quota at most every five minutes per Auto process with three concurrent reads. Auto never rotates credentials; the resident app owns refresh, so exiting a CLI session cannot discard a rotation. Missing/stale quota is unknown, not zero; explicit upstream rejection remains authoritative. `BalancedGateway` retries status-phase 401/429 before committing output, up to three distinct credential services. It never retries a dispatched transport error or a partial stream. Remote files/containers require a named profile because Auto has no resource-ownership registry. Different Auto processes do not coordinate their leases.
-
-`LoopbackHTTPServer` implements bounded one-request-per-connection HTTP/1.1 over Network.framework. `GatewayUpstream` preserves evolving capability headers and streams Anthropic responses without content logging. The fixed HTTPS destination rejects redirects; local credentials and cookies are never forwarded upstream.
+`TerminalLauncher` calls the bundled CLI so GUI and zsh launches select the same saved inference credential through `InferenceCredential.environmentToken`. The CLI passes it to Claude with `CLAUDE_CODE_OAUTH_TOKEN`.
 
 `SubscriptionPlan` recognizes exact Claude Code metadata mappings for Max 5×/20× and Team Premium; unknown seat mappings remain explicit. Quota percentages are never converted into presumed plan capacity.
 
 Long-lived mint credentials are separate from full-scope refreshable credentials. Browser PKCE authorization requests `user:inference` and a one-year lifetime. The server-reported expiry is stored; normal quota OAuth remains available for background refresh. Minting cannot eliminate the usage API's scope requirement.
 
-## Shell Auto shortcut and subscription-only profiles
+## Shell ownership and subscription-only profiles
 
-Adapter v3 preserves byte-for-byte v1/v2 ownership validation and upgrades only unchanged owned code/state. `claude-auto` forwards arguments through `claudock auto -- "$@"`, preserving the working directory and native resume semantics. A reserved-name sentinel from the data-only profile emitter prevents replacing any legacy profile named `claude-auto`. Existing aliases/functions/executables and user-modified generated functions keep precedence. New profiles cannot use the reserved `auto` name.
+Adapter v4 defines no `claude-auto` function. At source time, it removes an older generated function only when its current body matches `_claudock_auto_body`, then forgets that ownership record. This cleanup runs even if the registry emitter fails. Existing aliases/functions/executables and user-modified generated functions keep precedence, including legacy named-profile wrappers. New profiles cannot use the reserved `default` or `auto` names.
 
 Profile discovery classifies explicit Vertex/Bedrock/Foundry selection using the legacy serialized external-provider flag. Registry bootstrap/import excludes those wrappers, and old external-provider registrations become suppressed entries on load. A one-time bounded static rescan reconciles older imported Bedrock/Foundry wrappers that had no external flag, only when command and literal config path still match; explicit imports repeat this reconciliation. Configuration folders and shared histories are preserved.
 
 ## Paste-first token setup
 
 `MintTokenView` separates direct token import from browser authorization. Direct import is the default and needs no existing OAuth metadata. Pasted opaque tokens carry manual provenance and optional expiry/identity metadata; browser-created credentials retain verified identity and server-reported expiry. Existing credential records remain readable. `InferenceCredential` accepts an imported token with unknown expiry without claiming it never expires; actual server rejection remains authoritative.
-
-## Auto connector anchor
-
-`ConnectorSession` pins the default account/organization at startup and authorizes local native OAuth requests without becoming a refresh client. `LoopbackHTTPServer` admits dynamic bearer requests through a detached, deadline-bound authorization phase, strips credentials, then calls the existing inference handler. `BalancedSession` sets only the local base URL in connector mode; `AccountPool` remains independent. Missing suitable OAuth or explicit bare mode selects the existing static-nonce inference-only transport. Credential rotation has a bounded one-token grace for requests already prepared by Claude; it never changes the anchor.
 
 Builds use a private SwiftPM scratch directory rather than placing its SQLite database in a potentially cloud-synced checkout. CLI integration fixtures also use the system temporary directory.
