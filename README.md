@@ -2,11 +2,11 @@
 
 # Claudock
 
-**Your Claude accounts, one menu bar.** See Fable headroom and keep long-lived tokens in Keychain.
+**Your Claude accounts, one menu bar.** See 5-hour, weekly, and Fable headroom side by side, and keep long-lived tokens in Keychain.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
 
-> **v1.5.3 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> **v1.6.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -25,7 +25,7 @@
 
 Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.5.3/Claudock-1.5.3-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.5.3).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.6.0).
 
 <details>
 <summary>Build from source</summary>
@@ -125,7 +125,7 @@ claudock usage
 
 Integration adds `claudock` and missing profile shortcuts such as `claude-work`. The profile names `default` and `auto` remain reserved. Existing legacy profiles are preserved. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
 
-**Next release:** Claudock Auto has been removed. For one release, `claudock auto` with any arguments only prints a removal notice to stderr and exits with status 2. Use `claudock run PROFILE` to choose an account. Older `claude-auto` shortcuts reach the same notice until you load the updated shell integration.
+**Since 1.6.0:** Claudock Auto has been removed. For this release, `claudock auto` with any arguments only prints a removal notice to stderr and exits with status 2. Use `claudock run PROFILE` to choose an account. Older `claude-auto` shortcuts reach the same notice until you load the updated shell integration.
 
 **If shell integration was already enabled:** open the updated Claudock app, then open a new Terminal tab or run this once in each existing tab:
 

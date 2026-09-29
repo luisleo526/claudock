@@ -109,7 +109,7 @@ private struct ClaudockCLI {
     private static func execute(_ command: Command) async throws {
         switch command {
         case .help: print(help)
-        case .version: print("Claudock 1.5.3")
+        case .version: print("Claudock 1.6.0")
         case .list:
             let profiles = try ProfileStore.load()
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
