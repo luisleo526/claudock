@@ -199,46 +199,23 @@ final class MintTokenTests: XCTestCase {
         }
     }
 
-    func testActiveMintIsPreferredWithoutReadingOrRefreshingUsageOAuth() async throws {
-        let credentials = try await InferenceCredential.read(profile: profile, mint: { _ in self.token }, oauth: { _ in
-            XCTFail("Active mint must not read usage OAuth")
-            throw MintTokenError.exchangeFailed
-        }, now: instant)
-        XCTAssertEqual(credentials.accessToken, token.accessToken)
-        XCTAssertEqual(credentials.expiresAt, token.expiresAt)
-        XCTAssertEqual(credentials.scopes, ["user:inference"])
-        XCTAssertNil(credentials.refreshToken)
+    func testActiveMintIsPassedThroughEnvironment() throws {
         XCTAssertEqual(try InferenceCredential.environmentToken(profile: profile, mint: { _ in self.token }, now: instant), token.accessToken)
     }
 
-    func testExpiredMintAndOAuthRequireResidentAppRenewalWithoutRotation() async throws {
+    func testExpiredBrowserMintLeavesAuthenticationToClaude() throws {
         let expired = MintToken(accessToken: "fixture-old-mint", expiresAt: instant, identity: identity)
-        let oauth = Credentials(accessToken: "fixture-old-oauth", expiresAt: instant, plan: "max", refreshToken: "fixture-refresh")
-        var reads = 0
-        do {
-            _ = try await InferenceCredential.read(profile: profile, mint: { _ in expired }, oauth: { _ in reads += 1; return oauth }, now: instant)
-            XCTFail("Expired OAuth should be handed back to the resident app")
-        } catch { XCTAssertEqual(error as? MonitorError, .expired) }
-        XCTAssertEqual(reads, 1)
         XCTAssertNil(try InferenceCredential.environmentToken(profile: profile, mint: { _ in expired }, now: instant))
     }
 
-    func testAbsentMintCanUseUnexpiredExistingOAuthWithoutChangingTokens() async throws {
-        let oauth = Credentials(accessToken: "fixture-existing-oauth", expiresAt: instant.addingTimeInterval(120), plan: "max", refreshToken: "fixture-existing-refresh")
-        let result = try await InferenceCredential.read(profile: profile, mint: { _ in nil }, oauth: { _ in oauth }, now: instant)
-        XCTAssertEqual(result.accessToken, oauth.accessToken)
-        XCTAssertEqual(result.refreshToken, oauth.refreshToken)
-        XCTAssertEqual(result.expiresAt, oauth.expiresAt)
+    func testAbsentMintLeavesAuthenticationToClaude() throws {
+        XCTAssertNil(try InferenceCredential.environmentToken(profile: profile, mint: { _ in nil }, now: instant))
     }
 
-    func testRejectedMintReadNeverSilentlySelectsUsageOAuth() async throws {
-        do {
-            _ = try await InferenceCredential.read(profile: profile, mint: { _ in throw MintTokenError.accountMismatch }, oauth: { _ in
-                XCTFail("Mint error must not select another credential")
-                throw MintTokenError.exchangeFailed
-            }, now: instant)
-            XCTFail("Mint error was ignored")
-        } catch { XCTAssertEqual(error as? MintTokenError, .accountMismatch) }
+    func testRejectedMintReadIsReportedAndUnsupportedProfileDoesNotReadStorage() throws {
+        XCTAssertThrowsError(try InferenceCredential.environmentToken(profile: profile, mint: { _ in throw MintTokenError.accountMismatch }, now: instant)) {
+            XCTAssertEqual($0 as? MintTokenError, .accountMismatch)
+        }
         let unsupported = Profile(command: "claude-vertex", configDirectory: "/synthetic/vertex", isVertex: true)
         XCTAssertThrowsError(try InferenceCredential.environmentToken(profile: unsupported, mint: { _ in
             XCTFail("Unsupported profile reached mint storage")
@@ -421,28 +398,13 @@ final class MintTokenTests: XCTestCase {
         }
     }
 
-    func testUnknownExpiryImportedTokenIsPreferredWithoutOAuthReadOrRenewal() async throws {
+    func testUnknownExpiryImportedTokenIsPassedThroughEnvironment() throws {
         let imported = try MintToken.imported(raw: pastedValue, expiresAt: nil, identity: nil)
-        let credential = try await InferenceCredential.read(profile: profile, mint: { _ in imported }, oauth: { _ in
-            XCTFail("Pasted token requires no existing OAuth login")
-            throw MintTokenError.loginRequired
-        }, now: instant)
-        XCTAssertEqual(credential.accessToken, pastedValue)
-        XCTAssertNil(credential.expiresAt)
-        XCTAssertNil(credential.refreshToken)
-        XCTAssertEqual(credential.scopes, ["user:inference"])
         XCTAssertEqual(try InferenceCredential.environmentToken(profile: profile, mint: { _ in imported }, now: instant), pastedValue)
     }
 
-    func testKnownExpiredImportedTokenDoesNotSelectAnotherOAuthIdentity() async throws {
+    func testKnownExpiredImportedTokenIsReported() throws {
         let imported = try MintToken.imported(raw: pastedValue, expiresAt: instant, identity: nil)
-        do {
-            _ = try await InferenceCredential.read(profile: profile, mint: { _ in imported }, oauth: { _ in
-                XCTFail("An expired unverified token must not silently change provider accounts")
-                throw MintTokenError.exchangeFailed
-            }, now: instant)
-            XCTFail("Expired imported token was accepted")
-        } catch { XCTAssertEqual(error as? MintTokenError, .tokenExpired) }
         XCTAssertThrowsError(try InferenceCredential.environmentToken(profile: profile, mint: { _ in imported }, now: instant)) {
             XCTAssertEqual($0 as? MintTokenError, .tokenExpired)
         }

@@ -31,11 +31,6 @@ enum TerminalLauncher {
     private static func boundArguments(profile: Profile, login: Bool) -> [String] {
         ["launch-bound", profile.id, CredentialStore.serviceName(for: profile), login ? "login" : "run", "--"]
     }
-    @MainActor static func auto(arguments: [String] = [], directory: String = NSHomeDirectory()) async throws {
-        guard let cli = bundledCLI else { throw MonitorError.unsupported("Reinstall the complete Claudock app to use Auto.") }
-        let profile = Profile(command: "claude", configDirectory: NSHomeDirectory() + "/.claude")
-        try await open(profile: profile, binary: cli, arguments: ["auto", "--"] + arguments, directory: directory)
-    }
     @MainActor private static func open(profile: Profile, binary: String, arguments: [String], directory: String) async throws {
         guard executable != nil else { throw MonitorError.unsupported("Claude Code was not found. Install it or select its executable in Settings.") }
         var isDirectory: ObjCBool = false

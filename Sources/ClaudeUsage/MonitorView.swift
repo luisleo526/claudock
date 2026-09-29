@@ -47,8 +47,6 @@ struct MonitorView: View {
     @State private var tab = "Accounts"
     @State private var search = ""
     @State private var showManager = false
-    @State private var autoOpening = false
-    @State private var autoFailure: String?
     @State private var showWelcome = !CommandLine.arguments.contains("--demo") && !UserDefaults.standard.bool(forKey: "onboardingComplete")
 
     var body: some View {
@@ -60,24 +58,6 @@ struct MonitorView: View {
                 Text("Overview").tag("Overview")
                 Text("Sessions").tag("Sessions")
             }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 24).padding(.bottom, 16)
-            if tab == "Accounts" {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Keep working across accounts").font(.system(size: 12, weight: .medium))
-                        Text("Auto switches on quota limits in the same session.").font(.system(size: 10)).foregroundStyle(muted)
-                    }
-                    Spacer()
-                    Button("Start Auto") {
-                        autoOpening = true
-                        Task {
-                            do { try await TerminalLauncher.auto() }
-                            catch { autoFailure = error.localizedDescription }
-                            autoOpening = false
-                        }
-                    }.disabled(autoOpening || store.isDemo || store.subscriptionCount == 0)
-                        .help("Open Claude with the shared workspace and automatic quota failover. Already streamed answers are never replayed.")
-                }.padding(.horizontal, 24).padding(.bottom, 16)
-            }
             if tab == "Accounts" {
             if let error = store.profileError {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -128,9 +108,6 @@ struct MonitorView: View {
             Button("OK") { loginError = nil }
         } message: { Text(loginError ?? "") }
         .sheet(isPresented: $showManager) { ProfileManagerView(store: store) }
-        .alert("Could not start Auto", isPresented: Binding(get: { autoFailure != nil }, set: { if !$0 { autoFailure = nil } })) {
-            Button("OK") { autoFailure = nil }
-        } message: { Text(autoFailure ?? "") }
         .sheet(isPresented: $showWelcome) { WelcomeView(store: store) { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showManager = true } } }
     }
     private var header: some View {

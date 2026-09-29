@@ -26,9 +26,6 @@ def check(base):
     home = base / "home"
     home.mkdir()
     environment["HOME"] = str(home)
-    # Proxy fixtures below are synthetic; never capture a user's proxy exclusions.
-    environment.pop("NO_PROXY", None)
-    environment.pop("no_proxy", None)
     if "DEVELOPER_DIR" not in environment and Path("/Applications/Xcode.app/Contents/Developer").is_dir():
         environment["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
 
@@ -44,7 +41,7 @@ def check(base):
                    str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift")])
     binary = base / "claudock"
     compile_swift(["-parse-as-library", "-I", str(base), "-L", str(base), "-lUsageCore", "-Xlinker", "-rpath", "-Xlinker", str(base),
-                   "-o", str(binary), str(sources[0]), str(PROJECT / "Sources/ClaudockCLI/BalancedSession.swift")])
+                   "-o", str(binary), str(sources[0])])
 
     launch_source = sources[2].read_text()
     cleared_keys = re.findall(r'"([A-Z_]+)"', launch_source.split("public static func quote")[0])
@@ -55,7 +52,7 @@ print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": {
     if key in ALLOWED_KEYS
 }}))
 sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
-'''.replace("ALLOWED_KEYS", repr(cleared_keys + ["TEST_KEEP", "NO_PROXY", "no_proxy"])))
+'''.replace("ALLOWED_KEYS", repr(cleared_keys + ["TEST_KEEP"])))
     fake.chmod(0o700)
     marker = base / "store-marker"
     environment["CLAUDOCK_TEST_MARK"] = str(marker)

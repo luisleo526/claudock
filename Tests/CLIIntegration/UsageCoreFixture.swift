@@ -23,30 +23,6 @@ public enum InferenceCredential {
         return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
     }
 }
-public struct LocalHTTPRequest: Sendable {}
-public actor LocalHTTPResponseWriter {}
-public actor ConnectorSession {
-    public static func defaultSession() async -> ConnectorSession? {
-        ProcessInfo.processInfo.environment["CLAUDOCK_TEST_CONNECTORS"] == "1" ? ConnectorSession() : nil
-    }
-    public func authorize(_ bearer: String) async -> Bool { false }
-}
-public final class LoopbackHTTPServer: @unchecked Sendable {
-    public init(token: String, handler: @escaping @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void) {}
-    public init(authorizeBearer: @escaping @Sendable (String) async -> Bool, handler: @escaping @Sendable (LocalHTTPRequest, LocalHTTPResponseWriter) async -> Void) {}
-    public func start() async throws -> UInt16 { 12345 }
-    public func stop() {}
-}
-public actor BalancedGateway {
-    public init(selectors: Set<String>?) {
-        if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_POOL_MARK"] {
-            try? Data((selectors?.sorted().joined(separator: ",") ?? "all").utf8).write(to: URL(fileURLWithPath: path))
-        }
-    }
-    public func prepare() async throws {}
-    public func handle(_ request: LocalHTTPRequest, writer: LocalHTTPResponseWriter) async {}
-}
-
 public enum ProfileStore {
     public static func shellProfileNames() throws -> [String] { ["claude-smoke"] }
     public static func load() throws -> [Profile] {

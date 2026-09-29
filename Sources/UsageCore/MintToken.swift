@@ -440,29 +440,6 @@ public enum MintTokenStore {
 }
 
 public enum InferenceCredential {
-    public static func read(profile: Profile) async throws -> Credentials {
-        try await read(profile: profile, mint: MintTokenStore.read, oauth: CredentialStore.read)
-    }
-
-    static func read(profile: Profile, mint: (Profile) throws -> MintToken?,
-                     oauth: (Profile) throws -> Credentials,
-                     now: Date = Date()) async throws -> Credentials {
-        try MintTokenStore.validateProfile(profile)
-        if let mint = try mint(profile) {
-            if mint.expiresAt.map({ $0 > now }) ?? (mint.provenance == .pasted) {
-                return Credentials(accessToken: mint.accessToken, expiresAt: mint.expiresAt, plan: nil, scopes: ["user:inference"])
-            }
-            if mint.provenance == .pasted { throw MintTokenError.tokenExpired }
-        }
-        let credentials = try oauth(profile)
-        if let expires = credentials.expiresAt, expires <= now {
-            // Auto/one-shot processes must not rotate a token pair and then
-            // exit before persistence completes. The resident app owns renewal.
-            throw MonitorError.expired
-        }
-        return credentials
-    }
-
     /// Only the caller's environment receives the value. Never put it in argv.
     public static func environmentToken(profile: Profile) throws -> String? {
         try environmentToken(profile: profile, mint: MintTokenStore.read)

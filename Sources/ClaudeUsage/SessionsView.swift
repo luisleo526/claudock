@@ -69,7 +69,6 @@ struct ContinueSessionView: View {
             }
             Picker("Continue using", selection: $target) {
                 Text("Choose a profile").tag("")
-                Text("Auto · switch on quota limits").tag("__claudock_auto__")
                 ForEach(candidates) { account in
                     Text(account.profile.command + (account.error == nil ? account.snapshot?.preferredLaunchWindow.map { " · \($0.title) \(Int($0.percent))% used" } ?? "" : " · check sign-in")).tag(account.id)
                 }
@@ -89,8 +88,7 @@ struct ContinueSessionView: View {
     }
     private func launch() {
         guard let directory = session.projectPath else { return }
-        let account = candidates.first(where: { $0.id == target })
-        guard target == "__claudock_auto__" || account != nil else { return }
+        guard let account = candidates.first(where: { $0.id == target }) else { return }
         launching = true
         Task {
             do {
@@ -100,8 +98,7 @@ struct ContinueSessionView: View {
                     throw MonitorError.unsupported("The saved conversation file is no longer available.")
                 }
                 let arguments = ["--resume", session.filePath, "--fork-session"]
-                if target == "__claudock_auto__" { try await TerminalLauncher.auto(arguments: arguments, directory: directory) }
-                else if let account { try await TerminalLauncher.launch(profile: account.profile, arguments: arguments, directory: directory) }
+                try await TerminalLauncher.launch(profile: account.profile, arguments: arguments, directory: directory)
                 dismiss()
             } catch { self.error = error.localizedDescription }
             launching = false

@@ -24,9 +24,7 @@ public enum ProfileStore {
         guard let state = try? JSONDecoder().decode(State.self, from: data) else { throw Failure.invalidManagedFiles }
         try validate(state)
         return sorted(state.profiles).filter {
-            // Reserved-name sentinel: an older/imported profile named auto owns
-            // its name even when it cannot receive a generated profile shortcut.
-            $0.command == "claude-auto" || ($0.managed && !$0.isVertex && $0.discoveryNote == nil && $0.command != "claude")
+            $0.managed && !$0.isVertex && $0.discoveryNote == nil && $0.command != "claude"
         }.map(\.command)
     }
 

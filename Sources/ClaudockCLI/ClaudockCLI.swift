@@ -23,7 +23,7 @@ private enum Command {
     case help, version, list, importShell
     case add(String, String?), rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
-    case auto(Set<String>?, [String])
+    case removedAuto
     case boundLaunch(String, String, Bool, [String])
 
     static func parse(_ arguments: [String]) throws -> Command {
@@ -38,17 +38,7 @@ private enum Command {
                   arguments[3] != "login" || arguments.count == 5 else { throw CLIError.arguments("Invalid bound profile launch.") }
             return .boundLaunch(id, service, arguments[3] == "login", Array(arguments.dropFirst(5)))
         }
-        if first == "auto" {
-            var rest = Array(arguments.dropFirst()), selectors: Set<String>?
-            if rest.first == "--profiles" {
-                guard rest.count >= 2 else { throw CLIError.arguments("--profiles needs comma-separated profile selectors.") }
-                let values = rest[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-                selectors = Set(try values.map(name)); rest.removeFirst(2)
-            }
-            if rest.isEmpty { return .auto(selectors, []) }
-            guard rest.first == "--" else { throw CLIError.arguments("Separate Claude arguments with '--': claudock auto -- CLAUDE_ARGS.") }
-            return .auto(selectors, Array(rest.dropFirst()))
-        }
+        if first == "auto" { return .removedAuto }
         if first == "profile", arguments.count >= 2 {
             switch arguments[1] {
             case "list" where arguments.count == 2: return .list
@@ -92,7 +82,7 @@ private enum Command {
 
     private static func newName(_ value: String) throws -> String {
         guard !["default", "auto"].contains(value.lowercased()) else {
-            throw CLIError.arguments("The names 'default' and 'auto' are reserved for the default account and automatic routing.")
+            throw CLIError.arguments("The profile names 'default' and 'auto' are reserved. Choose another name.")
         }
         guard value.range(of: #"\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}\z"#, options: .regularExpression) != nil else {
             throw CLIError.arguments("Use 1–40 letters, numbers, underscores, or hyphens, starting with a letter or number.")
@@ -143,9 +133,9 @@ private struct ClaudockCLI {
             try launch(profile: resolve(name), arguments: ["auth", "login", "--claudeai"])
         case .run(let name, let arguments):
             try launch(profile: resolve(name), arguments: arguments, useMint: true)
-        case .auto(let selectors, let arguments):
-            let result = try await BalancedSession.run(selectors: selectors, arguments: arguments)
-            exit(result)
+        case .removedAuto:
+            FileHandle.standardError.write(Data("Claudock Auto has been removed. Use 'claudock run PROFILE' to start Claude with a specific profile.\n".utf8))
+            exit(2)
         case .boundLaunch(let id, let service, let login, let arguments):
             let profiles = try ProfileStore.load()
             let matches = profiles.filter { $0.id == id }
@@ -263,8 +253,6 @@ private struct ClaudockCLI {
       claudock profile login NAME
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
-      claudock auto [--profiles NAME,NAME] [-- CLAUDE_ARGS...]
-      claude-auto [CLAUDE_ARGS...]       With zsh integration enabled
       claudock usage
       claudock shell enable|disable|status
       claudock version
@@ -275,11 +263,6 @@ private struct ClaudockCLI {
     takes precedence; ambiguous display names require the selector from 'list'.
     Selectors are profile identifiers; they do not create shell commands.
     'run' and 'profile login' use the current terminal and working directory.
-    'auto' keeps the same Claude session and switches profiles on quota rejection
-    before output starts. Already streamed answers are never replayed. It uses
-    the default shared workspace; --profiles restricts the inference account pool.
-    Claude.ai connectors keep the normal default login when available. Otherwise
-    Auto starts in inference-only mode; --bare deliberately skips connectors.
     'usage' requests subscription quota once for each supported profile; output
     is tab-separated and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
@@ -290,8 +273,6 @@ private struct ClaudockCLI {
       claudock profile login work
       claudock run work
       claude-work                    After enabling shell integration
-      claude-auto --continue         Continue the latest shared project session
-      claude-auto --resume           Choose a shared conversation to continue
       claudock run work -- --resume
     """
 }

@@ -32,7 +32,7 @@ struct MintTokenView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Inference token for \(profile.name)").font(.title2.weight(.semibold))
-            Text("Use an existing token for Claude sessions and Auto, or create one in your browser.")
+            Text("Use an existing token for Claude sessions, or create one in your browser.")
                 .foregroundStyle(.secondary)
             if saved {
                 Label("Saved in Keychain", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
