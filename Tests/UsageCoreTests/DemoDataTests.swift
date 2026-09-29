@@ -4,7 +4,22 @@ import XCTest
 final class DemoDataTests: XCTestCase {
     func testDefaultPreviewKeepsItsFourDocumentedProfiles() {
         XCTAssertEqual(DemoData.profiles.map(\.command), ["claude-personal", "claude-studio", "claude-weekend", "claude-research"])
-        XCTAssertEqual(DemoData.usage(index: 1).windows.map(\.percent), [68, 81, 92])
+        XCTAssertEqual(DemoData.usage(index: 1).windows.map(\.percent), [100, 81, 92])
+    }
+
+    func testPreviewCoversPaceFullAndMissingFableWithParserIDs() {
+        let now = Date(timeIntervalSince1970: 1_789_000_000)
+        let personal = DemoData.usage(index: 0, now: now)
+        XCTAssertEqual(personal.displayWindows.session?.percent, 82)
+        XCTAssertEqual(personal.displayWindows.weekly?.percent, 41)
+        XCTAssertEqual(personal.displayWindows.fable?.percent, 67)
+        XCTAssertEqual(personal.displayWindows.session?.resetsAt, now.addingTimeInterval(2 * 3600 + 10 * 60))
+        XCTAssertEqual(personal.displayWindows.weekly?.resetsAt, now.addingTimeInterval(3 * 86_400 + 4 * 3600))
+        XCTAssertEqual(personal.displayWindows.fable?.resetsAt, personal.displayWindows.weekly?.resetsAt)
+        XCTAssertEqual(personal.fetchedAt, now)
+        XCTAssertEqual(personal.windows.map(\.id), ["session-0", "weekly_all-1", "weekly_scoped-2"])
+        XCTAssertNil(DemoData.usage(index: 2, now: now).displayWindows.fable)
+        XCTAssertNotNil(DemoData.usage(index: 3, now: now).displayWindows.fable)
     }
 
     func testLargePreviewHasDistinctProfilesAndUsage() {
@@ -15,7 +30,8 @@ final class DemoDataTests: XCTestCase {
         XCTAssertEqual(profiles[4].command, "claude-demo-05")
         for index in profiles.indices {
             let windows = DemoData.usage(index: index).windows
-            XCTAssertGreaterThanOrEqual(windows.count, 3)
+            XCTAssertGreaterThanOrEqual(windows.count, index == 2 ? 2 : 3)
+            XCTAssertEqual(Set(windows.map(\.id)).count, windows.count)
             XCTAssertTrue(windows.allSatisfy { (0...100).contains($0.percent) })
         }
     }

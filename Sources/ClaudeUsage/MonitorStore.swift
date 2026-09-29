@@ -124,10 +124,12 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     }
     func refresh(manual: Bool = false) {
         if isDemo {
+            now = Date()
             accounts = DemoData.profiles(count: demoProfileCount).enumerated().map { index, profile in
-                AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4], snapshot: DemoData.usage(index: index))
+                AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4],
+                             snapshot: DemoData.usage(index: index, now: now), error: index == 3 ? .network : nil)
             }
-            now = Date(); lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
+            lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return
         }
         if refreshing { if !manual { refreshPending = true }; return }

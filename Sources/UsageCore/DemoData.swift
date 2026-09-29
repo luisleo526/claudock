@@ -12,30 +12,35 @@ public enum DemoData {
             return Profile(command: "claude-" + name, configDirectory: "/Users/demo/.claude-" + name)
         }
     }
-    public static func usage(index: Int) -> UsageSnapshot {
+    public static func usage(index: Int, now: Date = Date()) -> UsageSnapshot {
         guard index >= 4 else {
-            let session = [23.0, 68, 7, 91][index]
-            let week = [42.0, 81, 16, 64][index]
-            let fable = [36.0, 92, 18, 73][index]
-            return UsageSnapshot(windows: [
-                UsageWindow(id: "session", title: "5-hour session", percent: session, resetsAt: Date().addingTimeInterval(Double(3600 + index * 1800))),
-                UsageWindow(id: "weekly", title: "Weekly · all models", percent: week, resetsAt: Date().addingTimeInterval(Double(86_400 * (index + 1)))),
-                UsageWindow(id: "fable", title: "Weekly · Fable", percent: fable, resetsAt: Date().addingTimeInterval(Double(86_400 * (index + 1))))
-            ])
+            let session = [82.0, 100, 7, 91][index]
+            let week = [41.0, 81, 16, 64][index]
+            let fable = [67.0, 92, 18, 73][index]
+            let sessionReset = now.addingTimeInterval(index == 0 ? 2 * 3600 + 10 * 60 : Double(3600 + index * 1800))
+            let weeklyReset = now.addingTimeInterval(index == 0 ? 3 * 86_400 + 4 * 3600 : Double(86_400 * (index + 1)))
+            var windows = [
+                UsageWindow(id: "session-0", title: "5-hour session", percent: session, resetsAt: sessionReset),
+                UsageWindow(id: "weekly_all-1", title: "Weekly · all models", percent: week, resetsAt: weeklyReset)
+            ]
+            if index != 2 {
+                windows.append(UsageWindow(id: "weekly_scoped-2", title: "Weekly · Fable", percent: fable, resetsAt: weeklyReset))
+            }
+            return UsageSnapshot(windows: windows, fetchedAt: now)
         }
         // Deterministic variety for large previews, including additional model limits.
         var windows = [
-            UsageWindow(id: "session", title: "5-hour session", percent: Double(index * 37 % 100), resetsAt: Date().addingTimeInterval(Double(900 + index % 9 * 1800))),
-            UsageWindow(id: "weekly", title: "Weekly · all models", percent: Double((index * 53 + 11) % 100), resetsAt: Date().addingTimeInterval(Double(86_400 * (index % 7 + 1)))),
-            UsageWindow(id: "fable", title: "Weekly · Fable", percent: Double((index * 29 + 7) % 100), resetsAt: Date().addingTimeInterval(Double(86_400 * (index % 7 + 1))))
+            UsageWindow(id: "session-0", title: "5-hour session", percent: Double(index * 37 % 100), resetsAt: now.addingTimeInterval(Double(900 + index % 9 * 1800))),
+            UsageWindow(id: "weekly_all-1", title: "Weekly · all models", percent: Double((index * 53 + 11) % 100), resetsAt: now.addingTimeInterval(Double(86_400 * (index % 7 + 1)))),
+            UsageWindow(id: "weekly_scoped-2", title: "Weekly · Fable", percent: Double((index * 29 + 7) % 100), resetsAt: now.addingTimeInterval(Double(86_400 * (index % 7 + 1))))
         ]
         if index % 2 == 0 {
-            windows.append(UsageWindow(id: "opus", title: "Weekly · Opus", percent: Double((index * 17 + 3) % 100), resetsAt: Date().addingTimeInterval(Double(86_400 * (index % 5 + 1)))))
+            windows.append(UsageWindow(id: "weekly_scoped-\(windows.count)", title: "Weekly · Opus", percent: Double((index * 17 + 3) % 100), resetsAt: now.addingTimeInterval(Double(86_400 * (index % 5 + 1)))))
         }
         if index % 3 == 0 {
-            windows.append(UsageWindow(id: "sonnet", title: "Weekly · Sonnet", percent: Double((index * 11 + 5) % 100), resetsAt: Date().addingTimeInterval(Double(86_400 * (index % 4 + 2)))))
+            windows.append(UsageWindow(id: "weekly_scoped-\(windows.count)", title: "Weekly · Sonnet", percent: Double((index * 11 + 5) % 100), resetsAt: now.addingTimeInterval(Double(86_400 * (index % 4 + 2)))))
         }
-        return UsageSnapshot(windows: windows)
+        return UsageSnapshot(windows: windows, fetchedAt: now)
     }
     /// Stands in for an inference-token Keychain lookup in previews: blocks for about as
     /// long as a `security` subprocess (30–80 ms) and reports no token, without reading

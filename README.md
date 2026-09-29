@@ -10,7 +10,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
-  <img src="docs/screenshots/accounts-light.png" width="620" alt="Claudock account view with large Fable usage bars, reset countdowns, and smaller session and weekly limits">
+  <img src="docs/screenshots/accounts-light.png" width="620" alt="Claudock demo accounts with aligned 5-hour, Weekly, and Fable usage rows, elapsed-time pace ticks, short reset countdowns, and Full, Not reported, and stale states">
 </picture>
 
 *All screenshots show synthetic demo profiles. Percentages show allowance used.*
@@ -44,11 +44,11 @@ The build targets your Mac's architecture. Apple Silicon is validated; Intel rem
 
 </details>
 
-## Check Fable first
+## Compare all three limits
 
-Fable gets the main progress bar, a readable percentage, and its reset time. Session and overall weekly limits sit underneath.
+5-hour, overall Weekly, and Fable limits appear in three equally weighted rows. Their bars share one scale, with percentages and short reset countdowns aligned across accounts. The vertical tick marks how much of the window has elapsed; a fill past the tick means allowance is being used faster than time is passing. Hover a label for the full window title or a countdown for the reset date.
 
-When several Fable limits are reported, the most used one leads. If Claude reports no Fable allowance, Claudock keeps the standard limits visible.
+A limit at 100% or more shows a symbol and **Full**. When several Fable limits are reported, the most used one fills the Fable row and the rest remain below as compact meters. If Claude reports no Fable allowance, its row shows an empty track, **—**, and **Not reported**. Missing session or weekly rows are omitted. A tick appears only when both the duration and reset time are known; stale readings stay muted.
 
 Open the profile you need with **Open in Terminal**, or use **Copy** for its launch command.
 
