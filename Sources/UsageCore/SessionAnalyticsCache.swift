@@ -41,6 +41,10 @@ public final class SessionAnalyticsCache: @unchecked Sendable {
     }
 
     public let url: URL?
+    /// Changed entries reach disk at most this often; scans in between keep them in memory
+    /// and a relaunch re-reads only the bytes appended since the last write.
+    public let writeInterval: TimeInterval
+    private var lastWrite = Date.distantPast
     private let lock = NSLock()
     private var entries: [String: Entry]?
     /// Bytes read from disk by the most recent scan (the snapshot's `scannedBytes` counts
@@ -48,7 +52,7 @@ public final class SessionAnalyticsCache: @unchecked Sendable {
     public private(set) var lastReadBytes: Int64 = 0
 
     /// `url: nil` keeps the cache in memory for this process only.
-    public init(url: URL?) { self.url = url }
+    public init(url: URL?, writeInterval: TimeInterval = 0) { self.url = url; self.writeInterval = writeInterval }
 
     /// ~/Library/Caches/<bundle identifier or Claudock>/analytics-v1.bin
     public static var defaultURL: URL {
@@ -71,7 +75,9 @@ public final class SessionAnalyticsCache: @unchecked Sendable {
         let loadedFromDisk = entries == nil
         entries = updated
         lastReadBytes = readBytes
-        guard let url, changed || loadedFromDisk && !FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let url else { return }
+        let due = changed && Date().timeIntervalSince(lastWrite) >= writeInterval
+        guard due || loadedFromDisk && !FileManager.default.fileExists(atPath: url.path) else { return }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         guard let data = try? encoder.encode(Stored(version: Self.version, entries: updated)),
@@ -81,7 +87,7 @@ public final class SessionAnalyticsCache: @unchecked Sendable {
         // Written beside the target and renamed over it, never exposed with broader permissions.
         let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]) else { return }
-        if rename(temporary.path, url.path) != 0 { try? FileManager.default.removeItem(at: temporary) }
+        if rename(temporary.path, url.path) != 0 { try? FileManager.default.removeItem(at: temporary) } else { lastWrite = Date() }
     }
 
     static func pack(_ records: [Record]) -> Data {

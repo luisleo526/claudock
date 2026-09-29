@@ -468,6 +468,33 @@ final class SessionAnalyticsTests: XCTestCase {
         }
     }
 
+    /// A throttled cache writes once, keeps later changes in memory, and a relaunch from the
+    /// older file still matches a scan from scratch.
+    func testThrottledCacheWritesOnceAndStaleFileStillMatchesFullScan() throws {
+        try fixture { root in
+            let p = profile("one", root: root)
+            let cacheURL = root.appendingPathComponent("cache/analytics-v1.bin")
+            let cache = SessionAnalyticsCache(url: cacheURL, writeInterval: 3_600)
+            let since = now.addingTimeInterval(-7 * 86_400)
+            let a = try write([try assistant("a1", usage: ["input_tokens": 10])], profile: p, session: sessionA, created: now.addingTimeInterval(-600))
+            _ = SessionAnalytics.scan(profiles: [p], since: since, now: now, cache: cache)
+            let written = try FileManager.default.attributesOfItem(atPath: cacheURL.path)[.systemFileNumber] as? Int
+            XCTAssertNotNil(written)
+            for index in 2...4 {
+                let handle = try FileHandle(forWritingTo: a)
+                try handle.seekToEnd(); try handle.write(contentsOf: Data((try assistant("a\(index)", usage: ["output_tokens": index]) + "\n").utf8)); try handle.close()
+                let full = SessionAnalytics.scan(profiles: [p], since: since, now: now)
+                XCTAssertEqual(SessionAnalytics.scan(profiles: [p], since: since, now: now, cache: cache), full)
+            }
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: cacheURL.path)[.systemFileNumber] as? Int, written,
+                           "changes within the interval stay in memory")
+            let relaunched = SessionAnalyticsCache(url: cacheURL, writeInterval: 3_600)
+            XCTAssertEqual(SessionAnalytics.scan(profiles: [p], since: since, now: now, cache: relaunched),
+                           SessionAnalytics.scan(profiles: [p], since: since, now: now))
+            XCTAssertGreaterThan(relaunched.lastReadBytes, 0, "only the bytes appended since the stale write are read")
+        }
+    }
+
     func testCachedRecordsRoundTrip() {
         let records = [SessionAnalyticsCache.Record(flags: 9, time: 12.5, tokens: TokenTotals(input: 1, output: Int64.max), identity: "message:é"),
                        SessionAnalyticsCache.Record(flags: 1, time: 0, tokens: TokenTotals(), identity: nil)]

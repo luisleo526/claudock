@@ -84,7 +84,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     private var analyticsPending = false
     /// Earlier scans' per-file results, loaded by the first scan off the main thread; later
     /// scans (and relaunches) read only bytes appended since.
-    private let analyticsCache = SessionAnalyticsCache(url: SessionAnalyticsCache.defaultURL)
+    private let analyticsCache = SessionAnalyticsCache(url: SessionAnalyticsCache.defaultURL, writeInterval: 3 * 3600)
     private var analyticsProfiles: [Profile] = []
     private var refreshPending = false
 
