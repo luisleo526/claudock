@@ -39,7 +39,7 @@ final class ProfileShellNamesTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: registry), invalid)
     }
 
-    func testLegacyAutoProfilesRemainReadableAndReserveTheirShortcut() throws {
+    func testLegacyAutoProfilesRemainReadableWithoutUnmanagedShortcutSentinel() throws {
         for managed in [true, false] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -59,7 +59,7 @@ final class ProfileShellNamesTests: XCTestCase {
             try JSONSerialization.data(withJSONObject: state).write(to: registry)
             let loaded = try ProfileStore.load(home: root.path)
             XCTAssertTrue(loaded.contains { $0.id == profile.id && $0.command == "claude-auto" })
-            XCTAssertEqual(try ProfileStore.shellProfileNames(home: root.path), ["claude-auto"])
+            XCTAssertEqual(try ProfileStore.shellProfileNames(home: root.path), managed ? ["claude-auto"] : [])
         }
     }
 }

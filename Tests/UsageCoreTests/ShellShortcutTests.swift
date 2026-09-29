@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 import XCTest
 @testable import UsageCore
 
@@ -53,10 +54,10 @@ final class ShellShortcutTests: XCTestCase {
     private func run(_ script: String, fixture: Fixture, arguments: [String] = []) throws -> String {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        // Source the generated init directly. Never source user startup or override HOME.
+        // Only synthetic startup files are sourced, in a temporary HOME.
         process.arguments = ["-f", "-c", script, "claudock-shortcut-test", fixture.script.path] + arguments
         process.currentDirectoryURL = fixture.home
-        process.environment = ["PATH": fixture.bin.path + ":/usr/bin:/bin", "LC_ALL": "C",
+        process.environment = ["HOME": fixture.home.path, "PATH": fixture.bin.path + ":/usr/bin:/bin", "LC_ALL": "C",
                                "CLAUDOCK_TEST_NAMES": fixture.names.path,
                                "CLAUDOCK_TEST_EXIT": fixture.exitCode.path,
                                "CLAUDOCK_TEST_CAPTURE": fixture.capture.path,
@@ -96,7 +97,7 @@ final class ShellShortcutTests: XCTestCase {
             _ = try run(#"""
             source "$1"
             (( ${+functions[claude-work5]} )) || exit 41
-            [[ "$HOME" != "$CLAUDOCK_TEST_ROOT" ]] || exit 42
+            [[ "$HOME" == "$CLAUDOCK_TEST_ROOT" ]] || exit 42
             shift
             claude-work5 "$@"
             """#, fixture: fixture, arguments: arguments)
@@ -259,7 +260,7 @@ final class ShellShortcutTests: XCTestCase {
         XCTAssertEqual(chmod(fixture.shell.path, 0o640), 0)
     }
 
-    func testExactOwnedV1MigratesToV3WithoutChangingStartupBytes() throws {
+    func testExactOwnedV1MigratesToV4WithoutChangingStartupBytes() throws {
         try withFixture { fixture in
             try installExactLegacyV1(fixture)
             let startup = try Data(contentsOf: fixture.shell)
@@ -269,7 +270,7 @@ final class ShellShortcutTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: fixture.shell), startup)
             XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fixture.shell.path)[.posixPermissions] as? NSNumber, 0o640)
             let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.registry)) as? [String: Any])
-            XCTAssertEqual(state["version"] as? Int, 3)
+            XCTAssertEqual(state["version"] as? Int, 4)
             XCTAssertEqual(state["cliPath"] as? String, fixture.cli.path)
             let script = try Data(contentsOf: fixture.script), registry = try Data(contentsOf: fixture.registry)
             XCTAssertFalse(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
@@ -305,23 +306,22 @@ final class ShellShortcutTests: XCTestCase {
         }
     }
 
-    func testAutoShortcutForwardsClaudeArgumentsWithoutChangingManualAutoSyntax() throws {
+    func testEnableV4OmitsAutoShortcutAndKeepsNamedProfileShortcut() throws {
         try withFixture { fixture in
             try ShellIntegration.enable(cliPath: fixture.cli.path, home: fixture.home.path)
-            let arguments = ["--resume", "session with spaces", "'$(never-run)", "", "--model", "claude-fable-5"]
-            _ = try run(#"""
-            source "$1"
-            (( ${+functions[claude-auto]} && ${+functions[claude-work5]} )) || exit 41
-            shift
-            claude-auto "$@"
-            claude-auto
-            claudock auto --profiles work5
-            """#, fixture: fixture, arguments: arguments)
-            XCTAssertEqual(try capturedArguments(fixture), [["auto", "--"] + arguments, ["auto", "--"], ["auto", "--profiles", "work5"]])
+            let output = try run(#"""
+            source "$HOME/.zshrc"
+            whence -w claude-auto
+            [[ $? == 1 ]] || exit 41
+            whence -w claude-work5
+            """#, fixture: fixture)
+            XCTAssertEqual(output, "claude-auto: none\nclaude-work5: function\n")
+            let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.registry)) as? [String: Any])
+            XCTAssertEqual(state["version"] as? Int, 4)
         }
     }
 
-    func testAutoShortcutPreservesExistingFunctionAliasAndExecutable() throws {
+    func testV4PreservesUserAutoFunctionAliasAndExecutable() throws {
         for existing in ["function", "alias", "executable"] {
             try withFixture { fixture in
                 if existing == "executable" {
@@ -366,7 +366,7 @@ final class ShellShortcutTests: XCTestCase {
         }
     }
 
-    func testRegisteredAutoProfileSuppressesAutoAliasWithoutInventingProfileWrapper() throws {
+    func testReservedAutoProfileDoesNotCreateShortcut() throws {
         try withFixture { fixture in
             try setNames(["claude-auto", "claude-work5"], fixture)
             try ShellIntegration.enable(cliPath: fixture.cli.path, home: fixture.home.path)
@@ -379,19 +379,114 @@ final class ShellShortcutTests: XCTestCase {
         }
     }
 
-    func testNewRegistryCollisionRemovesOnlyOurUnchangedAutoAlias() throws {
+    func testLoadingV4RemovesOnlyUnchangedV3AutoShortcut() throws {
         try withFixture { fixture in
-            try ShellIntegration.enable(cliPath: fixture.cli.path, home: fixture.home.path)
+            try installExactLegacyV3(fixture)
+            let oldScript = fixture.home.appendingPathComponent("owned-v3.zsh")
+            try Data(contentsOf: fixture.script).write(to: oldScript)
+            XCTAssertTrue(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
             _ = try run(#"""
-            source "$1"
+            source "$2"
             (( ${+functions[claude-auto]} )) || exit 41
-            printf '%s\n' claudock-profile-names-v1 claude-auto claude-work5 > "$CLAUDOCK_TEST_NAMES"
-            _claudock_sync_profiles
+            source "$HOME/.zshrc"
             (( ! ${+functions[claude-auto]} && ${+functions[claude-work5]} )) || exit 42
-            printf '%s\n' claudock-profile-names-v1 claude-work5 > "$CLAUDOCK_TEST_NAMES"
+            (( ! ${+_claudock_auto_body} )) || exit 43
             _claudock_sync_profiles
-            (( ${+functions[claude-auto]} )) || exit 43
+            (( ! ${+functions[claude-auto]} )) || exit 44
+            """#, fixture: fixture, arguments: [oldScript.path])
+        }
+    }
+
+    private func installExactLegacyV3(_ fixture: Fixture) throws {
+        try installExactLegacyV1(fixture)
+        try ShellIntegration.renderVersionThree(cliPath: fixture.cli.path)
+            .write(to: fixture.script, atomically: true, encoding: .utf8)
+        let state = try JSONSerialization.data(withJSONObject: ["version": 3, "cliPath": fixture.cli.path], options: [.sortedKeys])
+        try state.write(to: fixture.registry)
+    }
+
+    func testFrozenV3RendererRetainsOriginalOwnershipBytes() {
+        let script = ShellIntegration.renderVersionThree(cliPath: "/Applications/Claudock's $(literal) app/claudock")
+        // Fingerprint captured from the released renderer before adding v4.
+        let digest = SHA256.hash(data: Data(script.utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(digest, "0aa1575a63c704ba40044440ff4f10e7fa896d844b0421312d3bbc43c202edeb")
+    }
+
+    func testExactOwnedV3UpgradesToV4PreservingUserStartupAndWrappers() throws {
+        try withFixture { fixture in
+            try installExactLegacyV3(fixture)
+            let prefix = "# Personal settings\nfunction claude-auto() { print -r -- user-auto; }\nfunction claude-work5() { print -r -- user-work; }\n"
+            let suffix = "# Settings after integration\nexport EDITOR=vim\n"
+            let startup = Data(prefix.utf8) + (try Data(contentsOf: fixture.shell)) + Data(suffix.utf8)
+            try startup.write(to: fixture.shell)
+            XCTAssertTrue(try ShellIntegration.status(home: fixture.home.path))
+            XCTAssertTrue(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
+            XCTAssertTrue(try ShellIntegration.status(home: fixture.home.path))
+            XCTAssertEqual(try Data(contentsOf: fixture.shell), startup)
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fixture.shell.path)[.posixPermissions] as? NSNumber, 0o640)
+            let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.registry)) as? [String: Any])
+            XCTAssertEqual(state["version"] as? Int, 4)
+            XCTAssertEqual(state["cliPath"] as? String, fixture.cli.path)
+            XCTAssertTrue(try String(contentsOf: fixture.script, encoding: .utf8).contains("# Adapter v4:"))
+            XCTAssertFalse(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
+            let output = try run(#"""
+            source "$HOME/.zshrc"
+            whence -w claude-auto
+            claude-auto
+            claude-work5
             """#, fixture: fixture)
+            XCTAssertEqual(output, "claude-auto: function\nuser-auto\nuser-work\n")
+            XCTAssertEqual(try capturedArguments(fixture), [])
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.home.path).contains { $0.hasPrefix(".zshrc.claudock-backup-") })
+            try ShellIntegration.disable(home: fixture.home.path)
+            XCTAssertEqual(try Data(contentsOf: fixture.shell), Data((prefix + "# Existing user settings\nalias ll='ls -l'\n" + suffix).utf8))
+        }
+    }
+
+    func testLoadingV4PreservesUserReplacementOfV3AutoShortcut() throws {
+        try withFixture { fixture in
+            try installExactLegacyV3(fixture)
+            let oldScript = fixture.home.appendingPathComponent("owned-v3.zsh")
+            try Data(contentsOf: fixture.script).write(to: oldScript)
+            XCTAssertTrue(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
+            let output = try run(#"""
+            source "$2"
+            (( ${+_claudock_auto_body} )) || exit 41
+            function claude-auto() { print -r -- user-auto; }
+            before=$functions[claude-auto]
+            source "$HOME/.zshrc"
+            [[ $functions[claude-auto] == "$before" ]] || exit 42
+            (( ! ${+_claudock_auto_body} )) || exit 43
+            source "$HOME/.zshrc"
+            claude-auto
+            """#, fixture: fixture, arguments: [oldScript.path])
+            XCTAssertEqual(output, "user-auto\n")
+            XCTAssertEqual(try capturedArguments(fixture), [])
+        }
+    }
+
+    func testV3UpgradeRefusesEditsAndConcurrentMutationWithoutChangingFiles() throws {
+        for edit in [true, false] {
+            try withFixture { fixture in
+                try installExactLegacyV3(fixture)
+                if edit {
+                    let file = try FileHandle(forWritingTo: fixture.script)
+                    try file.seekToEnd(); try file.write(contentsOf: Data("# User edit\n".utf8)); try file.close()
+                }
+                let descriptor = open(fixture.home.appendingPathComponent(".config/claudock/.shell-integration-lock").path, O_CREAT | O_RDWR, 0o600)
+                XCTAssertGreaterThanOrEqual(descriptor, 0)
+                defer { _ = flock(descriptor, LOCK_UN); _ = close(descriptor) }
+                if !edit { XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0) }
+                let before = try [fixture.script, fixture.registry, fixture.shell].map { try Data(contentsOf: $0) }
+                XCTAssertThrowsError(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path)) { error in
+                    switch error {
+                    case ShellIntegration.IntegrationError.modifiedFiles where edit: break
+                    case ShellIntegration.IntegrationError.busy where !edit: break
+                    default: XCTFail("Unexpected upgrade error: \(error)")
+                    }
+                }
+                XCTAssertEqual(try [fixture.script, fixture.registry, fixture.shell].map { try Data(contentsOf: $0) }, before)
+            }
         }
     }
 
@@ -476,7 +571,7 @@ final class ShellShortcutTests: XCTestCase {
             XCTAssertTrue(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
             XCTAssertEqual(try Data(contentsOf: fixture.shell), startup)
             let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.registry)) as? [String: Any])
-            XCTAssertEqual(state["version"] as? Int, 3)
+            XCTAssertEqual(state["version"] as? Int, 4)
             XCTAssertEqual(state["cliPath"] as? String, fixture.cli.path)
             XCTAssertFalse(try ShellIntegration.upgradeIfEnabled(home: fixture.home.path))
             _ = try run(#"""

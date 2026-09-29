@@ -247,24 +247,25 @@ public enum ShellIntegration {
     private static func render(_ state: State) -> String {
         if state.version == 1 { return renderVersionOne(state) }
         if state.version == 2 { return renderVersionTwo(state) }
-        return renderVersionThree(state)
+        return renderVersionThree(cliPath: state.cliPath)
     }
 
-    private static func renderVersionThree(_ state: State) -> String {
-        let invocationPrefix = quote("command " + quote(state.cliPath) + " run ")
-        let autoBody = quote("command " + quote(state.cliPath) + " auto -- \"$@\"")
+    /// Frozen v3 output remains readable for ownership-safe upgrades.
+    static func renderVersionThree(cliPath: String) -> String {
+        let invocationPrefix = quote("command " + quote(cliPath) + " run ")
+        let autoBody = quote("command " + quote(cliPath) + " auto -- \"$@\"")
         return """
         # Managed by Claudock. Change shell integration in Claudock Settings.
         # Adapter v3: managed profile shortcuts and the optional claude-auto command.
         function claudock() {
-          command \(quote(state.cliPath)) "$@"
+          command \(quote(cliPath)) "$@"
         }
 
         function _claudock_sync_profiles() {
           emulate -L zsh
           setopt no_aliases
           local _claudock_output
-          _claudock_output=$(command \(quote(state.cliPath)) shell profile-names 2>/dev/null) || return 0
+          _claudock_output=$(command \(quote(cliPath)) shell profile-names 2>/dev/null) || return 0
           local -a _claudock_lines _claudock_names
           _claudock_lines=("${(@f)_claudock_output}")
           [[ "${_claudock_lines[1]-}" == 'claudock-profile-names-v1' ]] || return 0

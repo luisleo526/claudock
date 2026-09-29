@@ -1,5 +1,11 @@
 import Foundation
 
+private func markAccess(_ boundary: String) {
+    if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MARK"] {
+        _ = FileManager.default.createFile(atPath: path, contents: Data(boundary.utf8))
+    }
+}
+
 // Synthetic boundaries for the executable-level smoke checks. Profile and
 // LaunchCommand are compiled from the unmodified production sources.
 public enum MonitorError: Error, LocalizedError {
@@ -13,7 +19,8 @@ public enum MonitorError: Error, LocalizedError {
 
 public enum InferenceCredential {
     public static func environmentToken(profile: Profile) throws -> String? {
-        ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
+        markAccess("mint credential")
+        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
     }
 }
 public struct LocalHTTPRequest: Sendable {}
@@ -42,14 +49,8 @@ public actor BalancedGateway {
 
 public enum ProfileStore {
     public static func shellProfileNames() throws -> [String] { ["claude-smoke"] }
-    private static func markAccess() {
-        if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MARK"] {
-            _ = FileManager.default.createFile(atPath: path, contents: Data("store".utf8))
-        }
-    }
-
     public static func load() throws -> [Profile] {
-        markAccess()
+        markAccess("profile store")
         return [
             Profile(command: "claude", configDirectory: "/synthetic/default"),
             Profile(command: "claude-smoke", configDirectory: "/synthetic/account space", registryID: "fixture-stable", managed: true),
@@ -86,6 +87,7 @@ public struct Credentials {
 public enum CredentialStore {
     public static func serviceName(for profile: Profile) -> String { profile.registryID == "fixture-stable" ? "Claude Code-credentials-aabbccdd" : "Claude Code-credentials" }
     public static func read(profile: Profile) throws -> Credentials {
+        markAccess("OAuth credential")
         if ProcessInfo.processInfo.environment["CLAUDOCK_TEST_FAIL_USAGE"] == "1" {
             throw MonitorError.unsupported("Synthetic quota error")
         }

@@ -23,6 +23,9 @@ FIXTURES = Path(__file__).resolve().parent
 
 def check(base):
     environment = os.environ.copy()
+    home = base / "home"
+    home.mkdir()
+    environment["HOME"] = str(home)
     # Proxy fixtures below are synthetic; never capture a user's proxy exclusions.
     environment.pop("NO_PROXY", None)
     environment.pop("no_proxy", None)
@@ -60,15 +63,31 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     passed = []
 
     def run(arguments, extra=None):
-        return subprocess.run([str(binary), *arguments], cwd=base, env={**environment, **(extra or {})}, capture_output=True, text=True)
+        return subprocess.run([str(binary), *arguments], cwd=base, env={**environment, **(extra or {})}, capture_output=True, text=True, timeout=15)
+
+    notice = "Claudock Auto has been removed. Use 'claudock run PROFILE' to start Claude with a specific profile.\n"
+    removal_failures = []
+    for arguments in (["auto"], ["auto", "--", "--continue"], ["auto", "--profiles", "a,b", "--", "x"],
+                      ["auto", "bad"], ["auto", "--profiles"], ["auto", "--profiles", "a,,b"], ["auto", "--help"]):
+        marker.unlink(missing_ok=True)
+        result = run(arguments)
+        actual = (result.returncode, result.stdout, result.stderr, marker.exists())
+        if actual != (2, "", notice, False):
+            removal_failures.append(f"{arguments!r}: expected exit 2, empty stdout, exact removal notice, no I/O; got {actual!r}")
+        passed.append("removed Auto notice without profile or credential access " + repr(arguments))
+    for arguments in ([], ["help"], ["--help"], ["-h"]):
+        result = run(arguments)
+        if result.returncode != 0 or result.stderr or "auto" in result.stdout.lower():
+            removal_failures.append(f"{arguments!r}: help must succeed without Auto; got exit {result.returncode}, stderr {result.stderr!r}, mentions Auto: {'auto' in result.stdout.lower()}")
+        passed.append("help omits Auto " + repr(arguments))
+    assert not removal_failures, "\n" + "\n".join(removal_failures)
 
     cases = [([], 0), (["help"], 0), (["--help"], 0), (["version"], 0), (["--version"], 0),
              (["nonsense"], 2), (["run"], 2), (["run", "smoke", "--resume"], 2), (["profile", "add"], 2),
              (["profile", "add", "bad name"], 2), (["profile", "add", "work", "--directory", "relative"], 2),
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
              (["profile", "add", "auto"], 2), (["profile", "rename", "smoke", "AUTO"], 2),
-             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
-             (["auto", "bad"], 2), (["auto", "--profiles"], 2), (["auto", "--profiles", "a,,b"], 2)]
+             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
@@ -117,36 +136,6 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     result = run(["profile", "login", "smoke"], {**conflicts, "CLAUDOCK_TEST_MINT": "1"})
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in json.loads(result.stdout)["env"]
     passed.append("relogin is isolated from stored mint")
-
-    result = run(["auto", "--profiles", "smoke", "--", *arguments], {**conflicts, "TEST_KEEP": "preserved", "CLAUDOCK_TEST_EXIT": "37"})
-    assert result.returncode == 37, result.stderr
-    value = json.loads(result.stdout)
-    assert value["argv"] == arguments and value["cwd"] == str(base)
-    assert value["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345"
-    assert len(value["env"]["ANTHROPIC_AUTH_TOKEN"]) == 44
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in value["env"] and "CLAUDE_CONFIG_DIR" not in value["env"]
-    passed.append("auto child literal arguments shared workspace local endpoint and exit status")
-    assert "inference only" in result.stderr
-    result = run(["auto", "--profiles", "smoke", "--", *arguments], {**conflicts, "CLAUDOCK_TEST_CONNECTORS": "1", "NO_PROXY": "internal.example"})
-    assert result.returncode == 0, result.stderr
-    connected = json.loads(result.stdout)
-    assert connected["argv"] == arguments and connected["cwd"] == str(base)
-    assert connected["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345"
-    assert not any(key in connected["env"] for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"])
-    assert "internal.example" in connected["env"]["NO_PROXY"] and "127.0.0.1" in connected["env"]["NO_PROXY"]
-    assert connected["env"]["NO_PROXY"] == connected["env"]["no_proxy"]
-    assert "connectors use the default login" in result.stderr
-    passed.append("auto retains native default OAuth and connector identity even with a restricted inference pool")
-    result = run(["auto", "--", "--bare", "--version"], {**conflicts, "CLAUDOCK_TEST_CONNECTORS": "1"})
-    assert result.returncode == 0 and "ANTHROPIC_AUTH_TOKEN" in json.loads(result.stdout)["env"] and "--bare skips connectors" in result.stderr
-    passed.append("explicit bare mode retains usable inference-only authentication")
-    pool_marker = base / "pool-selectors"
-    result = run(["auto", "--profiles", "claude-smoke", "--", "--version"], {"CLAUDOCK_TEST_POOL_MARK": str(pool_marker)})
-    assert result.returncode == 0 and pool_marker.read_text() == "claude-smoke", result.stderr
-    passed.append("auto exact selector does not widen pool through colliding short name")
-    result = run(["auto", "--profiles", "default"])
-    assert result.returncode == 1 and "ambiguous" in result.stderr
-    passed.append("auto ambiguous profile name rejected")
 
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout
@@ -204,7 +193,7 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
 
     return {"passed": len(passed), "checks": passed,
             "source_sha256": {str(source.relative_to(PROJECT)): hashlib.sha256(source.read_bytes()).hexdigest() for source in sources},
-            "scope": "Production CLI/Profile/LaunchCommand; synthetic profile, executable discovery, credentials, quota, and shell boundaries. No live credentials, shell startup, HOME override, or network requests."}
+            "scope": "Production CLI/Profile/LaunchCommand; synthetic profile, executable discovery, credentials, quota, and shell boundaries. Temporary HOME; no real profiles, credentials, shell startup, or network requests."}
 
 
 if __name__ == "__main__":
