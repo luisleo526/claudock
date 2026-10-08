@@ -242,10 +242,13 @@ def main():
     except AssertionError as error:
         failure = str(error)
     finally:
-        leftovers = [service for sandbox in sandboxes for service in sandbox.close()]
+        deleted, leftovers = [], []
+        for sandbox in sandboxes:
+            removed, remaining = sandbox.close()
+            deleted += removed
+            leftovers += remaining
     receipt = {"passed": len(checks.passed), "checks": checks.passed,
-               "keychain_items_created": sorted(service for sandbox in sandboxes for service in sandbox.services),
-               "keychain_items_not_deleted": leftovers,
+               "keychain_items_deleted_at_teardown": deleted, "keychain_items_not_deleted": leftovers,
                "scope": "Real claudock binary and login Keychain in temporary homes; synthetic keys; fake claude."}
     print(json.dumps(receipt, indent=2))
     if failure:
