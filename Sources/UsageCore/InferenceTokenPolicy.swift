@@ -29,27 +29,37 @@ public enum InferenceTokenPolicy {
     public static let preferenceKey = "requireInferenceToken"
 
     public static func isRequired() -> Bool {
-        ClaudeExecutable.preferences?.bool(forKey: preferenceKey) ?? false
+        isRequired(preferences: ClaudeExecutable.preferences)
     }
 
     /// Turning the requirement off removes the key, returning the preference to its default.
     public static func setRequired(_ required: Bool) throws {
-        guard let preferences = ClaudeExecutable.preferences else { throw InferenceTokenPolicyError.preferenceNotSaved }
+        try setRequired(required, preferences: ClaudeExecutable.preferences)
+    }
+
+    static func isRequired(preferences: UserDefaults?) -> Bool {
+        preferences?.bool(forKey: preferenceKey) ?? false
+    }
+
+    static func setRequired(_ required: Bool, preferences: UserDefaults?) throws {
+        guard let preferences else { throw InferenceTokenPolicyError.preferenceNotSaved }
         if required { preferences.set(true, forKey: preferenceKey) } else { preferences.removeObject(forKey: preferenceKey) }
         // A command-line process exits right away, so write through before checking.
         preferences.synchronize()
         guard preferences.bool(forKey: preferenceKey) == required else { throw InferenceTokenPolicyError.preferenceNotSaved }
     }
 
-    /// Chooses the credential for a `run` launch (sign-in launches never ask). With the requirement
-    /// off, a subscription profile falls back to its own login as before. With it on, a missing,
-    /// expired, or unreadable token is an error, except for `setup-token`, which creates the token.
-    public static func launchCredential(profile: Profile, claudeArguments: [String], requireToken: Bool) throws -> LaunchCredential {
-        try launchCredential(profile: profile, claudeArguments: claudeArguments, requireToken: requireToken, mint: MintTokenStore.read)
+    /// Chooses the credential for a launch. Sign-in always runs on the profile's own login. With the
+    /// requirement off, a subscription profile falls back to its own login as before. With it on, a
+    /// missing, expired, or unreadable token is an error, except for `setup-token`, which creates one.
+    public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
+        try launchCredential(profile: profile, claudeArguments: claudeArguments, signIn: signIn, requireToken: isRequired(),
+                             mint: MintTokenStore.read)
     }
 
-    static func launchCredential(profile: Profile, claudeArguments: [String], requireToken: Bool,
+    static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool, requireToken: Bool,
                                  mint: (Profile) throws -> MintToken?, now: Date = Date()) throws -> LaunchCredential {
+        if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
         guard requireToken else {
             return try InferenceCredential.environmentToken(profile: profile, mint: mint, now: now).map(LaunchCredential.inferenceToken) ?? .profileLogin

@@ -134,6 +134,32 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in json.loads(result.stdout)["env"]
     passed.append("relogin is isolated from stored mint")
 
+    # A synthetic inference-token requirement: launches need a token; sign-in and setup-token do not.
+    required = {**conflicts, "CLAUDOCK_TEST_REQUIRE_TOKEN": "1"}
+    for arguments in (["run", "smoke", "--", "--resume"], ["launch-bound", "fixture-stable", "Claude Code-credentials-aabbccdd", "run", "--", "--resume", "fixture.jsonl"]):
+        result = run(arguments, required)
+        assert result.returncode == 1 and not result.stdout and "Synthetic token requirement" in result.stderr, (arguments, result.stderr)
+    passed.append("required token stops run and app launches before exec")
+    result = run(["run", "smoke", "--", "setup-token"], required)
+    assert result.returncode == 0 and json.loads(result.stdout)["argv"] == ["setup-token"], result.stderr
+    passed.append("setup-token runs without a required token")
+    for arguments in (["profile", "login", "smoke"], ["launch-bound", "fixture-stable", "Claude Code-credentials-aabbccdd", "login", "--"]):
+        result = run(arguments, required)
+        assert result.returncode == 0 and json.loads(result.stdout)["argv"] == ["auth", "login", "--claudeai"], (arguments, result.stderr)
+    passed.append("sign-in is exempt from the required token")
+    result = run(["run", "smoke"], {**required, "CLAUDOCK_TEST_MINT": "1"})
+    assert result.returncode == 0 and json.loads(result.stdout)["env"].get("CLAUDE_CODE_OAUTH_TOKEN") == "synthetic-mint-token"
+    passed.append("required token passed only through the child environment")
+    result = run(["require-token", "status"], required)
+    assert result.returncode == 0 and result.stdout == "on\n"
+    result = run(["profile", "tokens"], required)
+    assert result.returncode == 0 and result.stderr.endswith("require-token: on\n"), result.stderr
+    passed.append("require-token status and the tokens policy line")
+    for arguments in (["require-token"], ["require-token", "maybe"], ["require-token", "on", "extra"]):
+        marker.unlink(missing_ok=True)
+        assert run(arguments).returncode == 2 and not marker.exists(), arguments
+    passed.append("require-token argument errors before any I/O")
+
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout
     passed.append("unsupported Vertex blocked")

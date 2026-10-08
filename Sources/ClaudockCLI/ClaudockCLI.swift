@@ -295,10 +295,8 @@ private struct ClaudockCLI {
         guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
         var environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
         let credential: LaunchCredential
-        do {
-            credential = signIn ? .profileLogin
-                : try InferenceTokenPolicy.launchCredential(profile: profile, claudeArguments: arguments, requireToken: InferenceTokenPolicy.isRequired())
-        } catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
+        do { credential = try InferenceTokenPolicy.launchCredential(profile: profile, claudeArguments: arguments, signIn: signIn) }
+        catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
         // Inherited credentials were cleared above, so the chosen one is the only one.
         switch credential {
         case .consoleAPIKey:

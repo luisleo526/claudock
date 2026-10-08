@@ -54,7 +54,7 @@ The launcher clears conflicting provider, credential, model, and nested-session 
 
 ## Preferences and onboarding
 
-The three-step welcome sheet explains limits versus local activity, detects Claude, offers account setup, and explains how to open and dismiss the menu bar popover. Users can select a custom executable if discovery misses it. `UserDefaults` stores appearance, accent, compact layout, email visibility, usage sorting, refresh interval, executable path, and onboarding completion. Available appearances are System, Light, and Dark; accents are Copper, Sage, Iris, and Blue. The app delegates optional launch-at-login registration to `SMAppService`.
+The three-step welcome sheet explains limits versus local activity, detects Claude, offers account setup, and explains how to open and dismiss the menu bar popover. Users can select a custom executable if discovery misses it. `UserDefaults` stores appearance, accent, compact layout, email visibility, usage sorting, refresh interval, executable path, the inference-token requirement, and onboarding completion. Available appearances are System, Light, and Dark; accents are Copper, Sage, Iris, and Blue. The app delegates optional launch-at-login registration to `SMAppService`.
 
 `--demo` opens the ordinary dashboard window with synthetic profiles and readings, without account discovery, Keychain access, history scanning, or usage HTTP requests. A visible DEMO label identifies it, and profile mutations and session launches are disabled. It supports public screenshots and UI checks without personal data. Appearance controls still use local preferences; demo rendering is not evidence of live service or authentication behavior.
 
