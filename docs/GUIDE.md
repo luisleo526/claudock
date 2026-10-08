@@ -184,6 +184,8 @@ security delete-generic-password -s 'Claudock-apikey-…'
 
 The key stays valid in the Console until you revoke it there.
 
+Claudock versions before Console API-key support cannot open a profile registry that contains an API-key profile; they report it as invalid rather than turning the profile into a subscription profile. Remove API-key profiles before going back to such a version.
+
 ## Privacy and permissions
 
 The app reads each profile's existing Claude OAuth credentials from the corresponding macOS Keychain item, with Claude's `.credentials.json` fallback only when that item is absent. Access tokens are sent to `https://api.anthropic.com/api/oauth/usage`. When an access token expires or that endpoint returns HTTP 401, Claudock uses the saved refresh token at `https://platform.claude.com/v1/oauth/token` and updates the same existing credential store. Both HTTP clients reject redirects and use ephemeral sessions without cookies or caches.
