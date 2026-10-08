@@ -58,8 +58,15 @@ final class InferenceTokenPolicyTests: XCTestCase {
         XCTAssertThrowsError(try decide({ throw MintTokenError.keychainUnavailable }, required: false)) {
             XCTAssertEqual($0 as? MintTokenError, .keychainUnavailable)
         }
-        XCTAssertEqual(try decide({ self.browser(expiresIn: 3600) }, required: false, arguments: ["setup-token"]),
-                       .inferenceToken("fixture-browser-token"))
+    }
+
+    func testSetupTokenAlwaysRunsOnTheProfilesOwnLogin() throws {
+        for required in [false, true] {
+            XCTAssertEqual(try decide({ self.browser(expiresIn: 3600) }, required: required, arguments: ["setup-token"]), .profileLogin)
+            XCTAssertEqual(try decide({ try self.pasted(expiresIn: -1) }, required: required, arguments: ["setup-token"]), .profileLogin)
+            XCTAssertEqual(try decide({ throw MintTokenError.keychainUnavailable }, required: required, arguments: ["setup-token"]),
+                           .profileLogin)
+        }
     }
 
     func testPolicyOnLaunchesWithAValidToken() throws {

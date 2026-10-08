@@ -49,10 +49,11 @@ public enum InferenceTokenPolicy {
         guard preferences.bool(forKey: preferenceKey) == required else { throw InferenceTokenPolicyError.preferenceNotSaved }
     }
 
-    /// Chooses the credential for a launch. Sign-in always runs on the profile's own login. With the
+    /// Chooses the credential for a launch. Sign-in and `setup-token`, which creates a token, always run on
+    /// the profile's own login, whatever the requirement or the saved token's state. With the
     /// requirement off, a missing token or an expired browser-created token falls back to the profile's
     /// own login as before, while an expired pasted token or an unreadable one is an error. With it on,
-    /// a missing, expired, or unreadable token is an error, except for `setup-token`, which creates one.
+    /// a missing, expired, or unreadable token is an error.
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         try launchCredential(profile: profile, claudeArguments: claudeArguments, signIn: signIn, requireToken: isRequired(),
                              mint: MintTokenStore.read)
@@ -62,10 +63,11 @@ public enum InferenceTokenPolicy {
                                  mint: (Profile) throws -> MintToken?, now: Date = Date()) throws -> LaunchCredential {
         if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
+        // setup-token creates the replacement token, so a missing or expired one must never block it.
+        if claudeArguments.first == "setup-token" { return .profileLogin }
         guard requireToken else {
             return try InferenceCredential.environmentToken(profile: profile, mint: mint, now: now).map(LaunchCredential.inferenceToken) ?? .profileLogin
         }
-        if claudeArguments.first == "setup-token" { return .profileLogin }
         let token: String?
         do { token = try InferenceCredential.environmentToken(profile: profile, mint: mint, now: now) }
         catch { throw InferenceTokenPolicyError.tokenRequired(profile.name) }

@@ -17,3 +17,4 @@ xcuserdata/
 *.pem
 *.mobileprovision
 *.dSYM/
+__pycache__/
