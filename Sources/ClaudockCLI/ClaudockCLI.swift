@@ -117,7 +117,15 @@ private enum Command {
         throw CLIError.arguments("--expires needs an ISO 8601 date, such as 2026-12-31 or 2026-12-31T23:59:59Z.")
     }
 
+    /// A Claude key or token typed where a profile name belongs must not be echoed in an error.
+    private static func rejectCredential(_ value: String) throws {
+        guard !value.lowercased().hasPrefix("sk-ant-") else {
+            throw CLIError.arguments("That looks like a Claude key or token, not a profile name. Keys and tokens are read from standard input, never from arguments.")
+        }
+    }
+
     private static func name(_ value: String) throws -> String {
+        try rejectCredential(value)
         guard !value.isEmpty, value.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "_-".unicodeScalars.contains($0) }) else {
             throw CLIError.arguments("Use a profile name or its exact claude-NAME selector.")
         }
@@ -125,6 +133,7 @@ private enum Command {
     }
 
     private static func newName(_ value: String) throws -> String {
+        try rejectCredential(value)
         guard !["default", "auto"].contains(value.lowercased()) else {
             throw CLIError.arguments("The profile names 'default' and 'auto' are reserved. Choose another name.")
         }
@@ -447,7 +456,8 @@ private enum SecretInput {
         stopped.pointee = 0
         var previous: [(Int32, sigaction)] = []
         defer {
-            _ = tcsetattr(STDIN_FILENO, TCSANOW, saved)
+            // TCSAFLUSH discards anything typed or pasted after the secret, so the shell never runs it.
+            _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, saved)
             for (signal, action) in previous { var action = action; _ = sigaction(signal, &action, nil) }
         }
         var data = Data()
@@ -501,10 +511,10 @@ private enum SecretInput {
     }
 }
 
-/// Async-signal-safe: restore the saved terminal, then deliver the signal again with its default
-/// action. A stop is remembered so the prompt hides input again after the process continues.
+/// Async-signal-safe: restore the saved terminal, dropping unread input, then deliver the signal again
+/// with its default action. A stop is remembered so the prompt hides input again after the process continues.
 private let restoreTerminalAndResignal: @convention(c) (Int32) -> Void = { signal in
-    _ = tcsetattr(STDIN_FILENO, TCSANOW, SecretInput.saved)
+    _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, SecretInput.saved)
     if signal == SIGTSTP || signal == SIGTTIN || signal == SIGTTOU { SecretInput.stopped.pointee = 1 }
     Darwin.signal(signal, SIG_DFL)
     raise(signal)

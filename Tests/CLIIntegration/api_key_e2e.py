@@ -114,6 +114,14 @@ def api_key_profile(sandbox, checks):
         checks.expect(result.returncode == 2, "a key given as an argument must be a usage error", result)
         checks.expect(value not in result.stdout + result.stderr, "a usage error must not echo the argument")
         checks.expect(sandbox.registry_bytes() == registry and sandbox.accounts() == accounts, "argument keys must store nothing")
+    # A key typed where the profile name belongs must not come back in an error message.
+    for arguments in (("profile", "set-key", value), ("run", value), ("profile", "login", value), ("profile", "remove", value),
+                      ("profile", "rename", "console", "sk-ant-api03-x"), ("profile", "add", "sk-ant-api03-x", "--api-key")):
+        result = sandbox.run(*arguments, stdin=synthetic())
+        checks.expect(result.returncode == 2, f"{' '.join(arguments[:2])} with a key as the name must be a usage error", result)
+        checks.expect(value not in result.stdout + result.stderr and "sk-ant-api03-x" not in result.stdout + result.stderr,
+                      "a key given as a profile name must not be echoed")
+        checks.expect(sandbox.registry_bytes() == registry and sandbox.accounts() == accounts, "a key as a name must store nothing")
     checks.done("never accepts a key as a command-line argument")
 
     checks.expect(delete_keychain_item(api_key_service(console)), "could not remove the key to simulate a missing item")
@@ -171,6 +179,21 @@ def terminal_prompt(sandbox, checks):
         terminal.close()
     checks.expect(launched_key(sandbox, checks, "console") == key, "the key typed at the prompt must be saved")
     checks.done("terminal prompt hides input and restores echo")
+
+    # Only the first pasted line is the key; the rest must not reach the shell after claudock exits.
+    pasted = synthetic()
+    terminal = TerminalRun(sandbox, "profile", "set-key", "console")
+    try:
+        checks.expect(terminal.read_until(PROMPT), "a terminal must show the prompt")
+        terminal.send(pasted.encode() + b"\ntouch typed-ahead\n")
+        status, _ = terminal.finish()
+        checks.expect(status == 0, f"set-key at a terminal must succeed, got {status}")
+        checks.expect(not terminal.unread_input(), "input typed after the key must be discarded, not left for the shell")
+    finally:
+        terminal.close()
+    checks.expect(launched_key(sandbox, checks, "console") == pasted, "the first pasted line must be saved as the key")
+    key = pasted
+    checks.done("lines pasted after the key are discarded")
 
     terminal = TerminalRun(sandbox, "profile", "set-key", "console")
     try:

@@ -98,7 +98,8 @@ def rejections(sandbox, checks, stored):
     value = synthetic()
     for arguments in (("profile", "set-token", "work", value), ("profile", "set-token", "work", "--expires", "2099-01-01", value),
                       ("profile", "set-token", "work", "--expires"), ("profile", "set-token", "work", "--expires", "not-a-date"),
-                      ("profile", "set-token", "work", "--expires", "2099-13-01"), ("profile", "tokens", "work")):
+                      ("profile", "set-token", "work", "--expires", "2099-13-01"), ("profile", "tokens", "work"),
+                      ("profile", "set-token", value), ("run", value)):
         result = sandbox.run(*arguments, stdin=value)
         checks.expect(result.returncode == 2, f"{' '.join(arguments[:4])} must be a usage error", result)
         checks.expect(value not in result.stdout + result.stderr, "a usage error must not echo a token")
