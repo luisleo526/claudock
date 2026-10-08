@@ -80,7 +80,7 @@ Open the **…** menu in the header for Settings. Preferences are saved locally.
 - **Locate Claude executable…** selects a custom Claude installation for actions launched by the app.
 - Closing the dashboard keeps the menu bar app running. Use Settings or right-click the menu bar icon to quit.
 
-Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import. Legacy cloud registrations are removed from the app without deleting their configuration or shared history.
+Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and [Console API keys](#console-api-keys). External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import. Legacy cloud registrations are removed from the app without deleting their configuration or shared history.
 
 ## Manage profiles
 
@@ -129,6 +129,8 @@ claude-office
 claudock run office -- --resume
 claudock usage
 claudock profile remove office
+claudock profile add console --api-key
+claudock profile set-key console
 ```
 
 The namespaced command and generated shortcuts call the CLI bundled inside the app. Shortcuts forward the full profile selector, such as `claude-office`, so similarly named profiles remain distinct. The internal `claudock shell profile-names` helper reads the existing registry and emits selectors as data; it does not discover accounts, create or write the registry, access credentials, or make network requests.
@@ -137,7 +139,7 @@ Disabling integration removes Claudock's marked loader block and managed integra
 
 Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login` and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
 
-`claudock usage` makes one sequential quota request for each supported profile and prints tab-separated profile, usage-window, used-percentage, and reset-time columns. It prints no emails or credentials and exits unsuccessfully if a requested profile fails. This reports subscription allowance; use Overview for local token activity. `claudock shell status`, `enable`, and `disable` expose the same optional integration controls. If the app moves, enable integration again from the app's new location to update its executable path.
+`claudock usage` makes one sequential quota request for each supported profile and prints tab-separated profile, usage-window, used-percentage, and reset-time columns. It prints no emails or credentials and exits unsuccessfully if a requested profile fails. Console API-key profiles have no subscription limits; it skips them with a note and makes no request for them. This reports subscription allowance; use Overview for local token activity. `claudock shell status`, `enable`, and `disable` expose the same optional integration controls. If the app moves, enable integration again from the app's new location to update its executable path.
 
 Without shell integration, all GUI features work and the CLI can still be invoked by its absolute path:
 
@@ -155,9 +157,38 @@ function claudock() {
 
 This minimal manual setup provides only `claudock`. Use `claudock run NAME`, or define your own shortcuts through your dotfile manager.
 
+## Console API keys
+
+A Console API-key profile runs Claude Code with a Claude Console API key instead of a subscription login. Use one to keep working when a subscription reaches its limit. API usage is billed per token by the Console, not by a subscription, and is charged to the key's Console organization.
+
+**Add one.** In **Manage profiles**, choose **Console API key**, enter a profile name, paste the key, and choose **Add profile**. In Terminal, the key is read from standard input, never from command arguments:
+
+```sh
+claudock profile add console --api-key              # prompts without showing the key
+pbpaste | claudock profile add console --api-key    # or pipe it in
+```
+
+Paste the raw `sk-ant-api…` key or its `export ANTHROPIC_API_KEY=…` line; the input is parsed as data and never executed. Subscription OAuth tokens (`sk-ant-oat01-…`) and Admin API keys (`sk-ant-admin01-…`) are rejected because Claude Code cannot run on them. `--directory ABS_PATH` imports an existing config folder, as for other profiles. The key is saved in Keychain before the profile appears; if saving fails, no profile is created.
+
+**Use it.** `claudock run console`, the `claude-console` shortcut, **Open in Terminal**, and **Continue as…** work as they do for subscription profiles. For that launch only, Claudock clears inherited authentication and provider variables, sets `ANTHROPIC_API_KEY` from Keychain, and keeps the profile's config folder; it never adds an inference token. New profiles share session history, so `claudock run console -- --resume` continues a conversation started under a subscription.
+
+The first interactive launch asks whether to use the API key; choose **Yes**. Claude Code saves the answer in the profile's own config folder, so later launches do not ask again. Non-interactive `-p` runs use the key directly.
+
+**Replace it** with **Replace API key…** in **Manage profiles**, or `claudock profile set-key console`. **Re-login** is not offered for these profiles, and `claudock profile login` refuses them. The dashboard shows an **API** badge and no limit bars; these profiles never count as needing attention, and **Highest usage first** lists them after subscription accounts.
+
+**Remove it** like any profile. Removal keeps the key in Keychain, as Claudock keeps other credentials, and the CLI prints the item's service name. To delete the key, use that name:
+
+```sh
+security delete-generic-password -s 'Claudock-apikey-…'
+```
+
+The key stays valid in the Console until you revoke it there.
+
 ## Privacy and permissions
 
 The app reads each profile's existing Claude OAuth credentials from the corresponding macOS Keychain item, with Claude's `.credentials.json` fallback only when that item is absent. Access tokens are sent to `https://api.anthropic.com/api/oauth/usage`. When an access token expires or that endpoint returns HTTP 401, Claudock uses the saved refresh token at `https://platform.claude.com/v1/oauth/token` and updates the same existing credential store. Both HTTP clients reject redirects and use ephemeral sessions without cookies or caches.
+
+Console API keys live in their own Keychain items, named `Claudock-apikey-` followed by a hash. Claudock reads one only to launch its profile and passes it to Claude Code through that process's environment; it never sends the key anywhere itself.
 
 There is no analytics service, telemetry, or developer-operated backend. Automatic renewal coordinates with Claude Code's credential locks, preserves unrelated fields, and stores replacement refresh tokens returned by Anthropic. It does not renew on quota HTTP 403, 429, or network failures. When the refresh token is missing, expired, or rejected, re-login delegates to Claude Code in Terminal through a temporary local command file that deletes itself when it runs. macOS may request Keychain access. Profile configuration contains local paths and names; keep it out of public issues and repositories. See [SECURITY.md](../SECURITY.md) for reporting guidance.
 
@@ -183,6 +214,8 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | Tokens appear under Shared history | New profiles share the default Claude history. Profiles with the same resolved `projects` folder contribute one set of logs; account attribution is unavailable. |
 | Continue as… is unavailable | The saved log has no usable project path. A project folder must exist to continue there. |
 | Claude rejects a resume file | Confirm your Claude version supports absolute JSONL paths with `--resume`; the app's compatibility check used 2.1.263. |
+| No Console API key is saved | Save one with **Replace API key…** in Manage profiles or `claudock profile set-key NAME`. |
+| Claude asks whether to use an API key | Choose Yes. Claude Code remembers the answer for that profile. |
 | Launch at login needs approval | Check System Settings → General → Login Items & Extensions. |
 
 ## Development and builds

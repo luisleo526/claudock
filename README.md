@@ -97,7 +97,20 @@ Continuation is a **preview feature** that depends on compatible Claude Code JSO
 
 A conversation still running in another Terminal can be continued with `--resume SESSION_ID --fork-session`. Claude creates a new session from its history while the original process continues. `--continue` selects the latest conversation in the current project. New profiles share this history by default; isolated imported folders remain available through the Sessions view or an explicit JSONL resume path.
 
-Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
+Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and Claude Console API keys. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
+
+## Keep going on a Console API key
+
+Reached a weekly limit? Add a Claude Console API key as its own profile and continue the same conversation there. In **Manage profiles**, choose **Console API key**, enter a name, and paste the key. Or from Terminal:
+
+```sh
+pbpaste | claudock profile add console --api-key
+claudock run console -- --resume
+```
+
+The key is read from standard input, never from command arguments, and stored only in Keychain. Like other new profiles, an API-key profile shares your session history, so **Continue as…** and `--resume` pick up where a subscription left off. The first interactive launch asks whether to use the API key; choose **Yes**.
+
+API usage is billed per token by the Claude Console, not by a subscription. The dashboard shows these profiles with an **API** badge and no limit bars, and `claudock usage` skips them. [Add, replace, and remove keys](docs/GUIDE.md#console-api-keys)
 
 ## Fewer login interruptions
 
@@ -143,7 +156,7 @@ Automatic renewal runs in the resident app. The one-shot `claudock usage` comman
 
 - **No Claudock account or hosted backend.** Profiles live on your Mac.
 - **No telemetry or transcript uploads from the monitor.** Local activity is read locally.
-- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens use a separate Keychain item and are passed to Claude through its launch environment.
+- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens and Console API keys use their own Keychain items and are passed to Claude through its launch environment.
 
 Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).
 

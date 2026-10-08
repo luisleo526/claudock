@@ -19,6 +19,8 @@ Core logic belongs in `Sources/UsageCore`; UI and macOS integration belong in `S
 
 The CLI smoke harness compiles the exact CLI, `Profile`, and `LaunchCommand` sources against synthetic storage, executable-discovery, credentials, network, and shell boundaries. It exercises literal argument forwarding, the current directory, exit-status propagation, authentication environment isolation, and malformed commands without accessing real accounts. Temporary binaries stay under `.build/` and are removed afterward. Its printed source hashes identify the checked code; it does not establish real authentication or live quota compatibility.
 
+`python3 Tests/CLIIntegration/api_key_e2e.py` drives the real `claudock` binary end to end against your login Keychain. It builds the CLI and runs it in throwaway homes: `CFFIXED_USER_HOME` redirects Claudock's home while `HOME` stays real so `security` finds the login Keychain. A fake `claude` records each launch, keys are random synthetic values, and every Keychain item it creates is deleted before it exits, also after a failure. It needs an unlocked login Keychain and refuses to run while Claudock has a custom Claude executable preference, so the real Claude is never launched.
+
 ## Pull requests
 
 Describe the user-visible problem, the resulting behavior, and how it was verified. Include focused tests for parsing, profile isolation, persistence, and failure handling when those contracts change. For visible changes, prefer screenshots from the synthetic preview:
