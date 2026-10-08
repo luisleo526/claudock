@@ -7,13 +7,18 @@ import Darwin
 public enum ProfileStore {
     private typealias Failure = ProfileManager.ManagementError
     private static let maximumBytes = 2_097_152
+    /// How long a read or change waits for another Claudock process before reporting it is busy.
+    private static let lockWait: TimeInterval = 5
 
     public static func directory(home: String = NSHomeDirectory()) -> URL {
         URL(fileURLWithPath: home).appendingPathComponent("Library/Application Support/Claudock", isDirectory: true)
     }
 
+    /// Launches and listings only read, so they share the registry lock and never wait for one
+    /// another. A missing registry or a pending migration is written under the exclusive lock.
     public static func load(home: String = NSHomeDirectory()) throws -> [Profile] {
-        try withState(home: home) { state in state.profiles }
+        if let profiles = try readShared(home: home) { return profiles }
+        return try withState(home: home) { state in state.profiles }
     }
 
     /// Data-only input for the optional zsh adapter. Prompt hooks must not create
@@ -170,48 +175,14 @@ public enum ProfileStore {
         let base = directory(home: home)
         do {
             try ensureBase(base)
-            let lock = base.appendingPathComponent(".registry-lock")
-            let descriptor = open(lock.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK, 0o600)
-            guard descriptor >= 0 else { throw Failure.invalidManagedFiles }
+            let descriptor = try lockDescriptor(base)
             defer { _ = close(descriptor) }
-            var status = stat()
-            guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFREG,
-                  status.st_nlink == 1, status.st_uid == geteuid(), fchmod(descriptor, 0o600) == 0 else { throw Failure.invalidManagedFiles }
-            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw Failure.busy }
+            try lock(descriptor, exclusive: true)
             defer { _ = flock(descriptor, LOCK_UN) }
             let snapshot = try Snapshot(base.appendingPathComponent("profiles.json"))
-            var state: State
-            if let content = snapshot.data {
-                guard let decoded = try? JSONDecoder().decode(State.self, from: content) else { throw Failure.invalidManagedFiles }
-                state = decoded
-                try validate(state)
-            } else {
-                // The legacy overlay is imported by the same non-executing parser as
-                // ordinary wrappers. Its original config paths and scripts are retained.
-                state = State(profiles: ProfileDiscovery.discover(home: home).filter(acceptsDiscovered).map(imported))
-                try validate(state)
-            }
-            // Before 1.5.1, Bedrock/Foundry imports were not marked as external.
-            // Reconcile once using static declarations with the same name and
-            // literal config path; user-managed registrations remain authoritative.
-            if state.subscriptionOnlyMigration == nil {
-                reconcileExternalImports(ProfileDiscovery.discover(home: home), state: &state)
-                state.subscriptionOnlyMigration = 1
-            }
-            // Older versions listed external cloud providers even though they
-            // could not use subscription quota. Retire only their registrations;
-            // shared history, account folders, and external cloud auth stay intact.
-            for profile in state.profiles.filter({ $0.isVertex }) { suppress(profile, in: &state) }
-            state.profiles.removeAll { $0.isVertex }
+            var state = try currentState(snapshot, home: home)
             let result = try operation(&state)
-            // Older builds accept only version 1 and would drop an API-key profile's kind when
-            // rewriting the file; a registry holding one is version 2, so they refuse it instead.
-            state.version = state.profiles.contains { $0.authKind == .apiKey } ? 2 : 1
-            try validate(state)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            let data = try encoder.encode(state) + Data("\n".utf8)
-            guard data.count <= maximumBytes else { throw Failure.invalidManagedFiles }
+            let data = try serialized(&state)
             guard snapshot.unchanged() else { throw Failure.concurrentChange }
             // Prepare shared sessions/settings before publishing the new profile.
             // Explicit folder imports pass no createAccount and remain untouched.
@@ -232,6 +203,91 @@ public enum ProfileStore {
         } catch {
             throw Failure.ioFailure
         }
+    }
+
+    /// Returns nil when the registry is missing or would change (a pending migration); the
+    /// caller then writes it under the exclusive lock. Writers cannot run while this holds the lock.
+    private static func readShared(home: String) throws -> [Profile]? {
+        let base = directory(home: home)
+        do {
+            try ensureBase(base)
+            let descriptor = try lockDescriptor(base)
+            defer { _ = close(descriptor) }
+            try lock(descriptor, exclusive: false)
+            defer { _ = flock(descriptor, LOCK_UN) }
+            let snapshot = try Snapshot(base.appendingPathComponent("profiles.json"))
+            guard let stored = snapshot.data else { return nil }
+            var state = try currentState(snapshot, home: home)
+            guard try serialized(&state) == stored else { return nil }
+            return state.profiles
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw Failure.ioFailure
+        }
+    }
+
+    private static func lockDescriptor(_ base: URL) throws -> Int32 {
+        let descriptor = open(base.appendingPathComponent(".registry-lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        guard descriptor >= 0 else { throw Failure.invalidManagedFiles }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFREG,
+              status.st_nlink == 1, status.st_uid == geteuid(), fchmod(descriptor, 0o600) == 0 else {
+            _ = close(descriptor)
+            throw Failure.invalidManagedFiles
+        }
+        return descriptor
+    }
+
+    /// Reads share the lock and changes take it exclusively. Either waits up to `lockWait` for
+    /// the other, so parallel launches and a concurrent change all go through.
+    private static func lock(_ descriptor: Int32, exclusive: Bool) throws {
+        let deadline = Date().addingTimeInterval(lockWait)
+        while flock(descriptor, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR, Date() < deadline else { throw Failure.busy }
+            usleep(useconds_t.random(in: 10_000...30_000))
+        }
+    }
+
+    /// The stored registry, or one bootstrapped from shell discovery, with pending migrations applied in memory.
+    private static func currentState(_ snapshot: Snapshot, home: String) throws -> State {
+        var state: State
+        if let content = snapshot.data {
+            guard let decoded = try? JSONDecoder().decode(State.self, from: content) else { throw Failure.invalidManagedFiles }
+            state = decoded
+            try validate(state)
+        } else {
+            // The legacy overlay is imported by the same non-executing parser as
+            // ordinary wrappers. Its original config paths and scripts are retained.
+            state = State(profiles: ProfileDiscovery.discover(home: home).filter(acceptsDiscovered).map(imported))
+            try validate(state)
+        }
+        // Before 1.5.1, Bedrock/Foundry imports were not marked as external.
+        // Reconcile once using static declarations with the same name and
+        // literal config path; user-managed registrations remain authoritative.
+        if state.subscriptionOnlyMigration == nil {
+            reconcileExternalImports(ProfileDiscovery.discover(home: home), state: &state)
+            state.subscriptionOnlyMigration = 1
+        }
+        // Older versions listed external cloud providers even though they
+        // could not use subscription quota. Retire only their registrations;
+        // shared history, account folders, and external cloud auth stay intact.
+        for profile in state.profiles.filter({ $0.isVertex }) { suppress(profile, in: &state) }
+        state.profiles.removeAll { $0.isVertex }
+        return state
+    }
+
+    /// Validates the final state and returns the bytes a write would store.
+    private static func serialized(_ state: inout State) throws -> Data {
+        // Older builds accept only version 1 and would drop an API-key profile's kind when
+        // rewriting the file; a registry holding one is version 2, so they refuse it instead.
+        state.version = state.profiles.contains { $0.authKind == .apiKey } ? 2 : 1
+        try validate(state)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(state) + Data("\n".utf8)
+        guard data.count <= maximumBytes else { throw Failure.invalidManagedFiles }
+        return data
     }
 
     private static func imported(_ profile: Profile) -> Profile {

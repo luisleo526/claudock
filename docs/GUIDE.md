@@ -203,6 +203,7 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | Config directory cannot be resolved | Replace a computed path with a literal `CLAUDE_CONFIG_DIR`, or import the profile. |
 | This login cannot be renewed | Choose Re-login, finish Claude Code authentication in Terminal, then refresh. |
 | Credential update is busy | Retry after a minute or open the profile in Claude Code. Claudock does not steal existing or stale lock directories. |
+| Another profile update is in progress | Another Claudock process held the profile registry for more than five seconds, for example while adding a profile. Try again. Parallel launches share the registry and do not cause this. |
 | Could not update saved credentials | Unlock Keychain and retry. Claudock retains a successful renewal in memory while retrying its save; closing the app loses that unsaved result. |
 | The last renewal could not be confirmed | Open the profile in Claude Code or re-login. Claudock will use the updated credential; it will not resend a potentially consumed refresh token. |
 | This credential cannot read usage | Check the account and credential permissions in Claude Code. This error does not trigger token renewal. |

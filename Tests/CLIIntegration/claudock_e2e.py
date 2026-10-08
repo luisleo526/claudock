@@ -133,8 +133,11 @@ def delete_keychain_item(service):
     return not keychain_item_exists(service)
 
 
+# Parallel launches name their own record with CLAUDOCK_E2E_RUN_ID, which claudock passes through.
 FAKE_CLAUDE = '''import json, os, sys
-with open(RECORD, "w") as record:
+run_id = os.environ.get("CLAUDOCK_E2E_RUN_ID")
+path = os.path.join(__RECORD_DIR__, run_id + ".json") if run_id else __RECORD_FILE__
+with open(path, "w") as record:
     json.dump({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ), "executable": os.path.realpath(__file__)}, record)
 sys.exit(int(os.environ.get("CLAUDOCK_E2E_EXIT", "0")))
 '''
@@ -154,7 +157,10 @@ class Sandbox:
         self.fake = self.home / ".local" / "bin" / "claude"
         self.fake.parent.mkdir(parents=True)
         self.record_path = self.base / "claude-record.json"
-        self.fake.write_text("#!" + sys.executable + "\n" + FAKE_CLAUDE.replace("RECORD", repr(str(self.record_path))))
+        self.records = self.base / "records"
+        self.records.mkdir()
+        self.fake.write_text("#!" + sys.executable + "\n" + FAKE_CLAUDE.replace("__RECORD_FILE__", repr(str(self.record_path)))
+                             .replace("__RECORD_DIR__", repr(str(self.records))))
         self.fake.chmod(0o700)
         self.services = set()
         default = self.listed().get("default", {})
@@ -173,10 +179,16 @@ class Sandbox:
         return subprocess.run([str(self.cli), *arguments], cwd=self.base, env=self.environment(extra), input=stdin,
                               capture_output=True, text=True, timeout=timeout)
 
-    def record(self):
-        if not self.record_path.exists():
+    def spawn(self, *arguments, extra=None):
+        """Starts the CLI without waiting, for parallel launches."""
+        return subprocess.Popen([str(self.cli), *arguments], cwd=self.base, env=self.environment(extra), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def record(self, run_id=None):
+        path = self.records / (run_id + ".json") if run_id else self.record_path
+        if not path.exists():
             return None
-        value = json.loads(self.record_path.read_text())
+        value = json.loads(path.read_text())
         if Path(value["executable"]) != self.fake.resolve():
             raise AssertionError(f"an unexpected claude executable ran: {value['executable']}")
         return value
