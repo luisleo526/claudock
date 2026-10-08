@@ -183,10 +183,17 @@ class Sandbox:
         self.services.add(service)
 
     def close(self):
-        """Deletes tracked Keychain items and the sandbox; returns services that could not be deleted."""
-        remaining = sorted(service for service in self.services if not delete_keychain_item(service))
+        """Deletes tracked Keychain items and the sandbox. Returns the services that existed and were
+        deleted, and those that could not be deleted."""
+        deleted, remaining = [], []
+        for service in sorted(self.services):
+            existed = keychain_item_exists(service)
+            if not delete_keychain_item(service):
+                remaining.append(service)
+            elif existed:
+                deleted.append(service)
         shutil.rmtree(self.base, ignore_errors=True)
-        return remaining
+        return deleted, remaining
 
 
 class TerminalRun:
