@@ -114,6 +114,74 @@ final class APIKeyProfileStoreTests: XCTestCase {
         }
     }
 
+    private func registryVersion(_ home: URL) throws -> Int? {
+        try (JSONSerialization.jsonObject(with: Data(contentsOf: registry(home))) as? [String: Any])?["version"] as? Int
+    }
+
+    func testRegistryWithAnAPIKeyProfileIsVersionTwoSoOlderBuildsRefuseIt() throws {
+        try withHome { home in
+            _ = try ProfileStore.add(name: "work", home: home.path)
+            XCTAssertEqual(try registryVersion(home), 1)
+            let console = try addAPIKeyProfile("console", home: home)
+            XCTAssertEqual(try registryVersion(home), 2)
+            let written = try Data(contentsOf: registry(home))
+            XCTAssertEqual(try ProfileStore.load(home: home.path).first { $0.command == "claude-console" }?.authKind, .apiKey)
+            XCTAssertEqual(try Data(contentsOf: registry(home)), written)
+            XCTAssertTrue(try ProfileStore.shellProfileNames(home: home.path).contains("claude-console"))
+            try ProfileStore.remove(profile: console, home: home.path)
+            XCTAssertEqual(try registryVersion(home), 1)
+        }
+    }
+
+    func testFailedAddDeletesOnlyAKeyItemThisAttemptCreated() throws {
+        try withHome { home in
+            _ = try ProfileStore.load(home: home.path)
+            let before = try Data(contentsOf: registry(home))
+            for itemExisted in [false, true] {
+                var deleted: [Profile] = [], saved: [Profile] = []
+                XCTAssertThrowsError(try ProfileStore.addAPIKeyProfile(name: "console", apiKey: ConsoleAPIKey(parsing: "sk-ant-api03-fixture"),
+                                                                       configDirectory: nil, home: home.path,
+                                                                       isSaved: { _ in itemExisted },
+                                                                       save: { _, profile in saved.append(profile); throw APIKeyError.keychainWriteFailed },
+                                                                       delete: { deleted.append($0) })) {
+                    XCTAssertEqual($0 as? APIKeyError, .keychainWriteFailed)
+                }
+                XCTAssertEqual(deleted, itemExisted ? [] : saved)
+                XCTAssertEqual(try Data(contentsOf: registry(home)), before)
+            }
+        }
+    }
+
+    func testPublishFailureAfterTheKeyIsSavedDeletesTheNewItem() throws {
+        try withHome { home in
+            _ = try ProfileStore.load(home: home.path)
+            var deleted: [Profile] = []
+            XCTAssertThrowsError(try ProfileStore.addAPIKeyProfile(name: "console", apiKey: ConsoleAPIKey(parsing: "sk-ant-api03-fixture"),
+                                                                   configDirectory: nil, home: home.path, isSaved: { _ in false },
+                                                                   save: { _, _ in
+                // Another writer changes the registry while the key is being saved.
+                let handle = try FileHandle(forWritingTo: self.registry(home))
+                try handle.seekToEnd(); try handle.write(contentsOf: Data("\n".utf8)); try handle.close()
+            }, delete: { deleted.append($0) })) { error in
+                guard case ProfileManager.ManagementError.concurrentChange = error else { return XCTFail("Expected concurrentChange, got \(error)") }
+            }
+            XCTAssertEqual(deleted.map(\.command), ["claude-console"])
+            XCTAssertFalse(try ProfileStore.load(home: home.path).contains { $0.command == "claude-console" })
+            XCTAssertEqual(accounts(home), [])
+        }
+    }
+
+    func testSuccessfulAddDeletesNothing() throws {
+        try withHome { home in
+            var deleted = 0
+            let profile = try ProfileStore.addAPIKeyProfile(name: "console", apiKey: ConsoleAPIKey(parsing: "sk-ant-api03-fixture"),
+                                                            configDirectory: nil, home: home.path, isSaved: { _ in false },
+                                                            save: { _, _ in }, delete: { _ in deleted += 1 })
+            XCTAssertEqual(profile.authKind, .apiKey)
+            XCTAssertEqual(deleted, 0)
+        }
+    }
+
     func testRegistryRejectsAnAPIKeyKindOnAnImportedProfile() throws {
         try withHome { home in
             _ = try ProfileStore.add(name: "work", home: home.path)

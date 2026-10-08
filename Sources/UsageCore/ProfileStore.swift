@@ -51,11 +51,28 @@ public enum ProfileStore {
         try add(name: name, configDirectory: configDirectory, authKind: .subscription, home: home, beforePublishing: { _ in })
     }
 
-    /// The key is saved in Keychain before the new registry entry is published. If saving
-    /// fails, the entry and any account folder created for it are rolled back.
+    /// The key is saved in Keychain before the new registry entry is published. If saving or
+    /// publishing fails, the entry and any account folder created for it are rolled back, and so
+    /// is a Keychain item this attempt created; an item that already existed is kept.
     public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String? = nil,
                                         home: String = NSHomeDirectory()) throws -> Profile {
-        try add(name: name, configDirectory: configDirectory, authKind: .apiKey, home: home) { try APIKeyStore.save(apiKey, profile: $0) }
+        try addAPIKeyProfile(name: name, apiKey: apiKey, configDirectory: configDirectory, home: home,
+                             isSaved: APIKeyStore.isSaved, save: APIKeyStore.save, delete: { APIKeyStore.delete(profile: $0) })
+    }
+
+    static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String?, home: String,
+                                 isSaved: (Profile) throws -> Bool, save: (ConsoleAPIKey, Profile) throws -> Void,
+                                 delete: (Profile) -> Void) throws -> Profile {
+        var created: Profile?
+        do {
+            return try add(name: name, configDirectory: configDirectory, authKind: .apiKey, home: home) { profile in
+                if try !isSaved(profile) { created = profile }
+                try save(apiKey, profile)
+            }
+        } catch {
+            if let created { delete(created) }
+            throw error
+        }
     }
 
     static func add(name: String, configDirectory: String?, authKind: ProfileAuthKind, home: String,
@@ -187,6 +204,9 @@ public enum ProfileStore {
             for profile in state.profiles.filter({ $0.isVertex }) { suppress(profile, in: &state) }
             state.profiles.removeAll { $0.isVertex }
             let result = try operation(&state)
+            // Older builds accept only version 1 and would drop an API-key profile's kind when
+            // rewriting the file; a registry holding one is version 2, so they refuse it instead.
+            state.version = state.profiles.contains { $0.authKind == .apiKey } ? 2 : 1
             try validate(state)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -197,10 +217,10 @@ public enum ProfileStore {
             // Explicit folder imports pass no createAccount and remain untouched.
             let workspace = try createAccount.map { try SharedProfileWorkspace.prepare(accountParent: $0, home: home) }
             defer { workspace?.rollback() }
-            try workspace?.validate()
             // Save what the new entry depends on (an API key) before publishing it. A failure
             // leaves the registry unwritten and rolls back the prepared account folder.
             do { try beforePublishing(result) } catch { throw PublicationFailure(underlying: error) }
+            try workspace?.validate()
             guard snapshot.unchanged() else { throw Failure.concurrentChange }
             if data != snapshot.data { try atomicWrite(data, to: snapshot.url) }
             workspace?.commit()
@@ -279,7 +299,7 @@ public enum ProfileStore {
     private static func validate(_ state: State) throws {
         let ids = state.profiles.compactMap(\.registryID)
         let commands = state.profiles.map(\.command)
-        guard state.version == 1, state.profiles.count <= 1_000,
+        guard [1, 2].contains(state.version), state.profiles.count <= 1_000,
               state.suppressedCommands.count <= 10_000, state.suppressedDirectories.count <= 10_000,
               ids.count == state.profiles.count, Set(ids).count == ids.count,
               ids.allSatisfy({ UUID(uuidString: $0) != nil }), Set(commands).count == commands.count,

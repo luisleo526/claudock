@@ -148,6 +148,31 @@ final class APIKeyTests: XCTestCase {
         }
     }
 
+    func testSavedStatusLooksUpAttributesWithoutReadingTheKey() throws {
+        var commands: [[String]] = []
+        XCTAssertTrue(try APIKeyStore.isSaved(profile: profile, security: { commands.append($0); return 0 }))
+        XCTAssertFalse(try APIKeyStore.isSaved(profile: profile, security: { _ in 44 }))
+        XCTAssertEqual(commands, [["find-generic-password", "-a", NSUserName(), "-s", APIKeyStore.serviceName(for: profile)]])
+        for failure: Int32 in [1, 36, 51, 15] {
+            XCTAssertThrowsError(try APIKeyStore.isSaved(profile: profile, security: { _ in failure })) {
+                XCTAssertEqual($0 as? APIKeyError, .keychainUnavailable)
+            }
+        }
+        XCTAssertThrowsError(try APIKeyStore.isSaved(profile: profile, security: { _ in throw MonitorError.keychainLocked })) {
+            XCTAssertEqual($0 as? APIKeyError, .keychainUnavailable)
+        }
+        let subscription = Profile(command: "claude-work", configDirectory: "/synthetic/work", managed: true)
+        XCTAssertThrowsError(try APIKeyStore.isSaved(profile: subscription, security: { _ in XCTFail("Unsupported profile reached Keychain"); return 0 }))
+    }
+
+    func testUndoDeletesOnlyThisProfilesItemWithoutTheKeyInArguments() {
+        var commands: [[String]] = []
+        APIKeyStore.delete(profile: profile, security: { commands.append($0); return 0 })
+        APIKeyStore.delete(profile: Profile(command: "claude-work", configDirectory: "/synthetic/work", managed: true),
+                           security: { commands.append($0); return 0 })
+        XCTAssertEqual(commands, [["delete-generic-password", "-a", NSUserName(), "-s", APIKeyStore.serviceName(for: profile)]])
+    }
+
     func testOnlyManagedAPIKeyProfilesReachTheirKeychainItem() throws {
         let parsed = try ConsoleAPIKey(parsing: key)
         let unsupported = [Profile(command: "claude-work", configDirectory: "/synthetic/work", managed: true),

@@ -73,6 +73,11 @@ public enum APIKeyStore {
         try read(profile: profile)?.value
     }
 
+    /// Whether a key is saved, from an attribute-only lookup: status checks never read the key.
+    public static func isSaved(profile: Profile) throws -> Bool {
+        try isSaved(profile: profile, security: { try CredentialStore.runSecurityStatus($0) })
+    }
+
     /// Saves through `security -i` on stdin, then reads the item back to verify it.
     public static func save(_ key: ConsoleAPIKey, profile: Profile) throws {
         try save(key, profile: profile, securityWrite: { command in
@@ -100,6 +105,22 @@ public enum APIKeyStore {
             guard let result = try? securityRead(service), result.status == 0,
                   (try? decode(result.data)) == key else { throw APIKeyError.keychainWriteFailed }
         }
+    }
+
+    static func isSaved(profile: Profile, security: ([String]) throws -> Int32) throws -> Bool {
+        try validateProfile(profile)
+        let status: Int32
+        do { status = try security(["find-generic-password", "-a", NSUserName(), "-s", serviceName(for: profile)]) }
+        catch { throw APIKeyError.keychainUnavailable }
+        if status == 44 { return false }
+        guard status == 0 else { throw APIKeyError.keychainUnavailable }
+        return true
+    }
+
+    /// Best effort, to undo an item that a failed profile add created.
+    static func delete(profile: Profile, security: ([String]) throws -> Int32 = { try CredentialStore.runSecurityStatus($0) }) {
+        guard (try? validateProfile(profile)) != nil else { return }
+        _ = try? security(["delete-generic-password", "-a", NSUserName(), "-s", serviceName(for: profile)])
     }
 
     static func decode(_ data: Data) throws -> ConsoleAPIKey {
