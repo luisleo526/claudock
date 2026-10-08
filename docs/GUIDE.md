@@ -288,6 +288,16 @@ Pasted tokens are assigned manually to the selected profile. Their provider acco
 
 The **Create in browser** option remains available for new tokens. It opens Claude authorization and accepts the returned `code#state` in its own field. That flow verifies account/organization against the profile's existing login and uses the expiry reported by Claude, requesting one year by default.
 
+From Terminal, `claudock profile set-token NAME` saves a token the same way. It reads the token from standard input, with a prompt that hides input at a terminal or from piped input, and never from command arguments. Add `--expires ISO8601_DATE` when you know the expiry. To create a token for a profile, run Claude Code's own `setup-token` command under it. It signs in through your browser, so make sure the browser is signed in to the matching claude.ai account:
+
+```sh
+claudock run work -- setup-token
+pbpaste | claudock profile set-token work
+claudock profile tokens
+```
+
+`claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key and unresolved profiles, or `unavailable` when Keychain cannot be read. When a saved token has expired, `claudock run` stops and names `set-token`.
+
 Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
 
 Quota monitoring still uses normal OAuth. A monitoring re-login warning does not mean an independently saved inference token has expired. Revoked or expired tokens need replacement; an unknown expiry is not a promise of unlimited validity.

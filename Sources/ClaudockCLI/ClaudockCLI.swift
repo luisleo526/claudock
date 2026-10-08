@@ -4,7 +4,7 @@ import UsageCore
 
 private enum CLIError: LocalizedError {
     case arguments(String), missingProfile(String), ambiguousProfile(String), missingExecutable, missingOwnExecutable, launchFailed(Int32), invalidEnvironment
-    case input(String), missingAPIKey(String), apiKeySignIn(String), subscriptionKey(String)
+    case input(String), missingAPIKey(String), apiKeySignIn(String), subscriptionKey(String), apiKeyToken(String), expiredToken(String)
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +19,8 @@ private enum CLIError: LocalizedError {
         case .missingAPIKey(let name): return "No Console API key is saved for '\(name)'. Save one with: claudock profile set-key \(name)"
         case .apiKeySignIn(let name): return "'\(name)' uses a Console API key and has no Claude sign-in. Replace its key with: claudock profile set-key \(name)"
         case .subscriptionKey(let name): return "'\(name)' is a Claude subscription profile. Only profiles added with 'claudock profile add NAME --api-key' store a Console API key."
+        case .apiKeyToken(let name): return "'\(name)' uses a Console API key. Inference tokens are only for Claude subscription profiles."
+        case .expiredToken(let name): return "The inference token saved for '\(name)' has expired. Replace it with: claudock profile set-token \(name)"
         }
     }
 }
@@ -26,7 +28,7 @@ private enum CLIError: LocalizedError {
 /// Validate the complete command before reading profiles, credentials, or shell files.
 private enum Command {
     case help, version, list, importShell
-    case add(String, String?), addAPIKey(String, String?), setKey(String)
+    case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), tokens
     case rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
     case removedAuto
@@ -52,6 +54,11 @@ private enum Command {
             case "add" where arguments.count >= 3: return try add(name: arguments[2], options: Array(arguments.dropFirst(3)))
             case "set-key" where arguments.count == 3: return .setKey(try name(arguments[2]))
             case "set-key" where arguments.count > 3: throw CLIError.arguments("The key is read from standard input, never from arguments.")
+            case "set-token" where arguments.count == 3: return .setToken(try name(arguments[2]), nil)
+            case "set-token" where arguments.count == 5 && arguments[3] == "--expires": return .setToken(try name(arguments[2]), try expiry(arguments[4]))
+            case "set-token" where arguments.count > 3:
+                throw CLIError.arguments("The token is read from standard input, never from arguments: claudock profile set-token NAME [--expires ISO8601_DATE].")
+            case "tokens" where arguments.count == 2: return .tokens
             case "rename" where arguments.count == 4: return .rename(try name(arguments[2]), try newName(arguments[3]))
             case "remove" where arguments.count == 3: return .remove(try name(arguments[2]))
             case "login" where arguments.count == 3: return .login(try name(arguments[2]))
@@ -98,6 +105,16 @@ private enum Command {
             }
         }
         return apiKey ? .addAPIKey(name, directory) : .add(name, directory)
+    }
+
+    /// An ISO 8601 date and time (2026-12-31T23:59:59Z) or a full date (2026-12-31, midnight UTC).
+    private static func expiry(_ value: String) throws -> Date {
+        let formatter = ISO8601DateFormatter()
+        for options: ISO8601DateFormatter.Options in [[.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds], [.withFullDate]] {
+            formatter.formatOptions = options
+            if let date = formatter.date(from: value) { return date }
+        }
+        throw CLIError.arguments("--expires needs an ISO 8601 date, such as 2026-12-31 or 2026-12-31T23:59:59Z.")
     }
 
     private static func name(_ value: String) throws -> String {
@@ -163,6 +180,20 @@ private struct ClaudockCLI {
             let key = try ConsoleAPIKey(parsing: SecretInput.read(prompt: "Console API key: "))
             try APIKeyStore.save(key, profile: profile)
             print("Saved a new Console API key for \(profile.name) in Keychain.")
+        case .setToken(let name, let expiry):
+            let profile = try resolve(name)
+            guard profile.authKind == .subscription else { throw CLIError.apiKeyToken(profile.name) }
+            guard profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else { throw MintTokenError.unsupportedProfile }
+            let token = try MintTokenStore.importToken(raw: SecretInput.read(prompt: "Inference token: "), profile: profile, expiresAt: expiry)
+            print("Saved an inference token for \(profile.name) in Keychain; 'claudock run \(profile.name)' uses it. "
+                  + "Expires: \(token.expiresAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"). Its account is not verified.")
+        case .tokens:
+            let profiles = try ProfileStore.load()
+            print("PROFILE\tTOKEN_STATUS\tEXPIRES_UTC")
+            for profile in profiles {
+                let status = tokenStatus(profile)
+                print([profile.name, status.0, status.1].map(field).joined(separator: "\t"))
+            }
         case .rename(let name, let replacement):
             let renamed = try ProfileStore.rename(profile: resolve(name), to: replacement)
             print("Renamed to \(renamed.name). Claude data and login were preserved.")
@@ -241,7 +272,10 @@ private struct ClaudockCLI {
             guard let key = try APIKeyStore.environmentKey(profile: profile) else { throw CLIError.missingAPIKey(profile.name) }
             environment["ANTHROPIC_API_KEY"] = key
         case .subscription:
-            if useMint, let token = try InferenceCredential.environmentToken(profile: profile) { environment["CLAUDE_CODE_OAUTH_TOKEN"] = token }
+            guard useMint else { break }
+            do {
+                if let token = try InferenceCredential.environmentToken(profile: profile) { environment["CLAUDE_CODE_OAUTH_TOKEN"] = token }
+            } catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
         }
         let argumentStrings = [executable] + arguments
         guard argumentStrings.allSatisfy({ !$0.contains("\0") }), environment.allSatisfy({ !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
@@ -264,6 +298,22 @@ private struct ClaudockCLI {
             }
         }
         throw CLIError.launchFailed(errno)
+    }
+
+    /// Status and expiry for `profile tokens`; never token material.
+    private static func tokenStatus(_ profile: Profile) -> (String, String) {
+        guard profile.authKind == .subscription, profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else {
+            return ("n/a", "-")
+        }
+        let formatter = ISO8601DateFormatter()
+        do {
+            switch try MintTokenStore.status(profile: profile) {
+            case .notConfigured: return ("none", "-")
+            case .active(let expiry): return ("active", formatter.string(from: expiry))
+            case .expired(let expiry): return ("expired", formatter.string(from: expiry))
+            case .imported(let expiry): return ("pasted-unverified", expiry.map(formatter.string(from:)) ?? "unknown")
+            }
+        } catch { return ("unavailable", "-") }
     }
 
     private static func usage() async throws {
@@ -311,6 +361,8 @@ private struct ClaudockCLI {
       claudock profile add NAME [--directory ABS_PATH]
       claudock profile add NAME --api-key [--directory ABS_PATH]
       claudock profile set-key NAME
+      claudock profile set-token NAME [--expires ISO8601_DATE]
+      claudock profile tokens
       claudock profile rename NAME NEWNAME
       claudock profile remove NAME
       claudock profile login NAME
@@ -338,6 +390,17 @@ private struct ClaudockCLI {
     echoing, otherwise it reads the piped input. Keys are stored only in the
     macOS Keychain and reach Claude as ANTHROPIC_API_KEY. The first interactive
     launch asks whether to use the key; choose Yes. 'usage' skips these profiles.
+
+    Inference tokens: 'profile set-token NAME' saves a long-lived Claude Code
+    OAuth token (sk-ant-oat01-…, or its export CLAUDE_CODE_OAUTH_TOKEN=… line)
+    for a subscription profile. It is read from standard input like a key, and
+    'run' passes it to Claude as CLAUDE_CODE_OAUTH_TOKEN. --expires records a
+    known expiry. 'profile tokens' lists each profile's token status and expiry,
+    never the token. To create a token, run Claude Code's own command for the
+    profile. It signs in through your browser, so the browser must be signed in
+    to the matching claude.ai account. Then copy the printed token and save it:
+      claudock run NAME -- setup-token
+      pbpaste | claudock profile set-token NAME
 
     Examples:
       claudock profile add work

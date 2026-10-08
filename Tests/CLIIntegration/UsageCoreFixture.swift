@@ -58,6 +58,26 @@ public enum APIKeyStore {
     public static func save(_ key: ConsoleAPIKey, profile: Profile) throws { markAccess("API key") }
 }
 
+// CLI inference-token commands are covered by token_e2e.py against the real Keychain.
+public enum MintTokenError: Error, LocalizedError {
+    case unsupportedProfile, tokenExpired
+    public var errorDescription: String? { "Synthetic inference token error." }
+}
+public enum MintTokenStatus {
+    case notConfigured
+    case active(expiresAt: Date)
+    case expired(expiresAt: Date)
+    case imported(expiresAt: Date?)
+}
+public struct MintToken { public let expiresAt: Date? }
+public enum MintTokenStore {
+    public static func importToken(raw: String, profile: Profile, expiresAt: Date?) throws -> MintToken {
+        markAccess("inference token")
+        throw MintTokenError.unsupportedProfile
+    }
+    public static func status(profile: Profile) throws -> MintTokenStatus { markAccess("inference token"); return .notConfigured }
+}
+
 public enum ShellIntegration {
     public static func enable(cliPath: String) throws {
         if let path = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_SHELL_MARK"] {
