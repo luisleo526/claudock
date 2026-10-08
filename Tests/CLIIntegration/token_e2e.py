@@ -207,6 +207,14 @@ def require_token_policy(sandbox, checks, api_key):
     checks.expect(result.returncode == 0 and result.stderr.endswith("require-token: off\n"), "tokens must report the policy", result)
     checks.done("policy off: no token falls back to the profile's own login")
 
+    # "work" still holds the expired pasted token: setup-token must still create its replacement.
+    result = sandbox.run("run", "work", "--", "setup-token")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and record["argv"] == ["setup-token"]
+                  and "CLAUDE_CODE_OAUTH_TOKEN" not in record["env"],
+                  "policy off: setup-token must run on the profile's own login despite an expired token", result)
+    checks.done("policy off: an expired token does not block setup-token")
+
 
 def help_text(sandbox, checks):
     result = sandbox.run("help")

@@ -434,7 +434,7 @@ private struct ClaudockCLI {
     ('run', shortcuts, Open in Terminal, Continue as…) use its inference token:
     a missing, expired, or unreadable token stops the launch instead of using
     the profile's normal login. 'profile login' and 'run NAME -- setup-token'
-    still work. The setting is shared with the app; it is off by default.
+    always work, even when the saved token has expired. The setting is shared with the app; it is off by default.
 
     Examples:
       claudock profile add work
