@@ -134,10 +134,13 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     func refresh(manual: Bool = false) {
         if isDemo {
             now = Date()
-            accounts = DemoData.profiles(count: demoProfileCount).enumerated().map { index, profile in
+            var demo = DemoData.profiles(count: demoProfileCount).enumerated().map { index, profile in
                 AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4],
                              snapshot: DemoData.usage(index: index, now: now), error: index == 3 ? .network : nil)
-            } + [AccountState(profile: DemoData.apiKeyProfile)]
+            }
+            // Second in the list, so previews show the API-key row beside a subscription account.
+            demo.insert(AccountState(profile: DemoData.apiKeyProfile), at: min(1, demo.count))
+            accounts = demo
             lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return
         }
