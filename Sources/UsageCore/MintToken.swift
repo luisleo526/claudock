@@ -419,22 +419,12 @@ public enum MintTokenStore {
     }
 
     private static func write(_ command: Data) throws {
-        let process = Process(), input = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security"); process.arguments = ["-i"]
-        process.standardInput = input; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else { throw MintTokenError.keychainWriteFailed }
-        let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        do { try process.run() } catch { throw MintTokenError.keychainWriteFailed }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: deadline)
-        defer { deadline.cancel(); try? input.fileHandleForWriting.close() }
-        do { try input.fileHandleForWriting.write(contentsOf: command); try input.fileHandleForWriting.close() }
-        catch { if process.isRunning { process.terminate() }; process.waitUntilExit(); throw MintTokenError.keychainWriteFailed }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw MintTokenError.keychainWriteFailed }
+        guard CredentialStore.runSecurityCommand(command) else { throw MintTokenError.keychainWriteFailed }
     }
 
+    /// Inference tokens belong to subscription profiles; Console API-key profiles never use one.
     static func validateProfile(_ profile: Profile) throws {
-        guard !profile.isVertex, profile.discoveryNote == nil, profile.configDirectory.hasPrefix("/"),
+        guard profile.authKind == .subscription, !profile.isVertex, profile.discoveryNote == nil, profile.configDirectory.hasPrefix("/"),
               !profile.configDirectory.contains("\0") else { throw MintTokenError.unsupportedProfile }
     }
 }

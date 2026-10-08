@@ -1,5 +1,12 @@
 import Foundation
 
+/// How a profile authenticates Claude Code. Only managed profiles created through
+/// Claudock can use a Console API key; every other profile is a subscription.
+public enum ProfileAuthKind: String, Codable, Hashable, Sendable {
+    case subscription
+    case apiKey
+}
+
 public struct Profile: Identifiable, Codable, Hashable, Sendable {
     public var id: String { registryID ?? command }
     /// The legacy command remains the analytics and credential-identity boundary.
@@ -9,23 +16,25 @@ public struct Profile: Identifiable, Codable, Hashable, Sendable {
     public let discoveryNote: String?
     public let registryID: String?
     public let managed: Bool
+    public let authKind: ProfileAuthKind
     public var name: String { command == "claude" ? "default" : String(command.dropFirst(7)) }
     public var launchCommand: String {
         !isVertex && discoveryNote == nil && !configDirectory.isEmpty ? "claudock run \(command)" : command
     }
 
     public init(command: String, configDirectory: String, isVertex: Bool = false, discoveryNote: String? = nil,
-                registryID: String? = nil, managed: Bool = false) {
+                registryID: String? = nil, managed: Bool = false, authKind: ProfileAuthKind = .subscription) {
         self.command = command
         self.configDirectory = configDirectory
         self.isVertex = isVertex
         self.discoveryNote = discoveryNote
         self.registryID = registryID
         self.managed = managed
+        self.authKind = authKind
     }
 
     private enum CodingKeys: String, CodingKey {
-        case command, configDirectory, isVertex, discoveryNote, registryID, managed
+        case command, configDirectory, isVertex, discoveryNote, registryID, managed, authKind
     }
 
     public init(from decoder: Decoder) throws {
@@ -36,5 +45,18 @@ public struct Profile: Identifiable, Codable, Hashable, Sendable {
         discoveryNote = try values.decodeIfPresent(String.self, forKey: .discoveryNote)
         registryID = try values.decodeIfPresent(String.self, forKey: .registryID)
         managed = try values.decodeIfPresent(Bool.self, forKey: .managed) ?? false
+        authKind = try values.decodeIfPresent(ProfileAuthKind.self, forKey: .authKind) ?? .subscription
+    }
+
+    /// Subscription records omit the kind, so registries without API-key profiles keep their bytes.
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(command, forKey: .command)
+        try values.encode(configDirectory, forKey: .configDirectory)
+        try values.encode(isVertex, forKey: .isVertex)
+        try values.encodeIfPresent(discoveryNote, forKey: .discoveryNote)
+        try values.encodeIfPresent(registryID, forKey: .registryID)
+        try values.encode(managed, forKey: .managed)
+        if authKind != .subscription { try values.encode(authKind, forKey: .authKind) }
     }
 }

@@ -31,6 +31,11 @@ public enum ProfileManager {
         try ProfileStore.add(name: name, configDirectory: configDirectory, home: home)
     }
 
+    public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String? = nil,
+                                        home: String = NSHomeDirectory()) throws -> Profile {
+        try ProfileStore.addAPIKeyProfile(name: name, apiKey: apiKey, configDirectory: configDirectory, home: home)
+    }
+
     public static func rename(profile: Profile, to name: String, home: String = NSHomeDirectory()) throws -> Profile {
         try ProfileStore.rename(profile: profile, to: name, home: home)
     }

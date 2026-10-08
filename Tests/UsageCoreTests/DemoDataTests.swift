@@ -39,4 +39,13 @@ final class DemoDataTests: XCTestCase {
     func testPreviewInferenceTokenStatusNeedsNoKeychain() {
         XCTAssertEqual(DemoData.mintStatus(profile: DemoData.profiles[0]), .notConfigured)
     }
+
+    func testPreviewIncludesOneSyntheticAPIKeyProfileOutsideTheSubscriptionList() {
+        let profile = DemoData.apiKeyProfile
+        XCTAssertEqual(profile.authKind, .apiKey)
+        XCTAssertTrue(profile.managed)
+        XCTAssertTrue(profile.configDirectory.hasPrefix("/Users/demo/"))
+        XCTAssertFalse(DemoData.profiles(count: 200).contains { $0.command == profile.command })
+        XCTAssertTrue(DemoData.apiKeySaved(profile: profile))
+    }
 }
