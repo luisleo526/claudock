@@ -25,6 +25,7 @@ from pathlib import Path
 import pwd
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,13 @@ def build_cli():
     directory = subprocess.run(["xcrun", "swift", "build", "--show-bin-path"], cwd=PROJECT, env=environment,
                                check=True, capture_output=True, text=True).stdout.strip()
     return Path(directory) / "claudock"
+
+
+def clean_up_on_termination():
+    """tmux kill-session and time-budget kills send SIGHUP or SIGTERM; turn them into an exit so
+    teardown (Keychain items, the real preference, temporary homes) still runs."""
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, lambda *_: sys.exit(1))
 
 
 def preflight():

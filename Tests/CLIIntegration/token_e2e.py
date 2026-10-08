@@ -14,8 +14,9 @@ import json
 import secrets
 import sys
 
-from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, credential_service, inference_service,
-                          keychain_item_exists, preflight, read_policy_preference, restore_policy_preference)
+from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, clean_up_on_termination,
+                          credential_service, inference_service, keychain_item_exists, preflight,
+                          read_policy_preference, restore_policy_preference)
 
 
 PROMPT = b"Inference token: "
@@ -216,6 +217,7 @@ def help_text(sandbox, checks):
 
 
 def main():
+    clean_up_on_termination()
     preflight()
     cli = build_cli()
     checks = Checks()

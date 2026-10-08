@@ -17,7 +17,7 @@ import os
 import sys
 import time
 
-from claudock_e2e import Checks, Sandbox, build_cli, preflight
+from claudock_e2e import (Checks, Sandbox, build_cli, clean_up_on_termination, preflight)
 
 
 PROFILES = ["alpha", "bravo", "charlie"]
@@ -48,6 +48,7 @@ def expect_rename(checks, process, label):
 
 
 def main():
+    clean_up_on_termination()
     preflight()
     cli = build_cli()
     checks = Checks()

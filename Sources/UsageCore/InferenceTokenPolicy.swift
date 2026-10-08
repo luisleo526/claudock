@@ -50,8 +50,9 @@ public enum InferenceTokenPolicy {
     }
 
     /// Chooses the credential for a launch. Sign-in always runs on the profile's own login. With the
-    /// requirement off, a subscription profile falls back to its own login as before. With it on, a
-    /// missing, expired, or unreadable token is an error, except for `setup-token`, which creates one.
+    /// requirement off, a missing token or an expired browser-created token falls back to the profile's
+    /// own login as before, while an expired pasted token or an unreadable one is an error. With it on,
+    /// a missing, expired, or unreadable token is an error, except for `setup-token`, which creates one.
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         try launchCredential(profile: profile, claudeArguments: claudeArguments, signIn: signIn, requireToken: isRequired(),
                              mint: MintTokenStore.read)

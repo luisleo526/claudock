@@ -16,8 +16,8 @@ import secrets
 import signal
 import sys
 
-from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, credential_service, delete_keychain_item,
-                          keychain_item_exists, preflight)
+from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, clean_up_on_termination,
+                          credential_service, delete_keychain_item, keychain_item_exists, preflight)
 
 
 PROMPT = b"Console API key: "
@@ -260,6 +260,7 @@ def help_text(sandbox, checks):
 
 
 def main():
+    clean_up_on_termination()
     preflight()
     cli = build_cli()
     checks = Checks()
