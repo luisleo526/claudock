@@ -68,6 +68,18 @@ def api_key_profile(sandbox, checks):
     checks.expect(record["cwd"] == str(sandbox.base), "run must keep the working directory")
     checks.done("run passes ANTHROPIC_API_KEY only through the environment and strips other auth")
 
+    # claude-console shortcuts call `run claude-console`; Open in Terminal and Continue as… call launch-bound.
+    for arguments in (("run", "claude-console", "--", "--resume", "abc"),
+                      ("launch-bound", sandbox.registry_id("console"), credential_service(console), "run", "--", "--resume", "abc")):
+        result = sandbox.run(*arguments, extra=conflicts)
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None, f"{arguments[0]} must launch the API-key profile", result)
+        checks.expect(record["argv"] == ["--resume", "abc"] and record["env"].get("ANTHROPIC_API_KEY") == first
+                      and record["env"].get("CLAUDE_CONFIG_DIR") == console["configDirectory"]
+                      and not {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} & set(record["env"]),
+                      f"{arguments[0]} must launch with only the stored key")
+    checks.done("shortcut selectors and app launches use the key the same way")
+
     result = sandbox.run("profile", "set-key", "console", stdin=second)
     checks.expect(result.returncode == 0, "set-key must replace the key from stdin", result)
     checks.expect(second not in result.stdout + result.stderr, "set-key output must not contain the key")
