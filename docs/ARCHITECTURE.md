@@ -11,6 +11,7 @@ Claudock is a Swift package with a macOS menu bar executable (`ClaudockApp`), a 
 | `ShellIntegration` | Opt in to a namespaced CLI command and missing profile shortcuts, upgrade unchanged owned integration files, and synchronize only owned functions through zsh hooks. |
 | `ClaudockCLI` | Validate command arguments before I/O, expose registry CRUD and quota, and launch Claude with direct `execve` in the current working directory. |
 | `CredentialStore` | Read the exact profile credential, preserve its complete JSON, and conditionally update the existing Keychain item or credential file. |
+| `APIKeyStore` / `ConsoleAPIKey` | Parse Console API keys as data, keep them in a separate Keychain namespace, and read them only to launch their profile. |
 | `CredentialRefresher` / `ClaudeCredentialLock` | Renew expired or rejected access tokens with shared Claude locks, scoped OAuth requests, conditional persistence, and bounded retries. |
 | `UsageClient` | Fetch the HTTPS usage endpoint with an ephemeral session, no redirects, timeouts, and status-specific errors. |
 | `UsageSnapshot` | Decode supported usage-response shapes into displayable windows and reset dates. |
@@ -77,7 +78,19 @@ The app and CLI use the same custom executable preference domain. The bundle ide
 
 `claudock run NAME -- ARGUMENTS` and `claudock profile login NAME` replace the current CLI process with Claude through POSIX `execve`; no intermediate shell evaluates arguments. They retain the invoking working directory and terminal. `LaunchCommand.environment` validates supported profiles and clears conflicting credential, provider, model, and nested-session variables before setting the account's literal `CLAUDE_CONFIG_DIR` (or clearing it for the default account). Interactive login happens in Claude Code only after a deliberate action. Discovery never initiates login. Quota monitoring can renew an expired access token through the saved OAuth refresh token.
 
-`claudock usage` requests quota sequentially for supported profiles and emits tab-separated window percentages/reset timestamps. It skips unresolved profiles with a message, reports per-account failures, and returns a failure status when a requested account fails. No email or credential fields are printed. It performs no automatic polling; the GUI owns scheduled refresh and cooldown state.
+`claudock usage` requests quota sequentially for supported profiles and emits tab-separated window percentages/reset timestamps. It skips unresolved profiles and Console API-key profiles with a message, reports per-account failures, and returns a failure status when a requested account fails. No email or credential fields are printed. It performs no automatic polling; the GUI owns scheduled refresh and cooldown state.
+
+## Console API-key profiles
+
+`Profile.authKind` is `subscription` or `apiKey`. The registry writes the field only for `apiKey`; records without it decode as subscription profiles, so registries without API-key profiles keep their bytes. Only managed profiles created through Claudock can be `apiKey`, registry validation rejects the kind on any other record, and the kind cannot change after creation. A rename keeps the kind and config folder, and so the key's Keychain service.
+
+`ConsoleAPIKey` parses input as data: a trimmed `sk-ant-apiNN-…` key with a `[A-Za-z0-9_-]` body and at most 512 characters, or one complete `export ANTHROPIC_API_KEY=…` assignment, optionally quoted. OAuth tokens and Admin keys get specific errors. No error message, description, or reflection includes the key. The CLI reads keys only from standard input: at a terminal it prompts on stderr with echo off and restores the terminal on every exit, including signals; otherwise it reads up to 4 KiB to end of input. A key is never accepted as an argument.
+
+`APIKeyStore` keeps each key in the generic-password item `Claudock-apikey-<SHA-256 hex of CredentialStore.serviceName(for:)>`, separate from Claude's OAuth credentials and `Claudock-inference-…` tokens. Writes use the same `security -i` stdin path as inference tokens, with the key hex-encoded and a bounded command, then read the item back and compare it. A missing item reads as no key; a locked or unreadable item is an error. `ProfileStore.addAPIKeyProfile` saves the key after preparing the registry entry and its account folder but before publishing either; a failed save leaves the registry unwritten and rolls the folder back. Removal keeps the item, like other credentials.
+
+`ClaudockCLI.launch`, which serves `run`, managed shortcuts, and the app's Terminal launches through `launch-bound`, starts from `LaunchCommand.environment` (which clears every inherited authentication and provider variable), sets `ANTHROPIC_API_KEY` from Keychain, and keeps `CLAUDE_CONFIG_DIR`. It never sets `CLAUDE_CODE_OAUTH_TOKEN`, and a missing key fails before `execve`. `SubscriptionConfiguration.validate` still applies: the profile's settings cannot select external providers, override credentials, or point `ANTHROPIC_BASE_URL` away from api.anthropic.com. Sign-in is refused for these profiles, and inference tokens are refused for them in `MintTokenStore`.
+
+The monitor reads neither `CredentialStore` nor `UsageClient` for API-key profiles. They are shown without limit bars, are not errors, do not count toward attention or the updated-profile count, and sort after subscription accounts when sorting by usage. Claude Code asks once, in interactive mode, whether to use a custom `ANTHROPIC_API_KEY` and stores the answer in the profile's config folder; Claudock does not pre-answer it.
 
 ## Limits and external dependencies
 
@@ -117,7 +130,7 @@ The one-shot `claudock usage` command reads quota without rotating credentials. 
 
 Long-lived mint credentials are separate from full-scope refreshable credentials. Browser PKCE authorization requests `user:inference` and a one-year lifetime. The server-reported expiry is stored; normal quota OAuth remains available for background refresh. Minting cannot eliminate the usage API's scope requirement.
 
-## Shell ownership and subscription-only profiles
+## Shell ownership and external providers
 
 Adapter v4 defines no `claude-auto` function. At source time, it removes an older generated function only when its current body matches `_claudock_auto_body`, then forgets that ownership record. This cleanup runs even if the registry emitter fails. Existing aliases/functions/executables and user-modified generated functions keep precedence, including legacy named-profile wrappers. New profiles cannot use the reserved `default` or `auto` names.
 
