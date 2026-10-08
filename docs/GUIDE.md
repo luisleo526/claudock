@@ -78,6 +78,7 @@ Open the **…** menu in the header for Settings. Preferences are saved locally.
 - **Accent** offers Copper, Sage, Iris, and Blue.
 - **Launch at login** can be enabled from Settings after placing the app in Applications.
 - **Locate Claude executable…** selects a custom Claude installation for actions launched by the app.
+- **Require inference token to launch** makes every Claudock launch of a subscription profile use its inference token; without a valid one, the launch stops instead of using the profile's normal login. `claudock require-token on|off|status` changes the same setting.
 - Closing the dashboard keeps the menu bar app running. Use Settings or right-click the menu bar icon to quit.
 
 Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and [Console API keys](#console-api-keys). External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import. Legacy cloud registrations are removed from the app without deleting their configuration or shared history.
@@ -298,7 +299,9 @@ pbpaste | claudock profile set-token work
 claudock profile tokens
 ```
 
-`claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key and unresolved profiles, or `unavailable` when Keychain cannot be read. When a saved token has expired, `claudock run` stops and names `set-token`.
+`claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key and unresolved profiles, or `unavailable` when Keychain cannot be read. A last line on stderr shows whether tokens are required. When a saved token has expired, `claudock run` stops and names `set-token`.
+
+Without a token, or after a browser-created token expires, a launch uses the profile's normal Claude Code login. To rule that out, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`. Then `claudock run`, managed shortcuts, **Open in Terminal**, and **Continue as…** stop with instructions whenever a subscription profile's token is missing, expired, or unreadable. `claudock profile login` and `claudock run NAME -- setup-token` still work, so you can create the token, and Console API-key profiles keep using their key. The setting is off by default; `claudock require-token status` prints `on` or `off`.
 
 Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
 

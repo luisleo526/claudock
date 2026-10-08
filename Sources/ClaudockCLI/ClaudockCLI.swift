@@ -31,6 +31,8 @@ private enum Command {
     case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), tokens
     case rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
+    /// nil prints the current setting.
+    case requireToken(Bool?)
     case removedAuto
     case boundLaunch(String, String, Bool, [String])
 
@@ -39,6 +41,14 @@ private enum Command {
         if ["help", "--help", "-h"].contains(first), arguments.count == 1 { return .help }
         if ["version", "--version"].contains(first), arguments.count == 1 { return .version }
         if first == "usage", arguments.count == 1 { return .usage }
+        if first == "require-token", arguments.count == 2 {
+            switch arguments[1] {
+            case "on": return .requireToken(true)
+            case "off": return .requireToken(false)
+            case "status": return .requireToken(nil)
+            default: break
+            }
+        }
         if first == "launch-bound", arguments.count >= 5 {
             let id = try name(arguments[1]), service = arguments[2]
             guard service.range(of: #"\AClaude Code-credentials(?:-[a-f0-9]{8})?\z"#, options: .regularExpression) != nil,
@@ -203,6 +213,7 @@ private struct ClaudockCLI {
                 let status = tokenStatus(profile)
                 print([profile.name, status.0, status.1].map(field).joined(separator: "\t"))
             }
+            FileHandle.standardError.write(Data("require-token: \(InferenceTokenPolicy.isRequired() ? "on" : "off")\n".utf8))
         case .rename(let name, let replacement):
             let renamed = try ProfileStore.rename(profile: resolve(name), to: replacement)
             print("Renamed to \(renamed.name). Claude data and login were preserved.")
@@ -219,9 +230,9 @@ private struct ClaudockCLI {
         case .login(let name):
             let profile = try resolve(name)
             guard profile.authKind == .subscription else { throw CLIError.apiKeySignIn(profile.name) }
-            try launch(profile: profile, arguments: ["auth", "login", "--claudeai"])
+            try launch(profile: profile, arguments: ["auth", "login", "--claudeai"], signIn: true)
         case .run(let name, let arguments):
-            try launch(profile: resolve(name), arguments: arguments, useMint: true)
+            try launch(profile: resolve(name), arguments: arguments)
         case .removedAuto:
             FileHandle.standardError.write(Data("Claudock Auto has been removed. Use 'claudock run PROFILE' to start Claude with a specific profile.\n".utf8))
             exit(2)
@@ -232,9 +243,16 @@ private struct ClaudockCLI {
                 throw CLIError.arguments("The selected profile changed. Choose it again in Claudock.")
             }
             if login, profile.authKind != .subscription { throw CLIError.apiKeySignIn(profile.name) }
-            try launch(profile: profile, arguments: login ? ["auth", "login", "--claudeai"] : arguments, useMint: !login)
+            try launch(profile: profile, arguments: login ? ["auth", "login", "--claudeai"] : arguments, signIn: login)
         case .usage:
             try await usage()
+        case .requireToken(let required?):
+            try InferenceTokenPolicy.setRequired(required)
+            print(required
+                  ? "Claudock now requires an inference token to launch subscription profiles; it no longer falls back to their normal login."
+                  : "Claudock no longer requires an inference token; subscription profiles without one launch with their normal login.")
+        case .requireToken(nil):
+            print(InferenceTokenPolicy.isRequired() ? "on" : "off")
         case .shellEnable:
             try ShellIntegration.enable(cliPath: currentExecutable())
             print("Claudock shell integration enabled. Open a new Terminal tab to use 'claudock' and managed 'claude-NAME' shortcuts.")
@@ -272,19 +290,22 @@ private struct ClaudockCLI {
         return profile
     }
 
-    private static func launch(profile: Profile, arguments: [String], useMint: Bool = false) throws {
+    /// Sign-in runs on the profile's own login and is never subject to the inference-token requirement.
+    private static func launch(profile: Profile, arguments: [String], signIn: Bool = false) throws {
         guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
         var environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
-        switch profile.authKind {
-        case .apiKey:
-            // Inherited credentials were cleared above; the key is the only one, and no inference token is used.
+        let credential: LaunchCredential
+        do {
+            credential = signIn ? .profileLogin
+                : try InferenceTokenPolicy.launchCredential(profile: profile, claudeArguments: arguments, requireToken: InferenceTokenPolicy.isRequired())
+        } catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
+        // Inherited credentials were cleared above, so the chosen one is the only one.
+        switch credential {
+        case .consoleAPIKey:
             guard let key = try APIKeyStore.environmentKey(profile: profile) else { throw CLIError.missingAPIKey(profile.name) }
             environment["ANTHROPIC_API_KEY"] = key
-        case .subscription:
-            guard useMint else { break }
-            do {
-                if let token = try InferenceCredential.environmentToken(profile: profile) { environment["CLAUDE_CODE_OAUTH_TOKEN"] = token }
-            } catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
+        case .inferenceToken(let token): environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        case .profileLogin: break
         }
         let argumentStrings = [executable] + arguments
         guard argumentStrings.allSatisfy({ !$0.contains("\0") }), environment.allSatisfy({ !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
@@ -378,6 +399,7 @@ private struct ClaudockCLI {
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
       claudock usage
+      claudock require-token on|off|status
       claudock shell enable|disable|status
       claudock version
 
@@ -410,6 +432,11 @@ private struct ClaudockCLI {
     to the matching claude.ai account. Then copy the printed token and save it:
       claudock run NAME -- setup-token
       pbpaste | claudock profile set-token NAME
+    'require-token on' makes every Claudock launch of a subscription profile
+    ('run', shortcuts, Open in Terminal, Continue as…) use its inference token:
+    a missing, expired, or unreadable token stops the launch instead of using
+    the profile's normal login. 'profile login' and 'run NAME -- setup-token'
+    still work. The setting is shared with the app; it is off by default.
 
     Examples:
       claudock profile add work

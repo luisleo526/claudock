@@ -17,10 +17,16 @@ public enum MonitorError: Error, LocalizedError {
     }
 }
 
-public enum InferenceCredential {
-    public static func environmentToken(profile: Profile) throws -> String? {
+public enum LaunchCredential {
+    case consoleAPIKey, inferenceToken(String), profileLogin
+}
+public enum InferenceTokenPolicy {
+    public static func isRequired() -> Bool { false }
+    public static func setRequired(_ required: Bool) throws {}
+    public static func launchCredential(profile: Profile, claudeArguments: [String], requireToken: Bool) throws -> LaunchCredential {
+        if profile.authKind == .apiKey { return .consoleAPIKey }
         markAccess("mint credential")
-        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
+        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? .inferenceToken("synthetic-mint-token") : .profileLogin
     }
 }
 public enum ProfileStore {

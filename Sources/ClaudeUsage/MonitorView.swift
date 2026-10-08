@@ -142,6 +142,8 @@ struct MonitorView: View {
                         Text("Copper").tag("copper"); Text("Sage").tag("sage"); Text("Iris").tag("iris"); Text("Blue").tag("blue")
                     }
                     Divider()
+                    Toggle("Require inference token to launch", isOn: $store.requireInferenceToken).disabled(store.isDemo)
+                    Text("Subscription launches stop instead of using the normal login")
                     Toggle("Launch at login", isOn: Binding(get: { launchAtLogin }, set: { value in
                         do {
                             if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
