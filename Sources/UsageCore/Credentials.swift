@@ -76,6 +76,23 @@ public enum CredentialStore {
         return (data, process.terminationStatus)
     }
 
+    /// Runs one `security -i` command read from stdin, so secret data never appears in a
+    /// process's arguments. Returns false if security fails or does not finish within two seconds.
+    static func runSecurityCommand(_ command: Data) -> Bool {
+        let process = Process(), input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security"); process.arguments = ["-i"]
+        process.standardInput = input; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else { return false }
+        let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        do { try process.run() } catch { return false }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: deadline)
+        defer { deadline.cancel(); try? input.fileHandleForWriting.close() }
+        do { try input.fileHandleForWriting.write(contentsOf: command); try input.fileHandleForWriting.close() }
+        catch { if process.isRunning { process.terminate() }; process.waitUntilExit(); return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
     public static func email(for profile: Profile) -> String? {
         let path = profile.command == "claude"
             ? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude.json")

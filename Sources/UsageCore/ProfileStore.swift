@@ -48,6 +48,18 @@ public enum ProfileStore {
     }
 
     public static func add(name: String, configDirectory: String? = nil, home: String = NSHomeDirectory()) throws -> Profile {
+        try add(name: name, configDirectory: configDirectory, authKind: .subscription, home: home, beforePublishing: { _ in })
+    }
+
+    /// The key is saved in Keychain before the new registry entry is published. If saving
+    /// fails, the entry and any account folder created for it are rolled back.
+    public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String? = nil,
+                                        home: String = NSHomeDirectory()) throws -> Profile {
+        try add(name: name, configDirectory: configDirectory, authKind: .apiKey, home: home) { try APIKeyStore.save(apiKey, profile: $0) }
+    }
+
+    static func add(name: String, configDirectory: String?, authKind: ProfileAuthKind, home: String,
+                    beforePublishing: (Profile) throws -> Void) throws -> Profile {
         let command = try validatedCommand(name)
         let explicitDirectory = configDirectory.flatMap { $0.isEmpty ? nil : $0 }
         if let path = explicitDirectory {
@@ -59,8 +71,8 @@ public enum ProfileStore {
         let identifier = UUID().uuidString
         let accountParent = directory(home: home).appendingPathComponent("accounts", isDirectory: true).appendingPathComponent(identifier, isDirectory: true)
         let path = explicitDirectory ?? accountParent.appendingPathComponent("claude", isDirectory: true).path
-        return try withState(home: home, createAccount: explicitDirectory == nil ? accountParent : nil) { state in
-            let profile = Profile(command: command, configDirectory: path, registryID: identifier, managed: true)
+        return try withState(home: home, createAccount: explicitDirectory == nil ? accountParent : nil, beforePublishing: beforePublishing) { state in
+            let profile = Profile(command: command, configDirectory: path, registryID: identifier, managed: true, authKind: authKind)
             guard !state.profiles.contains(where: { $0.command == command }) else { throw Failure.duplicateName }
             guard !state.profiles.contains(where: { sameCredentialIdentity($0, profile) }) else { throw Failure.duplicateDirectory }
             guard explicitDirectory != nil || !pathEntryExists(accountParent.path) else { throw Failure.directoryExists }
@@ -83,7 +95,7 @@ public enum ProfileStore {
             suppress(profile, in: &state)
             let renamed = Profile(command: command, configDirectory: profile.configDirectory,
                                   isVertex: profile.isVertex, discoveryNote: profile.discoveryNote,
-                                  registryID: state.profiles[index].registryID, managed: true)
+                                  registryID: state.profiles[index].registryID, managed: true, authKind: profile.authKind)
             state.profiles[index] = renamed
             state.profiles = sorted(state.profiles)
             return renamed
@@ -133,7 +145,11 @@ public enum ProfileStore {
         }
     }
 
-    private static func withState<T>(home: String, createAccount: URL? = nil, operation: (inout State) throws -> T) throws -> T {
+    /// Carries an error from `beforePublishing` past the generic I/O mapping below.
+    private struct PublicationFailure: Error { let underlying: Error }
+
+    private static func withState<T>(home: String, createAccount: URL? = nil, beforePublishing: (T) throws -> Void = { _ in },
+                                     operation: (inout State) throws -> T) throws -> T {
         let base = directory(home: home)
         do {
             try ensureBase(base)
@@ -182,12 +198,17 @@ public enum ProfileStore {
             let workspace = try createAccount.map { try SharedProfileWorkspace.prepare(accountParent: $0, home: home) }
             defer { workspace?.rollback() }
             try workspace?.validate()
+            // Save what the new entry depends on (an API key) before publishing it. A failure
+            // leaves the registry unwritten and rolls back the prepared account folder.
+            do { try beforePublishing(result) } catch { throw PublicationFailure(underlying: error) }
             guard snapshot.unchanged() else { throw Failure.concurrentChange }
             if data != snapshot.data { try atomicWrite(data, to: snapshot.url) }
             workspace?.commit()
             return result
         } catch let failure as Failure {
             throw failure
+        } catch let failure as PublicationFailure {
+            throw failure.underlying
         } catch {
             throw Failure.ioFailure
         }
@@ -270,6 +291,7 @@ public enum ProfileStore {
               state.suppressedDirectories.allSatisfy(validPath),
               state.profiles.allSatisfy({ profile in
                   (validPath(profile.configDirectory) || (profile.configDirectory.isEmpty && profile.discoveryNote != nil)) &&
+                  (profile.authKind == .subscription || profile.managed) &&
                   (!profile.managed || (profile.command != "claude" && !profile.isVertex && profile.discoveryNote == nil && (try? validatedCommand(profile.name, allowLegacyAuto: true)) == profile.command))
               }) else { throw Failure.invalidManagedFiles }
     }

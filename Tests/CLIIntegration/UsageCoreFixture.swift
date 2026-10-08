@@ -39,8 +39,23 @@ public enum ProfileStore {
 
     public static func importShellProfiles() throws -> [Profile] { try load() }
     public static func add(name: String, configDirectory: String?) throws -> Profile { try load()[1] }
+    public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String?) throws -> Profile { try load()[1] }
     public static func rename(profile: Profile, to: String) throws -> Profile { profile }
     public static func remove(profile: Profile) throws {}
+}
+
+// API-key paths are covered by api_key_e2e.py against the real Keychain; this smoke
+// fixture only needs them to compile and to report any unexpected access.
+public struct ConsoleAPIKey {
+    public init(parsing raw: String) throws {
+        markAccess("API key input")
+        throw MonitorError.unsupported("The synthetic fixture stores no API keys.")
+    }
+}
+public enum APIKeyStore {
+    public static func serviceName(for profile: Profile) -> String { "Claudock-apikey-fixture" }
+    public static func environmentKey(profile: Profile) throws -> String? { markAccess("API key"); return nil }
+    public static func save(_ key: ConsoleAPIKey, profile: Profile) throws { markAccess("API key") }
 }
 
 public enum ShellIntegration {

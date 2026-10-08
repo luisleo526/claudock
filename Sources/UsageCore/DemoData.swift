@@ -3,6 +3,9 @@ import Foundation
 /// Synthetic preview data; no account, Keychain, filesystem, or network reads.
 public enum DemoData {
     public static var profiles: [Profile] { profiles(count: 4) }
+    /// One Console API-key profile, kept out of `profiles` so the subscription previews keep their names.
+    public static let apiKeyProfile = Profile(command: "claude-console", configDirectory: "/Users/demo/.claude-console",
+                                              managed: true, authKind: .apiKey)
 
     /// The first four previews keep their documented names; larger previews add numbered profiles.
     public static func profiles(count: Int) -> [Profile] {
@@ -50,6 +53,8 @@ public enum DemoData {
         Thread.sleep(forTimeInterval: 0.030 + Double(seed % 51) / 1000)
         return .notConfigured
     }
+    /// Stands in for an API-key Keychain lookup in previews: the synthetic key is always saved.
+    public static func apiKeySaved(profile: Profile) -> Bool { profile.authKind == .apiKey }
     public static func analytics(days: Int) -> AnalyticsSnapshot {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())

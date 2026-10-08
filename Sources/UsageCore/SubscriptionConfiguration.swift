@@ -16,7 +16,7 @@ public enum SubscriptionConfiguration {
         "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_BG_AUTH_SNAPSHOT_PATH",
         "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH", "ANTHROPIC_UNIX_SOCKET"]
     private static var unsupported: MonitorError {
-        .unsupported("Claudock requires an official Claude Pro, Max, Team, or Enterprise subscription. Use readable JSON settings without external providers, authentication/storage overrides, or apiKeyHelper.")
+        .unsupported("Claudock supports a Claude Pro, Max, Team, or Enterprise subscription, or a Console API key stored by Claudock. Use readable JSON settings without external providers, authentication/storage overrides, or apiKeyHelper.")
     }
 
     public static func validate(configDirectory: String) throws {
