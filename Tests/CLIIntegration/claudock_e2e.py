@@ -234,21 +234,31 @@ class TerminalRun:
     def send(self, data):
         os.write(self.master, data)
 
-    def finish(self, timeout=30):
-        try:
-            stdout, _ = self.process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            stdout, _ = self.process.communicate()
-        while select.select([self.master], [], [], 0.2)[0]:
+    def drain(self, timeout):
+        """Reads terminal output like a real terminal would, so the CLI never waits on it."""
+        while select.select([self.master], [], [], timeout)[0]:
             try:
                 chunk = os.read(self.master, 4096)
             except OSError:
-                break
+                return
             if not chunk:
-                break
+                return
             self.output += chunk
+            timeout = 0
+
+    def finish(self, timeout=30):
+        deadline = time.monotonic() + timeout
+        while self.process.poll() is None and time.monotonic() < deadline:
+            self.drain(0.1)
+        if self.process.poll() is None:
+            self.process.kill()
+        stdout, _ = self.process.communicate()
+        self.drain(0.2)
         return self.process.returncode, stdout.decode(errors="replace")
+
+    def unread_input(self):
+        """True if typed-ahead input is still queued for whatever reads the terminal next, such as the shell."""
+        return bool(select.select([self.slave], [], [], 0.3)[0])
 
     def close(self):
         if self.process.poll() is None:
