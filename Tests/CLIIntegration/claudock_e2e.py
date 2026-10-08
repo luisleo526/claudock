@@ -86,6 +86,32 @@ def inference_service(profile):
     return "Claudock-inference-" + hashlib.sha256(credential_service(profile).encode()).hexdigest()
 
 
+POLICY_KEY = "requireInferenceToken"
+
+
+def read_policy_preference():
+    """The real requireInferenceToken preference: True, False, or None when it is not set."""
+    result = subprocess.run(["defaults", "read", PREFERENCES_DOMAIN, POLICY_KEY], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip().lower() in ("1", "yes", "true")
+
+
+def restore_policy_preference(cli, original):
+    """Puts the real preference back, through the CLI where it can express the value. Returns True on success."""
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": REAL_HOME, "USER": ACCOUNT, "LOGNAME": ACCOUNT}
+    if original is True:
+        subprocess.run([str(cli), "require-token", "on"], env=environment, capture_output=True)
+    elif original is None:
+        subprocess.run([str(cli), "require-token", "off"], env=environment, capture_output=True)
+        if read_policy_preference() is not None:
+            subprocess.run(["defaults", "delete", PREFERENCES_DOMAIN, POLICY_KEY], capture_output=True)
+    else:
+        # The CLI turns the policy off by removing the key; an explicit false predates it.
+        subprocess.run(["defaults", "write", PREFERENCES_DOMAIN, POLICY_KEY, "-bool", "false"], capture_output=True)
+    return read_policy_preference() == original
+
+
 def keychain_item_exists(service):
     # Without -w, security prints attributes only, never the secret.
     result = subprocess.run([SECURITY, "find-generic-password", "-a", ACCOUNT, "-s", service],

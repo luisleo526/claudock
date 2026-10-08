@@ -14,8 +14,8 @@ import json
 import secrets
 import sys
 
-from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, inference_service, keychain_item_exists,
-                          preflight)
+from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, credential_service, inference_service,
+                          keychain_item_exists, preflight, read_policy_preference, restore_policy_preference)
 
 
 PROMPT = b"Inference token: "
@@ -131,10 +131,86 @@ def terminal_prompt(sandbox, checks):
     checks.done("terminal prompt hides the token")
 
 
+def require_token_policy(sandbox, checks, api_key):
+    result = sandbox.run("profile", "add", "bare")
+    checks.expect(result.returncode == 0, "the policy check needs a subscription profile without a token", result)
+    bare = sandbox.listed()["bare"]
+    sandbox.track(inference_service(bare))
+    for arguments in (("require-token",), ("require-token", "maybe"), ("require-token", "on", "extra")):
+        result = sandbox.run(*arguments)
+        checks.expect(result.returncode == 2, f"{' '.join(arguments)} must be a usage error", result)
+
+    result = sandbox.run("require-token", "on")
+    checks.expect(result.returncode == 0, "require-token on must succeed", result)
+    checks.expect(read_policy_preference() is True, "require-token on must set the shared preference")
+    result = sandbox.run("require-token", "status")
+    checks.expect(result.returncode == 0 and result.stdout == "on\n", "require-token status must print on", result)
+    checks.done("require-token on sets the shared preference")
+
+    def refused(name):
+        return (f"claudock: {name} has no valid inference token and Claudock requires one. Create one with "
+                f"'claudock run {name} -- setup-token', then 'pbpaste | claudock profile set-token {name}'.\n")
+    for arguments in (("run", "bare"), ("run", "bare", "--", "--resume", "abc"),
+                      ("launch-bound", sandbox.registry_id("bare"), credential_service(bare), "run", "--", "--resume", "abc")):
+        result = sandbox.run(*arguments)
+        checks.expect(result.returncode == 1 and result.stderr == refused("bare"), f"{arguments[0]} without a token must be refused", result)
+        checks.expect(sandbox.record() is None, "a refused launch must not run claude")
+    checks.done("policy on: no token refuses run, Open in Terminal, and Continue as…")
+
+    token = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=token)
+    checks.expect(result.returncode == 0, "set-token must work while the policy is on", result)
+    checks.expect(launched_token(sandbox, checks, "work") == token, "policy on: a valid pasted token must be passed")
+    checks.done("policy on: a valid token launches with CLAUDE_CODE_OAUTH_TOKEN")
+
+    result = sandbox.run("profile", "set-token", "work", "--expires", "2001-01-01T00:00:00Z", stdin=synthetic())
+    checks.expect(result.returncode == 0, "set-token must accept an expired token", result)
+    result = sandbox.run("run", "work")
+    checks.expect(result.returncode == 1 and result.stderr == refused("work"), "policy on: an expired token must be refused", result)
+    checks.expect(sandbox.record() is None, "an expired token must not run claude")
+    checks.done("policy on: an expired token is refused")
+
+    for name in ("bare", "work"):
+        result = sandbox.run("run", name, "--", "setup-token")
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None and record["argv"] == ["setup-token"],
+                      f"setup-token must run for {name} while the policy is on", result)
+        checks.expect("CLAUDE_CODE_OAUTH_TOKEN" not in record["env"], "setup-token must run on the profile's own login")
+    checks.done("policy on: setup-token runs without a token")
+
+    for arguments in (("profile", "login", "bare"), ("launch-bound", sandbox.registry_id("bare"), credential_service(bare), "login", "--")):
+        result = sandbox.run(*arguments)
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None and record["argv"] == ["auth", "login", "--claudeai"],
+                      f"{arguments[0]} sign-in must stay available while the policy is on", result)
+    checks.done("policy on: sign-in is exempt")
+
+    result = sandbox.run("run", "console")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and record["env"].get("ANTHROPIC_API_KEY") == api_key
+                  and "CLAUDE_CODE_OAUTH_TOKEN" not in record["env"], "policy on: an API-key profile must launch with its key", result)
+    checks.done("policy on: API-key profiles launch with ANTHROPIC_API_KEY")
+
+    result = sandbox.run("profile", "tokens")
+    checks.expect(result.returncode == 0 and result.stderr.endswith("require-token: on\n"), "tokens must report the policy", result)
+
+    result = sandbox.run("require-token", "off")
+    checks.expect(result.returncode == 0 and not read_policy_preference(), "require-token off must clear the shared preference", result)
+    result = sandbox.run("require-token", "status")
+    checks.expect(result.returncode == 0 and result.stdout == "off\n", "require-token status must print off", result)
+    result = sandbox.run("run", "bare")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and "CLAUDE_CODE_OAUTH_TOKEN" not in record["env"],
+                  "policy off: a profile without a token must use its own login", result)
+    result = sandbox.run("profile", "tokens")
+    checks.expect(result.returncode == 0 and result.stderr.endswith("require-token: off\n"), "tokens must report the policy", result)
+    checks.done("policy off: no token falls back to the profile's own login")
+
+
 def help_text(sandbox, checks):
     result = sandbox.run("help")
     for text in ("profile set-token NAME [--expires ISO8601_DATE]", "profile tokens", "claudock run NAME -- setup-token",
-                 "pbpaste | claudock profile set-token NAME"):
+                 "pbpaste | claudock profile set-token NAME", "require-token on|off|status"):
         checks.expect(text in result.stdout, f"help must document {text!r}", result)
     checks.done("help documents set-token, tokens, and the setup-token flow")
 
@@ -145,13 +221,16 @@ def main():
     checks = Checks()
     sandboxes = []
     failure = None
+    # The policy lives in the real preferences domain (a temp home cannot isolate it), so restore it.
+    original_policy = read_policy_preference()
     try:
         sandbox = Sandbox(cli, "e2e-tokens")
         sandboxes.append(sandbox)
         result = sandbox.run("profile", "add", "work")
         checks.expect(result.returncode == 0, "the token sandbox needs a subscription profile", result)
         sandbox.track(inference_service(sandbox.listed()["work"]))
-        result = sandbox.run("profile", "add", "console", "--api-key", stdin=synthetic("sk-ant-api03-"))
+        api_key = synthetic("sk-ant-api03-")
+        result = sandbox.run("profile", "add", "console", "--api-key", stdin=api_key)
         checks.expect(result.returncode == 0, "the token sandbox needs an API-key profile", result)
         console = sandbox.listed()["console"]
         sandbox.track(api_key_service(console))
@@ -159,10 +238,12 @@ def main():
         stored = tokens_from_stdin(sandbox, checks)
         rejections(sandbox, checks, stored)
         terminal_prompt(sandbox, checks)
+        require_token_policy(sandbox, checks, api_key)
         help_text(sandbox, checks)
     except AssertionError as error:
         failure = str(error)
     finally:
+        policy_restored = restore_policy_preference(cli, original_policy)
         deleted, leftovers = [], []
         for sandbox in sandboxes:
             removed, remaining = sandbox.close()
@@ -170,11 +251,13 @@ def main():
             leftovers += remaining
     receipt = {"passed": len(checks.passed), "checks": checks.passed,
                "keychain_items_deleted_at_teardown": deleted, "keychain_items_not_deleted": leftovers,
+               "require_token_preference": {"original": original_policy, "after_teardown": read_policy_preference(),
+                                            "restored": policy_restored},
                "scope": "Real claudock binary and login Keychain in a temporary home; synthetic tokens; fake claude."}
     print(json.dumps(receipt, indent=2))
     if failure:
         print("FAILED: " + failure, file=sys.stderr)
-    if failure or leftovers:
+    if failure or leftovers or not policy_restored:
         sys.exit(1)
 
 

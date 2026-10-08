@@ -78,6 +78,14 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     @Published var sortByUsage = UserDefaults.standard.bool(forKey: "sortByUsage") {
         didSet { UserDefaults.standard.set(sortByUsage, forKey: "sortByUsage") }
     }
+    /// Shared with the CLI, which enforces it when a profile launches.
+    @Published var requireInferenceToken = InferenceTokenPolicy.isRequired() {
+        didSet {
+            guard !isDemo, requireInferenceToken != InferenceTokenPolicy.isRequired() else { return }
+            // Show the saved value if the write failed.
+            if (try? InferenceTokenPolicy.setRequired(requireInferenceToken)) == nil { requireInferenceToken = InferenceTokenPolicy.isRequired() }
+        }
+    }
     var openDashboard: (() -> Void)?
     var appearanceChanged: ((String) -> Void)?
     var statusChanged: (() -> Void)?
@@ -146,6 +154,9 @@ func readAccount(_ profile: Profile) async -> AccountReading {
         }
         if refreshing { if !manual { refreshPending = true }; return }
         guard !manual || canRefresh else { return }
+        // `claudock require-token` can change the shared setting while the app runs.
+        let required = InferenceTokenPolicy.isRequired()
+        if requireInferenceToken != required { requireInferenceToken = required }
         refreshing = true; manualRefreshAt = Date().addingTimeInterval(60)
         Task {
             let profiles: [Profile]
