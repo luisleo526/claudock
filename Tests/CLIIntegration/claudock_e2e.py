@@ -69,6 +69,12 @@ def preflight():
     if subprocess.run([SECURITY, "default-keychain"], env={**os.environ, "HOME": REAL_HOME},
                       capture_output=True).returncode != 0:
         raise SystemExit("No default login Keychain is available.")
+    # Preferences ignore the temporary home, so a required inference token would refuse the
+    # checks' token-less launches. It is also left on if a token check was killed mid-run.
+    if read_policy_preference():
+        raise SystemExit("Claudock requires inference tokens to launch (requireInferenceToken is on). Turn it off with "
+                         "'claudock require-token off' or 'defaults delete io.github.claudeusage.ClaudeUsage requireInferenceToken' "
+                         "before running these checks.")
 
 
 def credential_service(profile):

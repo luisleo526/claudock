@@ -20,13 +20,20 @@ public enum MonitorError: Error, LocalizedError {
 public enum LaunchCredential {
     case consoleAPIKey, inferenceToken(String), profileLogin
 }
+/// Mirrors the real launch decision over a synthetic token (CLAUDOCK_TEST_MINT) and policy
+/// (CLAUDOCK_TEST_REQUIRE_TOKEN), so the smoke checks cover how the CLI passes sign-in and arguments.
 public enum InferenceTokenPolicy {
-    public static func isRequired() -> Bool { false }
-    public static func setRequired(_ required: Bool) throws {}
-    public static func launchCredential(profile: Profile, claudeArguments: [String], requireToken: Bool) throws -> LaunchCredential {
+    public static func isRequired() -> Bool { ProcessInfo.processInfo.environment["CLAUDOCK_TEST_REQUIRE_TOKEN"] == "1" }
+    public static func setRequired(_ required: Bool) throws { markAccess("preferences") }
+    public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
+        if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
         markAccess("mint credential")
-        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? .inferenceToken("synthetic-mint-token") : .profileLogin
+        let token = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
+        guard isRequired() else { return token.map(LaunchCredential.inferenceToken) ?? .profileLogin }
+        if claudeArguments.first == "setup-token" { return .profileLogin }
+        guard let token else { throw MonitorError.unsupported("Synthetic token requirement: no valid inference token.") }
+        return .inferenceToken(token)
     }
 }
 public enum ProfileStore {

@@ -2,6 +2,21 @@ import Foundation
 import XCTest
 @testable import UsageCore
 
+/// In-memory defaults, so tests never write the real preferences domain through cfprefsd.
+private final class MemoryDefaults: UserDefaults {
+    var values: [String: Any] = [:]
+    var ignoresWrites = false
+
+    init() { super.init(suiteName: "claudock-tests-memory-defaults")! }
+
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    override func bool(forKey defaultName: String) -> Bool { (values[defaultName] as? Bool) ?? false }
+    override func set(_ value: Bool, forKey defaultName: String) { if !ignoresWrites { values[defaultName] = value } }
+    override func set(_ value: Any?, forKey defaultName: String) { if !ignoresWrites { values[defaultName] = value } }
+    override func removeObject(forKey defaultName: String) { if !ignoresWrites { values.removeValue(forKey: defaultName) } }
+    override func synchronize() -> Bool { true }
+}
+
 final class InferenceTokenPolicyTests: XCTestCase {
     private let profile = Profile(command: "claude-work", configDirectory: "/synthetic/work", managed: true)
     private let apiKeyProfile = Profile(command: "claude-console", configDirectory: "/synthetic/console", managed: true, authKind: .apiKey)
@@ -20,8 +35,8 @@ final class InferenceTokenPolicyTests: XCTestCase {
     }
 
     private func decide(_ read: @escaping () throws -> MintToken?, required: Bool, arguments: [String] = [],
-                        profile: Profile? = nil) throws -> LaunchCredential {
-        try InferenceTokenPolicy.launchCredential(profile: profile ?? self.profile, claudeArguments: arguments,
+                        profile: Profile? = nil, signIn: Bool = false) throws -> LaunchCredential {
+        try InferenceTokenPolicy.launchCredential(profile: profile ?? self.profile, claudeArguments: arguments, signIn: signIn,
                                                   requireToken: required, mint: { _ in try read() }, now: now)
     }
 
@@ -79,6 +94,50 @@ final class InferenceTokenPolicyTests: XCTestCase {
         for required in [false, true] {
             XCTAssertEqual(try decide({ XCTFail("An API-key profile must not read an inference token"); return nil },
                                       required: required, profile: apiKeyProfile), .consoleAPIKey)
+        }
+    }
+
+    func testSignInUsesTheProfilesOwnLoginWhateverThePolicy() throws {
+        for required in [false, true] {
+            XCTAssertEqual(try decide({ XCTFail("Sign-in must not read an inference token"); return nil }, required: required,
+                                      arguments: ["auth", "login", "--claudeai"], signIn: true), .profileLogin)
+        }
+    }
+
+    func testRequirementIsReadFromTheSharedPreference() {
+        let defaults = MemoryDefaults()
+        XCTAssertFalse(InferenceTokenPolicy.isRequired(preferences: nil))
+        XCTAssertFalse(InferenceTokenPolicy.isRequired(preferences: defaults))
+        defaults.values["requireInferenceToken"] = true
+        XCTAssertTrue(InferenceTokenPolicy.isRequired(preferences: defaults))
+        defaults.values["requireInferenceToken"] = false
+        XCTAssertFalse(InferenceTokenPolicy.isRequired(preferences: defaults))
+    }
+
+    func testOnStoresTrueAndOffRemovesTheKey() throws {
+        let defaults = MemoryDefaults()
+        try InferenceTokenPolicy.setRequired(true, preferences: defaults)
+        XCTAssertEqual(defaults.values["requireInferenceToken"] as? Bool, true)
+        try InferenceTokenPolicy.setRequired(false, preferences: defaults)
+        XCTAssertNil(defaults.values["requireInferenceToken"])
+        try InferenceTokenPolicy.setRequired(false, preferences: defaults)
+        XCTAssertTrue(defaults.values.isEmpty)
+    }
+
+    func testAnUnsavedRequirementIsReported() {
+        let defaults = MemoryDefaults()
+        defaults.ignoresWrites = true
+        XCTAssertThrowsError(try InferenceTokenPolicy.setRequired(true, preferences: defaults)) {
+            XCTAssertEqual($0 as? InferenceTokenPolicyError, .preferenceNotSaved)
+        }
+        defaults.ignoresWrites = false
+        defaults.values["requireInferenceToken"] = true
+        defaults.ignoresWrites = true
+        XCTAssertThrowsError(try InferenceTokenPolicy.setRequired(false, preferences: defaults)) {
+            XCTAssertEqual($0 as? InferenceTokenPolicyError, .preferenceNotSaved)
+        }
+        XCTAssertThrowsError(try InferenceTokenPolicy.setRequired(true, preferences: nil)) {
+            XCTAssertEqual($0 as? InferenceTokenPolicyError, .preferenceNotSaved)
         }
     }
 
