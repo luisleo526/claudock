@@ -266,12 +266,10 @@ private struct AccountRow: View, Equatable {
             HStack(alignment: .center) {
                 Text(account.profile.name).font(.system(size: 15, weight: .semibold))
                     .lineLimit(1).truncationMode(.middle).help(account.profile.command)
-                if let plan = account.plan {
-                    Text(plan.displayName.uppercased()).font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(0.6)
-                        .foregroundStyle(muted).padding(.horizontal, 6).padding(.vertical, 3)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(ink.opacity(0.15), lineWidth: 1))
-                        .fixedSize().help(plan.explanation)
-                        .accessibilityLabel("Subscription: \(plan.displayName)")
+                if account.profile.authKind == .apiKey {
+                    badge("API", help: "Claude Console API key, billed per token", accessibilityLabel: "Console API key")
+                } else if let plan = account.plan {
+                    badge(plan.displayName, help: plan.explanation, accessibilityLabel: "Subscription: \(plan.displayName)")
                 }
                 Spacer()
                 if account.loading { ProgressView().controlSize(.mini) }
@@ -310,6 +308,10 @@ private struct AccountRow: View, Equatable {
             if showEmails, let email = account.email {
                 Text(email).font(.system(size: 11)).foregroundStyle(muted).textSelection(.enabled).padding(.top, -9)
             }
+            if account.profile.authKind == .apiKey {
+                Text("Console API key · billed per token · no subscription limits")
+                    .font(.system(size: 11)).foregroundStyle(muted)
+            }
             if let snapshot = account.snapshot {
                 let display = snapshot.displayWindows
                 if let session = display.session {
@@ -341,6 +343,13 @@ private struct AccountRow: View, Equatable {
                 }.font(.system(size: 11)).foregroundStyle(account.profile.isVertex ? muted : accent).lineSpacing(3)
             }
         }.padding(.horizontal, 24).padding(.vertical, compact ? 12 : 16)
+    }
+    private func badge(_ title: String, help: String, accessibilityLabel: String) -> some View {
+        Text(title.uppercased()).font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(0.6)
+            .foregroundStyle(muted).padding(.horizontal, 6).padding(.vertical, 3)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(ink.opacity(0.15), lineWidth: 1))
+            .fixedSize().help(help)
+            .accessibilityLabel(accessibilityLabel)
     }
     private func meter(_ window: UsageWindow?, label: String, stale: Bool) -> some View {
         let timing = window.flatMap { resetLabels[$0.id] }

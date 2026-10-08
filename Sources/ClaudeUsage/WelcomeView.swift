@@ -21,7 +21,7 @@ struct WelcomeView: View {
                 Label("Works with your existing claude-{profile} commands", systemImage: "terminal")
                 Label("No separate account or cloud sync", systemImage: "lock")
             } else if step == 1 {
-                Text("Found \(store.subscriptionCount) profile\(store.subscriptionCount == 1 ? "" : "s"). You can add accounts or import config folders at any time.").foregroundStyle(.secondary)
+                Text("Found \(store.profileCount) profile\(store.profileCount == 1 ? "" : "s"). You can add accounts or import config folders at any time.").foregroundStyle(.secondary)
                 Label(TerminalLauncher.executable == nil ? "Claude Code not found" : "Claude Code detected", systemImage: TerminalLauncher.executable == nil ? "exclamationmark.circle" : "checkmark.circle")
                 if TerminalLauncher.executable == nil {
                     HStack {

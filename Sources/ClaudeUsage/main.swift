@@ -52,11 +52,12 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
         }
         for profile in profiles {
             if discoverOnly {
-                print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : "subscription"))")
+                print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : profile.authKind == .apiKey ? "api-key" : "subscription"))")
             } else {
                 let result = await Task.detached { await readAccount(profile) }.value
                 let windows = result.snapshot?.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
-                print("\(profile.command): \(windows ?? result.error?.localizedDescription ?? "Unavailable")")
+                let fallback = profile.authKind == .apiKey ? "Console API key; billed per token, no subscription limits" : "Unavailable"
+                print("\(profile.command): \(windows ?? result.error?.localizedDescription ?? fallback)")
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
