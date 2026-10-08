@@ -23,6 +23,8 @@ struct AccountReading: Sendable {
 func readAccount(_ profile: Profile) async -> AccountReading {
     if let note = profile.discoveryNote { return AccountReading(error: .unsupported(note)) }
     if profile.isVertex { return AccountReading(error: .unsupported("Vertex AI · billed through Google Cloud. Claude subscription limits do not apply.")) }
+    // Billed per token: no Claude login or subscription limits to read.
+    if profile.authKind == .apiKey { return AccountReading() }
     var result = AccountReading(email: CredentialStore.email(for: profile))
     do {
         let credentials = try CredentialStore.read(profile: profile)
@@ -91,14 +93,21 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var sortedAccounts: [AccountState] {
         if !sortByUsage { return accounts }
         return accounts.sorted {
+            // API-key profiles have no limits, so they follow every subscription account.
+            if ($0.profile.authKind == .apiKey) != ($1.profile.authKind == .apiKey) { return $1.profile.authKind == .apiKey }
             let a = $0.error == nil ? ($0.snapshot?.peak ?? -1) : -1
             let b = $1.error == nil ? ($1.snapshot?.peak ?? -1) : -1
             return a == b ? $0.profile.command < $1.profile.command : a > b
         }
     }
     var availableCount: Int { profileError == nil ? accounts.filter { $0.snapshot != nil && $0.error == nil }.count : 0 }
-    var subscriptionCount: Int { accounts.filter { !$0.profile.isVertex }.count }
-    var attentionCount: Int { max(profileError == nil ? 0 : 1, accounts.filter { !$0.profile.isVertex && ($0.error != nil || ($0.snapshot?.peak ?? 0) >= 90) }.count) }
+    var profileCount: Int { accounts.filter { !$0.profile.isVertex }.count }
+    var subscriptionCount: Int { accounts.filter { !$0.profile.isVertex && $0.profile.authKind == .subscription }.count }
+    var attentionCount: Int {
+        max(profileError == nil ? 0 : 1, accounts.filter {
+            !$0.profile.isVertex && $0.profile.authKind == .subscription && ($0.error != nil || ($0.snapshot?.peak ?? 0) >= 90)
+        }.count)
+    }
     var canRefresh: Bool { !refreshing && now >= manualRefreshAt }
 
     func start() {
@@ -128,7 +137,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
             accounts = DemoData.profiles(count: demoProfileCount).enumerated().map { index, profile in
                 AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4],
                              snapshot: DemoData.usage(index: index, now: now), error: index == 3 ? .network : nil)
-            }
+            } + [AccountState(profile: DemoData.apiKeyProfile)]
             lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return
         }
@@ -165,7 +174,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 if case .rateLimited(let retry) = reading.error { accounts[index].retryAt = retry }
                 if let snapshot = reading.snapshot { accounts[index].snapshot = snapshot }
                 statusChanged?()
-                if !profile.isVertex { try? await Task.sleep(nanoseconds: 200_000_000) }
+                if !profile.isVertex && profile.authKind == .subscription { try? await Task.sleep(nanoseconds: 200_000_000) }
             }
             now = Date(); lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             refreshing = false; statusChanged?()

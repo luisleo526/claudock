@@ -9,10 +9,13 @@ struct ProfileManagerView: View {
     @State private var editing: Profile?
     @State private var deleting: Profile?
     @State private var minting: Profile?
-    @State private var lastMintedProfile: Profile?
-    @State private var mintStatuses: [String: MintTokenStatus] = [:]
-    @State private var mintStatusRequests: [String: UUID] = [:]
-    @State private var unavailableMintStatuses: Set<String> = []
+    @State private var replacingKey: Profile?
+    @State private var lastCredentialProfile: Profile?
+    @State private var credentialStatuses: [String: CredentialStatus] = [:]
+    @State private var credentialStatusRequests: [String: UUID] = [:]
+    @State private var unavailableCredentialStatuses: Set<String> = []
+    @State private var addKind: ProfileAuthKind = .subscription
+    @State private var apiKeyText = ""
     @State private var busy = false
     @State private var failure: String?
     @State private var notice: String?
@@ -46,6 +49,13 @@ struct ProfileManagerView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(editing == nil ? "Add an account" : "Rename \(editing!.name)").font(.headline)
+                    if editing == nil {
+                        Picker("Account type", selection: $addKind) {
+                            Text("Claude subscription").tag(ProfileAuthKind.subscription)
+                            Text("Console API key").tag(ProfileAuthKind.apiKey)
+                        }
+                        .pickerStyle(.segmented).labelsHidden().accessibilityIdentifier("profileKindPicker")
+                    }
                     HStack {
                         Text("Name").foregroundStyle(.secondary)
                         TextField("profile-name", text: $name).textFieldStyle(.roundedBorder)
@@ -60,7 +70,19 @@ struct ProfileManagerView: View {
                             Button(configPath.isEmpty ? "Import folder…" : "Change…") { chooseFolder() }
                             if !configPath.isEmpty { Button { configPath = "" } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain) }
                         }
-                        Toggle("Open Claude sign-in after adding", isOn: $loginAfterAdd).font(.caption)
+                        if addKind == .apiKey {
+                            HStack {
+                                Text("Key").foregroundStyle(.secondary)
+                                SecureField("sk-ant-api…", text: $apiKeyText).textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Console API key")
+                                    .accessibilityIdentifier("profileAPIKeyField")
+                                    .onSubmit { save() }
+                            }
+                            Text("Billed per token by the Claude Console. The key is stored only in Keychain.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Toggle("Open Claude sign-in after adding", isOn: $loginAfterAdd).font(.caption)
+                        }
                     } else {
                         Text("The config folder and login stay the same.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -69,7 +91,7 @@ struct ProfileManagerView: View {
                         Spacer()
                         if editing != nil { Button("Cancel rename") { resetEditor() } }
                         Button(editing == nil ? "Add profile" : "Save name") { save() }
-                            .buttonStyle(.borderedProminent).tint(controlAccent).foregroundStyle(.white).disabled(name.isEmpty)
+                            .buttonStyle(.borderedProminent).tint(controlAccent).foregroundStyle(.white).disabled(!canSave)
                             .accessibilityIdentifier("saveProfileButton")
                     }
                 }.padding(8)
@@ -99,11 +121,11 @@ struct ProfileManagerView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.accounts) { account in
-                        ProfileRow(profile: account.profile, tokenStatus: mintStatusDescription(account.profile),
-                                   tokenButton: mintButtonTitle(account.profile), actionsUnavailable: actionsUnavailable,
+                        ProfileRow(profile: account.profile, credentialStatus: credentialStatusDescription(account.profile),
+                                   credentialButton: credentialButtonTitle(account.profile), actionsUnavailable: actionsUnavailable,
                                    login: { login(account.profile) }, rename: { beginRename(account.profile) },
                                    remove: { requestRemoval(account.profile) }, copy: { copyCommand(account.profile) },
-                                   setToken: { beginMint(account.profile) })
+                                   setCredential: { beginCredentialChange(account.profile) })
                             .equatable()
                         Divider()
                     }
@@ -113,11 +135,14 @@ struct ProfileManagerView: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
         }.padding(24).frame(width: 650, height: 730)
             .task { await readShellStatus() }
-            .task(id: mintStatusProfiles) { await readMintStatuses(mintStatusProfiles) }
+            .task(id: credentialStatusProfiles) { await readCredentialStatuses(credentialStatusProfiles) }
             .interactiveDismissDisabled(busy)
             .sheet(item: $minting, onDismiss: {
-                if let profile = lastMintedProfile { Task { await readMintStatus(profile) } }
+                if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
             }) { profile in MintTokenView(profile: profile) }
+            .sheet(item: $replacingKey, onDismiss: {
+                if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
+            }) { profile in APIKeyView(profile: profile) }
             .alert("Profile action needs attention", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
                 Button("OK") { failure = nil }
             } message: { Text(failure ?? "") }
@@ -125,99 +150,102 @@ struct ProfileManagerView: View {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Remove profile", role: .destructive) { remove(profile) }.disabled(actionsUnavailable)
             } message: { profile in
-                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and saved login, and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
+                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and \(profile.authKind == .apiKey ? "its Console API key in Keychain" : "saved login"), and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
             }
     }
-    private func resetEditor() { editing = nil; name = ""; configPath = "" }
-    private func mintButtonTitle(_ profile: Profile) -> String {
-        switch mintStatuses[profile.id] {
-        case .active?, .expired?, .imported?: return "Manage token…"
+    private var canSave: Bool {
+        !name.isEmpty && (editing != nil || addKind == .subscription || !apiKeyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+    private func resetEditor() { editing = nil; name = ""; configPath = ""; apiKeyText = "" }
+    private func credentialButtonTitle(_ profile: Profile) -> String {
+        if profile.authKind == .apiKey { return "Replace API key…" }
+        switch credentialStatuses[profile.id] {
+        case .token(.active)?, .token(.expired)?, .token(.imported)?: return "Manage token…"
         default: return "Set token…"
         }
     }
-    private func beginMint(_ profile: Profile) {
+    private func beginCredentialChange(_ profile: Profile) {
         guard !actionsUnavailable, !profile.isVertex, profile.discoveryNote == nil else { return }
-        lastMintedProfile = profile; minting = profile
+        lastCredentialProfile = profile
+        if profile.authKind == .apiKey { replacingKey = profile } else { minting = profile }
     }
-    private func mintStatusDescription(_ profile: Profile) -> String {
-        if store.isDemo { return "Inference token: demo preview" }
+    private func credentialStatusDescription(_ profile: Profile) -> String {
+        let apiKey = profile.authKind == .apiKey
+        if store.isDemo && !apiKey { return "Inference token: demo preview" }
         if profile.isVertex || profile.discoveryNote != nil { return "Inference token unavailable for this profile" }
-        if unavailableMintStatuses.contains(profile.id) { return "Inference token status unavailable" }
-        guard let status = mintStatuses[profile.id] else { return "Checking inference token…" }
+        if unavailableCredentialStatuses.contains(profile.id) { return apiKey ? "API key status unavailable" : "Inference token status unavailable" }
+        guard let status = credentialStatuses[profile.id] else { return apiKey ? "Checking API key…" : "Checking inference token…" }
         switch status {
-        case .notConfigured: return "No inference token"
-        case .active(let expiry):
+        case .apiKey(let saved): return saved ? "Console API key" : "API key missing"
+        case .token(.notConfigured): return "No inference token"
+        case .token(.active(let expiry)):
             return "Inference token \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
-        case .expired(let expiry): return "Inference token expired \(expiry.formatted(date: .abbreviated, time: .shortened))"
-        case .imported(let expiry):
+        case .token(.expired(let expiry)): return "Inference token expired \(expiry.formatted(date: .abbreviated, time: .shortened))"
+        case .token(.imported(let expiry)):
             if let expiry {
                 return "Pasted token · account unverified · \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
             }
             return "Pasted token · expiry unknown · account unverified"
         }
     }
-    private var mintStatusProfiles: [Profile] {
+    private var credentialStatusProfiles: [Profile] {
         store.accounts.map(\.profile).filter { !$0.isVertex && $0.discoveryNote == nil }
     }
-    private func readMintStatus(_ profile: Profile) async {
+    private func readCredentialStatus(_ profile: Profile) async {
         guard !profile.isVertex, profile.discoveryNote == nil else { return }
         let isDemo = store.isDemo
         let request = UUID()
-        mintStatusRequests[profile.id] = request
+        credentialStatusRequests[profile.id] = request
         do {
-            let status = try await Task.detached(priority: .utility) {
-                isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile)
-            }.value
-            guard !Task.isCancelled, mintStatusRequests[profile.id] == request,
+            let status = try await Task.detached(priority: .utility) { try readLaunchCredential(profile, isDemo: isDemo) }.value
+            guard !Task.isCancelled, credentialStatusRequests[profile.id] == request,
                   store.accounts.contains(where: { $0.profile == profile }) else { return }
-            mintStatuses[profile.id] = status; unavailableMintStatuses.remove(profile.id)
+            credentialStatuses[profile.id] = status; unavailableCredentialStatuses.remove(profile.id)
         } catch {
-            guard !Task.isCancelled, mintStatusRequests[profile.id] == request,
+            guard !Task.isCancelled, credentialStatusRequests[profile.id] == request,
                   store.accounts.contains(where: { $0.profile == profile }) else { return }
-            unavailableMintStatuses.insert(profile.id)
+            unavailableCredentialStatuses.insert(profile.id)
         }
     }
-    /// Reads every listed profile's status once per sheet opening or profile change,
-    /// off the main actor and at most four at a time (each read may start a `security`
-    /// process). Results are published together, at most every 100 ms, so rows do not
+    /// Reads every listed profile's inference token or API key status once per sheet opening
+    /// or profile change, off the main actor and at most four at a time (each read may start a
+    /// `security` process). Results are published together, at most every 100 ms, so rows do not
     /// re-render the sheet one by one and a slow read does not hold back the others.
-    /// A newer single-profile read (after the token sheet closes) wins for that profile.
-    private func readMintStatuses(_ profiles: [Profile]) async {
+    /// A newer single-profile read (after a credential sheet closes) wins for that profile.
+    private func readCredentialStatuses(_ profiles: [Profile]) async {
         guard !profiles.isEmpty else { return }
         let isDemo = store.isDemo
         let request = UUID()
-        var requests = mintStatusRequests
+        var requests = credentialStatusRequests
         for profile in profiles { requests[profile.id] = request }
-        mintStatusRequests = requests
-        await withTaskGroup(of: (Profile, MintTokenStatus?).self) { group in
+        credentialStatusRequests = requests
+        await withTaskGroup(of: (Profile, CredentialStatus?).self) { group in
             var pending = profiles.makeIterator()
             func readNext() {
                 guard let profile = pending.next() else { return }
-                group.addTask(priority: .utility) {
-                    (profile, try? isDemo ? DemoData.mintStatus(profile: profile) : MintTokenStore.status(profile: profile))
-                }
+                group.addTask(priority: .utility) { (profile, try? readLaunchCredential(profile, isDemo: isDemo)) }
             }
             for _ in 0..<4 { readNext() }
-            var ready: [(Profile, MintTokenStatus?)] = []
+            var ready: [(Profile, CredentialStatus?)] = []
             var published = ContinuousClock.now
             while let result = await group.next() {
                 ready.append(result)
                 readNext()
                 guard group.isEmpty || published.duration(to: .now) >= .milliseconds(100) else { continue }
-                publishMintStatuses(ready, request: request)
+                publishCredentialStatuses(ready, request: request)
                 ready.removeAll(); published = .now
             }
         }
     }
-    private func publishMintStatuses(_ results: [(Profile, MintTokenStatus?)], request: UUID) {
+    private func publishCredentialStatuses(_ results: [(Profile, CredentialStatus?)], request: UUID) {
         guard !Task.isCancelled else { return }
         let current = Set(store.accounts.map(\.profile))
-        var statuses = mintStatuses, unavailable = unavailableMintStatuses
-        for (profile, status) in results where mintStatusRequests[profile.id] == request && current.contains(profile) {
+        var statuses = credentialStatuses, unavailable = unavailableCredentialStatuses
+        for (profile, status) in results where credentialStatusRequests[profile.id] == request && current.contains(profile) {
             if let status { statuses[profile.id] = status; unavailable.remove(profile.id) }
             else { unavailable.insert(profile.id) }
         }
-        mintStatuses = statuses; unavailableMintStatuses = unavailable
+        credentialStatuses = statuses; unavailableCredentialStatuses = unavailable
     }
     private func beginRename(_ profile: Profile) {
         guard !actionsUnavailable, profile.command != "claude", !profile.isVertex, profile.discoveryNote == nil else { return }
@@ -246,19 +274,27 @@ struct ProfileManagerView: View {
         if picker.runModal() == .OK, let url = picker.url { configPath = url.path }
     }
     private func save() {
-        guard !actionsUnavailable, !name.isEmpty else { return }
+        guard !actionsUnavailable, canSave else { return }
         busy = true; failure = nil; notice = nil
         let existing = editing; let requestedName = name; let directory = configPath
-        let shouldLogin = loginAfterAdd
+        let kind = addKind, rawKey = apiKeyText
+        let shouldLogin = loginAfterAdd && kind == .subscription
+        apiKeyText = ""
         Task {
             defer { busy = false }
             do {
                 let profile = try await Task.detached {
                     if let existing { return try ProfileManager.rename(profile: existing, to: requestedName) }
-                    return try ProfileManager.add(name: requestedName, configDirectory: directory.isEmpty ? nil : directory)
+                    let folder = directory.isEmpty ? nil : directory
+                    if kind == .apiKey {
+                        // The key is checked before anything is created, and saved before the profile is listed.
+                        return try ProfileManager.addAPIKeyProfile(name: requestedName, apiKey: ConsoleAPIKey(parsing: rawKey), configDirectory: folder)
+                    }
+                    return try ProfileManager.add(name: requestedName, configDirectory: folder)
                 }.value
                 await readShellStatus()
                 notice = (existing == nil ? "Added \(profile.name). " : "Renamed to \(profile.name). ") + shortcutNotice(profile)
+                    + (existing == nil && kind == .apiKey ? " The first Terminal launch asks whether to use the API key; choose Yes." : "")
                 resetEditor()
                 store.refresh()
                 if existing == nil && shouldLogin {
@@ -276,7 +312,9 @@ struct ProfileManagerView: View {
             do {
                 try await Task.detached { try ProfileManager.remove(profile: profile) }.value
                 if editing?.id == profile.id { resetEditor() }
-                notice = "Removed \(profile.name). Shared history, settings, and the saved login were kept. Your own shell commands are unchanged."
+                notice = profile.authKind == .apiKey
+                    ? "Removed \(profile.name). Shared history and settings were kept, and its Console API key stays in Keychain under service \(APIKeyStore.serviceName(for: profile)). Your own shell commands are unchanged."
+                    : "Removed \(profile.name). Shared history, settings, and the saved login were kept. Your own shell commands are unchanged."
                 store.refresh()
             } catch { failure = error.localizedDescription }
         }
@@ -340,17 +378,18 @@ struct ProfileManagerView: View {
 /// only reach the sheet's state and the store, which stay the same objects.
 private struct ProfileRow: View, Equatable {
     let profile: Profile
-    let tokenStatus: String
-    let tokenButton: String
+    /// The inference token, or the Console API key for an API-key profile.
+    let credentialStatus: String
+    let credentialButton: String
     let actionsUnavailable: Bool
     let login: () -> Void
     let rename: () -> Void
     let remove: () -> Void
     let copy: () -> Void
-    let setToken: () -> Void
+    let setCredential: () -> Void
 
     static func == (lhs: ProfileRow, rhs: ProfileRow) -> Bool {
-        lhs.profile == rhs.profile && lhs.tokenStatus == rhs.tokenStatus && lhs.tokenButton == rhs.tokenButton
+        lhs.profile == rhs.profile && lhs.credentialStatus == rhs.credentialStatus && lhs.credentialButton == rhs.credentialButton
             && lhs.actionsUnavailable == rhs.actionsUnavailable
     }
 
@@ -362,7 +401,7 @@ private struct ProfileRow: View, Equatable {
                     .lineLimit(1).truncationMode(.middle).help(profile.command)
                 Text(profile.managed ? "MANAGED" : "IMPORTED").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                 Spacer()
-                if !profile.isVertex && profile.discoveryNote == nil {
+                if !profile.isVertex && profile.discoveryNote == nil && profile.authKind == .subscription {
                     Button("Re-login", action: login).disabled(actionsUnavailable)
                         .accessibilityLabel("Re-login to \(profile.name)")
                         .help("Opens this profile’s Claude sign-in in Terminal")
@@ -389,16 +428,39 @@ private struct ProfileRow: View, Equatable {
             }.buttonStyle(.bordered).controlSize(.small)
             Text(profile.discoveryNote ?? profile.configDirectory).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
             HStack(spacing: 12) {
-                Text(tokenStatus).font(.system(size: 10)).foregroundStyle(.secondary)
-                    .accessibilityLabel(tokenStatus)
+                Text(credentialStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .accessibilityLabel(credentialStatus)
                 Spacer(minLength: 8)
-                Button(tokenButton, action: setToken)
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(actionsUnavailable || profile.isVertex || profile.discoveryNote != nil)
-                    .accessibilityIdentifier("mintToken-\(profile.id)")
-                    .accessibilityLabel("Set or replace inference token for \(profile.name)")
-                    .help("Paste an existing inference token or create one in your browser")
+                if profile.authKind == .apiKey {
+                    Button(credentialButton, action: setCredential)
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(actionsUnavailable)
+                        .accessibilityIdentifier("replaceAPIKey-\(profile.id)")
+                        .accessibilityLabel("Replace Console API key for \(profile.name)")
+                        .help("Paste a new Console API key; it replaces the key saved in Keychain")
+                } else {
+                    Button(credentialButton, action: setCredential)
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(actionsUnavailable || profile.isVertex || profile.discoveryNote != nil)
+                        .accessibilityIdentifier("mintToken-\(profile.id)")
+                        .accessibilityLabel("Set or replace inference token for \(profile.name)")
+                        .help("Paste an existing inference token or create one in your browser")
+                }
             }
         }.padding(.vertical, 13)
     }
+}
+
+/// What a row shows about its launch credential.
+private enum CredentialStatus: Equatable {
+    case token(MintTokenStatus)
+    case apiKey(saved: Bool)
+}
+
+/// Reads one profile's credential status; it may start a `security` process, so call it off the main actor.
+private func readLaunchCredential(_ profile: Profile, isDemo: Bool) throws -> CredentialStatus {
+    if profile.authKind == .apiKey {
+        return .apiKey(saved: isDemo ? DemoData.apiKeySaved(profile: profile) : try APIKeyStore.read(profile: profile) != nil)
+    }
+    return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile))
 }
