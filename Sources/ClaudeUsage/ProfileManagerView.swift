@@ -460,7 +460,7 @@ private enum CredentialStatus: Equatable {
 /// Reads one profile's credential status; it may start a `security` process, so call it off the main actor.
 private func readLaunchCredential(_ profile: Profile, isDemo: Bool) throws -> CredentialStatus {
     if profile.authKind == .apiKey {
-        return .apiKey(saved: isDemo ? DemoData.apiKeySaved(profile: profile) : try APIKeyStore.read(profile: profile) != nil)
+        return .apiKey(saved: isDemo ? DemoData.apiKeySaved(profile: profile) : try APIKeyStore.isSaved(profile: profile))
     }
     return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile))
 }

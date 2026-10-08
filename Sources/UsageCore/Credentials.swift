@@ -76,6 +76,18 @@ public enum CredentialStore {
         return (data, process.terminationStatus)
     }
 
+    /// Runs `security` with arguments that carry no secret and discards its output; returns the exit status.
+    static func runSecurityStatus(_ arguments: [String], timeout: TimeInterval = 2) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security"); process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        do { try process.run() } catch { throw MonitorError.keychainLocked }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+        process.waitUntilExit(); deadline.cancel()
+        return process.terminationStatus
+    }
+
     /// Runs one `security -i` command read from stdin, so secret data never appears in a
     /// process's arguments. Returns false if security fails or does not finish within two seconds.
     static func runSecurityCommand(_ command: Data) -> Bool {
