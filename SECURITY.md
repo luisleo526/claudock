@@ -44,4 +44,6 @@ Shell v4 removes a previously generated `claude-auto` function only if its body 
 
 The token dialog defaults to direct paste. Clipboard reads occur only after the user presses Paste; the app never reads the clipboard on startup. The parser accepts a supported raw OAuth token or an exact literal environment assignment, without shell evaluation. Imported tokens use the same bounded, separate Keychain namespace as browser-created tokens, and remain out of scripts, registry JSON, logs, and process arguments.
 
+The CLI's `profile set-token` accepts the same input from standard input only, with echo off at a terminal; a token is never taken from command arguments, and `profile tokens` reports status and expiry without token material.
+
 Pasted tokens have manual provenance. Their account identity and expiry cannot be established from an opaque string; unknown expiry is represented explicitly. A cached profile identity, when available at import, is only a local binding and not proof that the token belongs to that account. Browser-created tokens retain their strict account/organization checks. The user assigns an imported token to a profile; use its matching quota login when relying on account-specific limits.

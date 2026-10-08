@@ -140,4 +140,6 @@ Profile discovery classifies explicit Vertex/Bedrock/Foundry selection using the
 
 `MintTokenView` separates direct token import from browser authorization. Direct import is the default and needs no existing OAuth metadata. Pasted opaque tokens carry manual provenance and optional expiry/identity metadata; browser-created credentials retain verified identity and server-reported expiry. Existing credential records remain readable. `InferenceCredential` accepts an imported token with unknown expiry without claiming it never expires; actual server rejection remains authoritative.
 
+`claudock profile set-token NAME [--expires ISO8601_DATE]` reads a token from standard input with the same terminal and pipe rules as API keys, never from arguments, and saves it through `MintTokenStore.importToken`. It refuses Console API-key and unresolved profiles before reading input. `claudock profile tokens` prints `MintTokenStore.status` per profile as `none`, `active`, `expired`, `pasted-unverified`, `n/a`, or `unavailable`, with the expiry, and never token material.
+
 Builds use a private SwiftPM scratch directory rather than placing its SQLite database in a potentially cloud-synced checkout. CLI integration fixtures also use the system temporary directory.
