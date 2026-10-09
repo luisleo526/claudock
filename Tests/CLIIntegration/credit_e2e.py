@@ -392,6 +392,35 @@ def terminated(checks, sandbox):
     checks.done("SIGTERM is forwarded to the child; its final events still count")
 
 
+def stopped_child(checks, sandbox):
+    """A child stopped by SIGSTOP stops claudock too; continuing only claudock continues the child."""
+    set_credit(checks, sandbox, "console", "100")
+    plan, record_path = sandbox.plan(steps=[{"events": [{"cost": 0.2, "seq": 1}]}, {"mark": "ready"}, {"sleep": 1.5},
+                                            {"events": [{"cost": 0.05, "seq": 2}]}], exit=0)
+    process = sandbox.launch("console", plan)
+    record = wait_for(lambda: (lambda r: r if r and "ready" in r["marks"] else None)(sandbox.fake_record(record_path)))
+    checks.expect(record is not None, "the fake must get ready")
+    os.kill(record["pid"], signal.SIGSTOP)
+
+    def stat(pid):
+        return subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    checks.expect(wait_for(lambda: stat(process.pid).startswith("T"), timeout=10), f"claudock must stop with its child, got {stat(process.pid)!r}")
+    os.kill(process.pid, signal.SIGCONT)
+    try:
+        status, _, stderr = finish(process, timeout=20)
+    except subprocess.TimeoutExpired:
+        for pid in (record["pid"], process.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.communicate()
+        raise AssertionError("continuing claudock must continue its stopped child; it stayed stopped")
+    checks.expect(status == 0 and sandbox.fake_record(record_path).get("finished"), f"the child must be continued and finish, got {status}: {stderr!r}")
+    expect_row(checks, sandbox, "console", "Credit · $99.75 of $100.00 left", "0.25")
+    checks.done("a SIGSTOPped child stops claudock; continuing claudock continues the child")
+
+
 def parallel(checks, sandbox):
     set_credit(checks, sandbox, "console", "100")
     first, first_record = sandbox.plan(steps=[step for cost, seq in ((0.11, 1), (0.12, 2), (0.13, 3), (0.14, 4))
@@ -559,6 +588,7 @@ def main():
         killed_child(checks, sandbox)
         interrupted(checks, sandbox)
         terminated(checks, sandbox)
+        stopped_child(checks, sandbox)
         parallel(checks, sandbox)
         cross_check(checks, sandbox)
         job_control(checks, sandbox)

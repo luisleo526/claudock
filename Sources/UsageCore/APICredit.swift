@@ -6,6 +6,7 @@ public enum APICreditError: Error, LocalizedError, Equatable {
     case invalidAmount
     case subscriptionProfile(String)
     case ledgerUnreadable
+    case ledgerUnavailable
     case ledgerBusy
     case ledgerFull
     case ledgerWriteFailed
@@ -17,6 +18,7 @@ public enum APICreditError: Error, LocalizedError, Equatable {
             return "'\(name)' is a Claude subscription profile. Credit applies only to Console API-key profiles added with 'claudock profile add NAME --api-key'."
         case .ledgerUnreadable:
             return "The Console credit ledger (api-credit.json in Claudock's Application Support folder) is unreadable. Set the credit again to start a new one; the unreadable file is kept beside it."
+        case .ledgerUnavailable: return "Claudock could not read the Console credit ledger just now. Try again."
         case .ledgerBusy: return "Another Claudock process is updating the Console credit ledger. Try again."
         case .ledgerFull: return "The Console credit ledger is full. Set the credit again from the Console balance to start over."
         case .ledgerWriteFailed: return "Claudock could not save the Console credit ledger."

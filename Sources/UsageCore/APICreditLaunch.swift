@@ -17,7 +17,8 @@ public enum APICreditLaunchError: Error, Equatable {
 /// the calling thread may be a dispatch worker, which blocks asynchronous signals. While it runs this process ignores the terminal's
 /// SIGINT and SIGQUIT (the child receives them itself), forwards SIGTERM and SIGHUP to it, and stops alongside
 /// it, so Ctrl-Z and `fg` work even when Claude Code stops itself from raw mode. Signals the caller ignored
-/// (for example SIGHUP under nohup) stay ignored by both.
+/// (for example SIGHUP under nohup) stay ignored by both. SIGINT or SIGQUIT sent to this process alone, rather
+/// than to its process group as the terminal does, is not passed on; SIGTERM is.
 public enum APICreditLaunch {
     private static let jobControlSignals = [SIGINT, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE]
     private static let forwardedSignals = [SIGTERM, SIGHUP]
@@ -51,7 +52,7 @@ public enum APICreditLaunch {
         }
         ChildSignal.pid.pointee = pid
         if ChildSignal.pending.pointee != 0 { kill(pid, ChildSignal.pending.pointee) }
-        let status = wait(for: pid, jobControl: original.isDefault(SIGTSTP))
+        let status = wait(for: pid, jobControl: original.isDefault(SIGTSTP), capture: capture)
         let exited = Date()
         ChildSignal.pid.pointee = 0
         // Finishing takes a moment; a late interrupt or termination must not lose what was received.
@@ -103,7 +104,7 @@ public enum APICreditLaunch {
         return pid
     }
 
-    private static func wait(for pid: pid_t, jobControl: Bool) -> Int32 {
+    private static func wait(for pid: pid_t, jobControl: Bool, capture: CaptureSession) -> Int32 {
         while true {
             var status: Int32 = 0
             if waitpid(pid, &status, WUNTRACED) < 0 {
@@ -112,18 +113,24 @@ public enum APICreditLaunch {
             }
             let low = status & 0o177
             if low == 0o177 {
-                // Stopped. Stop this process too, so the shell sees the job stopped; `fg` continues both.
-                if jobControl { stopAlongside(pid, signal: (status >> 8) & 0xFF) }
+                // Stopped. Stop this process too, so the shell sees the job stopped; `fg` continues both. No ledger
+                // write is in progress meanwhile, so the ledger lock is never held while the job is suspended.
+                guard jobControl else { continue }
+                var stopped = false
+                capture.whileIdle { stopped = stopAlongside(pid, signal: (status >> 8) & 0xFF) }
+                // Continued, possibly by a signal to this process alone: the job continues as a whole.
+                if stopped { kill(pid, SIGCONT) }
                 continue
             }
             return low == 0 ? (status >> 8) & 0xFF : 128 + low
         }
     }
 
-    private static func stopAlongside(_ child: pid_t, signal stop: Int32) {
+    /// Returns whether this process stopped (and has since been continued).
+    private static func stopAlongside(_ child: pid_t, signal stop: Int32) -> Bool {
         // A continue that arrived already (the shell's SIGCONT) must not stop the job a second time.
-        guard isStopped(child) else { return }
-        guard [SIGTSTP, SIGTTIN, SIGTTOU].contains(stop) else { kill(getpid(), SIGSTOP); return }
+        guard isStopped(child) else { return false }
+        guard [SIGTSTP, SIGTTIN, SIGTTOU].contains(stop) else { kill(getpid(), SIGSTOP); return true }
         var standard = sigaction(), previous = sigaction()
         standard.__sigaction_u.__sa_handler = SIG_DFL
         sigemptyset(&standard.sa_mask)
@@ -135,6 +142,7 @@ public enum APICreditLaunch {
         raise(stop)
         pthread_sigmask(SIG_SETMASK, &saved, nil)
         sigaction(stop, &previous, nil)
+        return true
     }
 
     private static func isStopped(_ pid: pid_t) -> Bool {
@@ -151,7 +159,7 @@ private struct Dispositions {
 
     init() {
         var actions: [Int32: sigaction] = [:]
-        for signal in [SIGINT, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE, SIGTERM, SIGHUP] {
+        for signal in [SIGINT, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE, SIGTERM, SIGHUP, SIGCHLD] {
             var current = sigaction()
             sigaction(signal, nil, &current)
             actions[signal] = current
@@ -169,6 +177,13 @@ private struct Dispositions {
     func takeOver(ignoring ignored: [Int32], forwarding forwarded: [Int32]) -> [Int32] {
         ChildSignal.pid.pointee = 0
         ChildSignal.pending.pointee = 0
+        // An ignored SIGCHLD would reap the child automatically and hide its status from waitpid.
+        if isIgnored(SIGCHLD) {
+            var standard = sigaction()
+            standard.__sigaction_u.__sa_handler = SIG_DFL
+            sigemptyset(&standard.sa_mask)
+            sigaction(SIGCHLD, &standard, nil)
+        }
         var changed: [Int32] = []
         for signal in ignored where !isIgnored(signal) {
             set(signal, handler: SIG_IGN)
@@ -231,6 +246,8 @@ private final class CaptureSession: @unchecked Sendable {
     private var pending: [APICreditRequest] = []
     private var sessions: Set<String> = []
     private var failure: Error?
+    /// After a failed save, later batches only queue up until this time, so none waits behind the ledger lock.
+    private var retryAfter = Date.distantPast
 
     init(profileID: String, home: String) {
         self.profileID = profileID
@@ -243,9 +260,12 @@ private final class CaptureSession: @unchecked Sendable {
             guard !requests.isEmpty else { return }
             sessions.formUnion(requests.map(\.sessionID))
             pending += requests
-            save()
+            if Date() >= retryAfter { save() }
         }
     }
+
+    /// Runs `body` while no save is in progress.
+    func whileIdle(_ body: () -> Void) { queue.sync(execute: body) }
 
     func finish() -> (sessions: Set<String>, unsaved: Int, failure: Error?) {
         queue.sync {
@@ -260,7 +280,11 @@ private final class CaptureSession: @unchecked Sendable {
             try APICreditStore.record(pending, profileID: profileID, home: home)
             pending.removeAll()
             failure = nil
-        } catch { failure = error }
+            retryAfter = .distantPast
+        } catch {
+            failure = error
+            retryAfter = Date().addingTimeInterval(5)
+        }
     }
 }
 
@@ -369,6 +393,8 @@ final class APICreditReceiver: @unchecked Sendable {
             let connection = accept(listener, nil, nil)
             if connection < 0 {
                 if errno == EINTR { continue }
+                // Out of descriptors, the pending connection keeps the listener readable: do not spin on it.
+                if errno == EMFILE || errno == ENFILE { usleep(100_000) }
                 return
             }
             guard Self.prepare(connection), fcntl(connection, F_SETFL, fcntl(connection, F_GETFL) & ~O_NONBLOCK) == 0 else {
@@ -598,8 +624,9 @@ final class APICreditReceiver: @unchecked Sendable {
                         guard trailers <= 16_384 else { return nil }
                     }
                 }
+                // Checked before adding, so a huge size cannot overflow the total.
+                guard size <= limit - total else { return nil }
                 total += size
-                guard total <= limit else { return nil }
                 if total > keepUpTo { keep = false; data = Data() }
                 guard let chunk = body(length: size, keepUpTo: keep ? size : -1), self.line(limit: 2) == "" else { return nil }
                 if keep, let bytes = chunk.data { data.append(bytes) }
