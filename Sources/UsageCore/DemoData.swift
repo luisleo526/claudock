@@ -55,6 +55,10 @@ public enum DemoData {
     }
     /// Stands in for an API-key Keychain lookup in previews: the synthetic key is always saved.
     public static func apiKeySaved(profile: Profile) -> Bool { profile.authKind == .apiKey }
+    /// The demo API-key profile's Console credit, set three days ago, without reading the ledger.
+    public static func apiKeyCredit(now: Date = Date()) -> APICreditStatus {
+        APICreditStatus(balance: 200, spent: Decimal(string: "12.58")!, asOf: now.addingTimeInterval(-3 * 86_400))
+    }
     public static func analytics(days: Int) -> AnalyticsSnapshot {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())

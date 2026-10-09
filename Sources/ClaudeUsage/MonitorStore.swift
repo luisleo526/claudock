@@ -11,6 +11,9 @@ struct AccountState: Identifiable, Equatable {
     var error: MonitorError?
     var retryAt: Date?
     var loading = false
+    /// An API-key profile's Console credit, when one is set.
+    var credit: APICreditStatus?
+    var creditError: String?
 }
 
 struct AccountReading: Sendable {
@@ -18,13 +21,18 @@ struct AccountReading: Sendable {
     var plan: SubscriptionPlan?
     var snapshot: UsageSnapshot?
     var error: MonitorError?
+    var credit: APICreditStatus?
+    var creditError: String?
 }
 
 func readAccount(_ profile: Profile) async -> AccountReading {
     if let note = profile.discoveryNote { return AccountReading(error: .unsupported(note)) }
     if profile.isVertex { return AccountReading(error: .unsupported("Vertex AI · billed through Google Cloud. Claude subscription limits do not apply.")) }
-    // Billed per token: no Claude login or subscription limits to read.
-    if profile.authKind == .apiKey { return AccountReading() }
+    // Billed per token: no Claude login or subscription limits to read, only the local credit ledger.
+    if profile.authKind == .apiKey {
+        do { return AccountReading(credit: try APICreditStore.status(profile: profile)) }
+        catch { return AccountReading(creditError: error.localizedDescription) }
+    }
     var result = AccountReading(email: CredentialStore.email(for: profile))
     do {
         let credentials = try CredentialStore.read(profile: profile)
@@ -113,7 +121,9 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var subscriptionCount: Int { accounts.filter { !$0.profile.isVertex && $0.profile.authKind == .subscription }.count }
     var attentionCount: Int {
         max(profileError == nil ? 0 : 1, accounts.filter {
-            !$0.profile.isVertex && $0.profile.authKind == .subscription && ($0.error != nil || ($0.snapshot?.peak ?? 0) >= 90)
+            guard !$0.profile.isVertex else { return false }
+            if $0.profile.authKind == .apiKey { return $0.credit?.isLow == true }
+            return $0.error != nil || ($0.snapshot?.peak ?? 0) >= 90
         }.count)
     }
     var canRefresh: Bool { !refreshing && now >= manualRefreshAt }
@@ -147,7 +157,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                              snapshot: DemoData.usage(index: index, now: now), error: index == 3 ? .network : nil)
             }
             // Second in the list, so previews show the API-key row beside a subscription account.
-            demo.insert(AccountState(profile: DemoData.apiKeyProfile), at: min(1, demo.count))
+            demo.insert(AccountState(profile: DemoData.apiKeyProfile, credit: DemoData.apiKeyCredit(now: now)), at: min(1, demo.count))
             accounts = demo
             lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return
@@ -187,6 +197,8 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 accounts[index].retryAt = nil
                 if case .rateLimited(let retry) = reading.error { accounts[index].retryAt = retry }
                 if let snapshot = reading.snapshot { accounts[index].snapshot = snapshot }
+                accounts[index].credit = reading.credit
+                accounts[index].creditError = reading.creditError
                 statusChanged?()
                 if !profile.isVertex && profile.authKind == .subscription { try? await Task.sleep(nanoseconds: 200_000_000) }
             }
@@ -194,6 +206,16 @@ func readAccount(_ profile: Profile) async -> AccountReading {
             refreshing = false; statusChanged?()
             if refreshPending { refreshPending = false; refresh() }
         }
+    }
+    /// Records an API-key profile's remaining Console credit as of now and shows it right away.
+    func setCredit(_ amount: Decimal, profile: Profile) async throws -> APICreditStatus {
+        let credit = try await Task.detached(priority: .userInitiated) { try APICreditStore.setBalance(amount, profile: profile) }.value
+        if let index = accounts.firstIndex(where: { $0.profile == profile }) {
+            accounts[index].credit = credit
+            accounts[index].creditError = nil
+        }
+        statusChanged?()
+        return credit
     }
     func copyCommand(_ profile: Profile) {
         NSPasteboard.general.clearContents()

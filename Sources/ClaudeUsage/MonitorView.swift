@@ -44,6 +44,7 @@ struct MonitorView: View {
     @State private var openingProfile: String?
     @State private var openedProfile: String?
     @State private var profileActionError: (id: String, message: String)?
+    @State private var creditProfile: Profile?
     @State private var tab = "Accounts"
     @State private var search = ""
     @State private var showManager = false
@@ -87,7 +88,8 @@ struct MonitorView: View {
                                        opening: openingProfile == account.id, openingAny: openingProfile != nil,
                                        opened: openedProfile == account.id, copied: copied == account.id,
                                        actionError: profileActionError?.id == account.id ? profileActionError?.message ?? "" : nil,
-                                       open: { openProfile(account.profile) }, copy: { copyCommand(account) })
+                                       open: { openProfile(account.profile) }, copy: { copyCommand(account) },
+                                       setCredit: { creditProfile = account.profile })
                                 .equatable()
                             if account.id != accounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
                         }
@@ -108,6 +110,7 @@ struct MonitorView: View {
             Button("OK") { loginError = nil }
         } message: { Text(loginError ?? "") }
         .sheet(isPresented: $showManager) { ProfileManagerView(store: store) }
+        .sheet(item: $creditProfile) { profile in CreditView(store: store, profile: profile) }
         .sheet(isPresented: $showWelcome) { WelcomeView(store: store) { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showManager = true } } }
     }
     private var header: some View {
@@ -254,6 +257,7 @@ private struct AccountRow: View, Equatable {
     let actionError: String?
     let open: () -> Void
     let copy: () -> Void
+    let setCredit: () -> Void
 
     static func == (lhs: AccountRow, rhs: AccountRow) -> Bool {
         lhs.account == rhs.account && lhs.resetLabels == rhs.resetLabels && lhs.accentName == rhs.accentName
@@ -278,6 +282,9 @@ private struct AccountRow: View, Equatable {
                 else if account.error != nil && !account.profile.isVertex {
                     Text(account.snapshot == nil ? "NEEDS ATTENTION" : "STALE")
                         .font(.system(size: 8, weight: .bold, design: .monospaced)).tracking(0.7).foregroundStyle(accent)
+                } else if account.credit?.isLow == true {
+                    Text("LOW CREDIT")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced)).tracking(0.7).foregroundStyle(usageColor(100))
                 }
                 HStack(spacing: 8) {
                     Button(action: open) {
@@ -311,8 +318,7 @@ private struct AccountRow: View, Equatable {
                 Text(email).font(.system(size: 11)).foregroundStyle(muted).textSelection(.enabled).padding(.top, -9)
             }
             if account.profile.authKind == .apiKey {
-                Text("Console API key · billed per token · no subscription limits")
-                    .font(.system(size: 11)).foregroundStyle(muted)
+                credit.help(CreditView.estimateNote)
             }
             if let snapshot = account.snapshot {
                 let display = snapshot.displayWindows
@@ -345,6 +351,49 @@ private struct AccountRow: View, Equatable {
                 }.font(.system(size: 11)).foregroundStyle(account.profile.isVertex ? muted : accent).lineSpacing(3)
             }
         }.padding(.horizontal, 24).padding(.vertical, compact ? 12 : 16)
+    }
+    /// What is left of the Console credit, as a meter like the limit rows: spent of the balance set.
+    @ViewBuilder private var credit: some View {
+        if let credit = account.credit {
+            // Red only when the credit is low, so the color agrees with the attention count.
+            let tint = usageColor(credit.isLow ? 100 : min(89, NSDecimalNumber(decimal: credit.usedPercent).doubleValue))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Text("Credit").font(.system(size: 11)).frame(width: 48, alignment: .leading)
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(ink.opacity(0.09)).frame(height: 6)
+                            Capsule().fill(tint).frame(width: max(0, proxy.size.width * credit.fraction), height: 6)
+                        }.frame(height: 10)
+                    }.frame(height: 10)
+                    Text("\(credit.leftText) left of \(credit.balanceText)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(credit.isLow ? tint : ink).fixedSize()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Console credit, \(credit.leftText) left of \(credit.balanceText), \(credit.usedPercentText) percent spent, "
+                                    + "since \(credit.asOf.formatted(date: .long, time: .omitted)).\(credit.isLow ? " Low credit." : "") Estimate.")
+                HStack(spacing: 6) {
+                    Text("since \(credit.asOf.formatted(date: .abbreviated, time: .omitted)) · billed per token")
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    setCreditButton
+                }.font(.system(size: 10)).foregroundStyle(muted)
+            }
+        } else {
+            HStack(spacing: 6) {
+                Text(account.creditError ?? "Console API key · billed per token · set its credit to see what is left")
+                    .foregroundStyle(account.creditError == nil ? muted : accent).lineLimit(2)
+                Spacer(minLength: 4)
+                setCreditButton
+            }.font(.system(size: 11))
+        }
+    }
+    private var setCreditButton: some View {
+        Button("Set credit…", action: setCredit)
+            .buttonStyle(.bordered).controlSize(.small).font(.system(size: 10))
+            .accessibilityLabel("Set Console credit for \(account.profile.name)")
+            .accessibilityIdentifier("setCredit-\(account.id)")
     }
     private func badge(_ title: String, help: String, accessibilityLabel: String) -> some View {
         Text(title.uppercased()).font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(0.6)
