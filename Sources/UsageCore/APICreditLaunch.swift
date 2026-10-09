@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import Security
 
 public enum APICreditLaunchError: Error, Equatable {
     /// The loopback receiver could not start, so Claude was not launched; the caller may launch it without counting.
@@ -41,7 +42,7 @@ public enum APICreditLaunch {
         let pid: pid_t
         do {
             pid = try spawn(executable: executable, arguments: arguments,
-                            environment: APICreditCapture.environment(environment, port: receiver.port),
+                            environment: APICreditCapture.environment(environment, port: receiver.port, path: receiver.path),
                             defaults: reset)
         } catch {
             original.restore()
@@ -263,25 +264,43 @@ private final class CaptureSession: @unchecked Sendable {
     }
 }
 
-/// A loopback-only HTTP/1.1 server for OTLP/HTTP JSON log exports on an ephemeral port. A complete request
-/// body of at most `maximumBody` bytes reaches `onBody` before the response; a larger one is read and dropped.
-/// Every POST gets HTTP 200, so an exporter never retries input that was refused, and keep-alive connections
-/// are served until the peer closes them or the receiver stops.
+/// A loopback-only HTTP/1.1 server for OTLP/HTTP JSON log exports on an ephemeral port. Only POSTs of
+/// `application/json` to `path`, which holds a random per-launch token, without an `Origin` header (which
+/// browsers add) are read as exports: another local process or a web page cannot add spend. A complete
+/// export body of at most `maximumBody` bytes reaches `onBody` before the response; a larger one is read and
+/// dropped. Each export gets HTTP 200, so an exporter never retries input that was refused, and keep-alive
+/// connections are served until the peer closes them or the receiver stops.
 final class APICreditReceiver: @unchecked Sendable {
     let port: UInt16
+    /// `/<random token>/v1/logs`.
+    let path: String
     private let listener: Int32
     private let maximumBody: Int
     /// Bodies beyond this are not even read; the connection is closed.
     private let discardLimit = 64 * 1_048_576
+    /// A request's head must arrive within the first time, and its body within the second once the head is accepted,
+    /// so a peer without the token cannot hold one of the few connections the exporter needs.
+    private let headTime: TimeInterval = 5
+    private let bodyTime: TimeInterval = 30
+    private let maximumConnections = 16
     private let onBody: (Data) -> Void
     private let state = NSLock()
     private var stopping = false
-    private var connections: Set<Int32> = []
+    /// Open connections in the order they were accepted, whether each has sent anything, and a valid export.
+    private var connections: [Connection] = []
+    private struct Connection {
+        let descriptor: Int32
+        let opened: Date
+        var active = false
+        var trusted = false
+    }
     private let group = DispatchGroup()
     private let handlers = DispatchQueue(label: "Claudock.APICreditReceiver.connections", attributes: .concurrent)
     private var source: DispatchSourceRead?
 
     init(maximumBody: Int = 4 * 1_048_576, onBody: @escaping (Data) -> Void) throws {
+        var token = [UInt8](repeating: 0, count: 16)
+        guard SecRandomCopyBytes(kSecRandomDefault, token.count, &token) == errSecSuccess else { throw APICreditLaunchError.receiverUnavailable }
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw APICreditLaunchError.receiverUnavailable }
         var address = sockaddr_in()
@@ -303,6 +322,7 @@ final class APICreditReceiver: @unchecked Sendable {
         }
         listener = descriptor
         port = UInt16(bigEndian: address.sin_port)
+        path = "/" + token.map { String(format: "%02x", $0) }.joined() + "/v1/logs"
         self.maximumBody = maximumBody
         self.onBody = onBody
         let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: DispatchQueue(label: "Claudock.APICreditReceiver.accept"))
@@ -324,7 +344,7 @@ final class APICreditReceiver: @unchecked Sendable {
         source?.cancel()
         if group.wait(timeout: .now() + 3) == .timedOut {
             state.lock()
-            let open = connections
+            let open = connections.map(\.descriptor)
             state.unlock()
             for connection in open { shutdown(connection, SHUT_RDWR) }
             _ = group.wait(timeout: .now() + 1)
@@ -356,33 +376,56 @@ final class APICreditReceiver: @unchecked Sendable {
                 continue
             }
             state.lock()
-            let accepted = !stopping
-            if accepted { connections.insert(connection) }
+            // At the limit, the oldest connection that has sent nothing for a second makes room. One that is
+            // sending, like the exporter's, is never evicted; its head deadline bounds it instead.
+            let opened = Date()
+            var accepted = !stopping
+            if accepted, connections.count >= maximumConnections {
+                if let idle = connections.firstIndex(where: { !$0.active && !$0.trusted && opened.timeIntervalSince($0.opened) > 1 }) {
+                    shutdown(connections.remove(at: idle).descriptor, SHUT_RDWR)
+                } else {
+                    accepted = false
+                }
+            }
+            if accepted { connections.append(Connection(descriptor: connection, opened: opened)) }
             state.unlock()
             guard accepted else { close(connection); continue }
             handlers.async(group: group) { [self] in
-                serve(connection)
+                serve(connection, opened: opened)
                 state.lock()
-                connections.remove(connection)
+                connections.removeAll { $0.descriptor == connection }
                 state.unlock()
                 close(connection)
             }
         }
     }
 
-    private func serve(_ connection: Int32) {
+    private func serve(_ connection: Int32, opened: Date) {
         var reader = Reader(descriptor: connection)
+        var trusted = false
         while true {
-            // Between requests: wait for the next one until the peer closes, the receiver stops, or a minute passes.
-            if reader.buffer.isEmpty, !reader.fill(timeout: 60, stopping: { self.isStopping }) { return }
+            // Between requests: wait for the next one until the peer closes or the receiver stops. The exporter's
+            // keep-alive connection may idle for long; a new one has `headTime` in all to present a valid head.
+            reader.deadline = trusted ? Date().addingTimeInterval(600) : opened.addingTimeInterval(headTime)
+            if reader.buffer.isEmpty, !reader.fill(stopping: { self.isStopping }) { return }
+            if trusted { reader.deadline = Date().addingTimeInterval(headTime) } else { mark(connection) { $0.active = true } }
             guard let head = reader.head(limit: 16_384), let request = Request(head) else {
                 respond(connection, status: "400 Bad Request", close: true)
                 return
             }
-            guard request.method == "POST" else {
-                respond(connection, status: "405 Method Not Allowed", close: true)
+            guard request.method == "POST", request.path == path, !request.fromBrowser else {
+                respond(connection, status: "404 Not Found", close: true)
                 return
             }
+            guard request.json else {
+                respond(connection, status: "415 Unsupported Media Type", close: true)
+                return
+            }
+            if !trusted {
+                trusted = true
+                mark(connection) { $0.trusted = true }
+            }
+            reader.deadline = Date().addingTimeInterval(bodyTime)
             if request.expectsContinue { send(connection, Data("HTTP/1.1 100 Continue\r\n\r\n".utf8)) }
             let body: Reader.Body?
             if request.chunked {
@@ -396,10 +439,16 @@ final class APICreditReceiver: @unchecked Sendable {
                 respond(connection, status: "413 Content Too Large", close: true)
                 return
             }
-            if let data = body.data, request.path == "/v1/logs", request.identityEncoding { onBody(data) }
+            if let data = body.data, request.identityEncoding { onBody(data) }
             respond(connection, status: "200 OK", close: request.closes)
             if request.closes { return }
         }
+    }
+
+    private func mark(_ connection: Int32, _ change: (inout Connection) -> Void) {
+        state.lock()
+        if let index = connections.firstIndex(where: { $0.descriptor == connection }) { change(&connections[index]) }
+        state.unlock()
     }
 
     private func respond(_ connection: Int32, status: String, close: Bool) {
@@ -428,6 +477,8 @@ final class APICreditReceiver: @unchecked Sendable {
         let closes: Bool
         let expectsContinue: Bool
         let identityEncoding: Bool
+        let json: Bool
+        let fromBrowser: Bool
 
         init?(_ head: Data) {
             guard let text = String(data: head, encoding: .utf8) else { return nil }
@@ -440,7 +491,7 @@ final class APICreditReceiver: @unchecked Sendable {
                 headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             }
             method = String(parts[0])
-            path = String(parts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0])
+            path = parts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
             chunked = headers["transfer-encoding"]?.lowercased().contains("chunked") ?? false
             if let value = headers["content-length"] {
                 guard let length = Int(value), length >= 0 else { return nil }
@@ -452,29 +503,33 @@ final class APICreditReceiver: @unchecked Sendable {
             closes = connection.contains("close") || (parts[2] == "HTTP/1.0" && !connection.contains("keep-alive"))
             expectsContinue = headers["expect"]?.lowercased() == "100-continue"
             identityEncoding = ["", "identity"].contains(headers["content-encoding"]?.lowercased() ?? "")
+            json = headers["content-type"]?.lowercased().hasPrefix("application/json") ?? false
+            fromBrowser = headers["origin"] != nil || headers["sec-fetch-mode"] != nil
         }
     }
 
-    /// Buffered reads from one connection. Within a request a stall of ten seconds ends it.
+    /// Buffered reads from one connection, each bounded by `deadline`.
     private struct Reader {
         struct Body { let data: Data? }
         let descriptor: Int32
         var buffer = Data()
+        var deadline = Date()
 
         init(descriptor: Int32) { self.descriptor = descriptor }
 
-        mutating func fill(timeout: TimeInterval = 10, stopping: (() -> Bool)? = nil) -> Bool {
-            let deadline = Date().addingTimeInterval(timeout)
+        mutating func fill(stopping: (() -> Bool)? = nil) -> Bool {
             var chunk = [UInt8](repeating: 0, count: 65_536)
             while true {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else { return false }
                 var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-                let ready = poll(&waiting, 1, 100)
+                let ready = poll(&waiting, 1, Int32(min(100, max(1, remaining * 1000))))
                 if ready < 0 {
                     if errno == EINTR { continue }
                     return false
                 }
                 if ready == 0 {
-                    if stopping?() == true || Date() >= deadline { return false }
+                    if stopping?() == true { return false }
                     continue
                 }
                 let count = recv(descriptor, &chunk, chunk.count, 0)
@@ -532,12 +587,15 @@ final class APICreditReceiver: @unchecked Sendable {
             var data = Data(), total = 0, keep = true
             while true {
                 guard let line = line(limit: 1024),
-                      let size = Int(line.split(separator: ";", maxSplits: 1)[0].trimmingCharacters(in: .whitespaces), radix: 16),
-                      size >= 0 else { return nil }
+                      let field = line.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first,
+                      let size = Int(field.trimmingCharacters(in: .whitespaces), radix: 16), size >= 0 else { return nil }
                 if size == 0 {
+                    var trailers = 0
                     while true {
                         guard let trailer = self.line(limit: 16_384) else { return nil }
                         if trailer.isEmpty { return Body(data: keep ? data : nil) }
+                        trailers += trailer.utf8.count
+                        guard trailers <= 16_384 else { return nil }
                     }
                 }
                 total += size
