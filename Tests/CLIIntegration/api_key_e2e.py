@@ -3,7 +3,7 @@
 
 Builds the CLI with SwiftPM and runs it from outside in throwaway homes (see
 claudock_e2e.py) against the real login Keychain. Keys are random synthetic
-`sk-ant-api03-` values; a fake `claude` records what each launch received.
+`sk-ant-api03-` and `sk-ant-usr-` values; a fake `claude` records what each launch received.
 Every Keychain item the run creates is deleted before exit, also after a failure,
 and any item that could not be deleted is reported. Requires macOS, Xcode, and an
 unlocked login Keychain. No real profile, credential, shell file, network
@@ -144,6 +144,61 @@ def api_key_profile(sandbox, checks):
     return console
 
 
+def usr_key_profile(sandbox, checks):
+    """Identity-backed personal keys (sk-ant-usr-…) are ordinary API keys: stored, launched and replaced like any
+    other. Credentials that share the sk-ant- prefix but are not API keys are still refused."""
+    first, second = synthetic("sk-ant-usr-"), synthetic("sk-ant-usr-")
+
+    result = sandbox.run("profile", "add", "usrkey", "--api-key", stdin=first + "\n")
+    checks.expect(result.returncode == 0, "profile add NAME --api-key must accept an sk-ant-usr- key on stdin", result)
+    usr = sandbox.listed()["usrkey"]
+    sandbox.track(api_key_service(usr))
+    checks.expect(usr["kind"] == "api-key", f"profile list must show kind api-key, got {usr['kind']!r}")
+    checks.expect(first not in result.stdout + result.stderr, "add output must not contain the key")
+    checks.expect(first not in sandbox.registry_path.read_text(), "profiles.json must not contain the key")
+    checks.expect(keychain_item_exists(api_key_service(usr)), "the key must be stored under its Claudock-apikey Keychain service")
+    checks.done("add --api-key accepts an sk-ant-usr- key")
+
+    result = sandbox.run("run", "usrkey", "--", "x", extra={"ANTHROPIC_API_KEY": "synthetic-parent-api-key"})
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None, "run must exec the fake claude", result)
+    checks.expect(record["argv"] == ["x"], f"argv must be forwarded literally, got {record['argv']!r}")
+    checks.expect(record["env"].get("ANTHROPIC_API_KEY") == first, "ANTHROPIC_API_KEY must be exactly the stored sk-ant-usr- key")
+    checks.expect(record["env"].get("CLAUDE_CONFIG_DIR") == usr["configDirectory"], "CLAUDE_CONFIG_DIR must be the profile's config folder")
+    checks.expect(not {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} & set(record["env"]), "no other authentication may reach the launch")
+    checks.expect(first not in " ".join(record["argv"]), "the key must not appear in argv")
+    checks.done("run passes the sk-ant-usr- key as ANTHROPIC_API_KEY")
+
+    result = sandbox.run("profile", "set-key", "usrkey", stdin=second)
+    checks.expect(result.returncode == 0, "set-key must replace the key with another sk-ant-usr- key", result)
+    checks.expect(second not in result.stdout + result.stderr, "set-key output must not contain the key")
+    checks.expect(launched_key(sandbox, checks, "usrkey") == second, "run must use the replaced key")
+    checks.done("set-key replaces an sk-ant-usr- key")
+
+    registry, accounts = sandbox.registry_bytes(), sandbox.accounts()
+    rejected = [("a refresh token", synthetic("sk-ant-ort01-"), "subscription OAuth token"),
+                ("a session credential", synthetic("sk-ant-sid01-"), "Claude session credential")]
+    for label, value, message in rejected:
+        for arguments in (("profile", "add", "spare", "--api-key"), ("profile", "set-key", "usrkey")):
+            result = sandbox.run(*arguments, stdin=value)
+            checks.expect(result.returncode != 0, f"{' '.join(arguments)} must reject {label}", result)
+            checks.expect(value not in result.stdout + result.stderr, f"rejecting {label} must not echo it")
+            checks.expect(message in result.stderr, f"rejecting {label} must explain why", result)
+            checks.expect(sandbox.registry_bytes() == registry and sandbox.accounts() == accounts,
+                          f"rejecting {label} must leave the registry and account folders unchanged")
+        checks.done(f"rejects {label} without storing it")
+    checks.expect(launched_key(sandbox, checks, "usrkey") == second, "rejected input must not replace the stored key")
+    checks.expect("spare" not in sandbox.listed(), "rejected add must not create a profile")
+
+    # A key typed where the profile name belongs must not come back in an error message, whatever its type.
+    for arguments in (("profile", "set-key", second), ("run", second), ("profile", "add", second, "--api-key")):
+        result = sandbox.run(*arguments, stdin=synthetic("sk-ant-usr-"))
+        checks.expect(result.returncode == 2, f"{' '.join(arguments[:2])} with an sk-ant-usr- key as the name must be a usage error", result)
+        checks.expect(second not in result.stdout + result.stderr, "a key given as a profile name must not be echoed")
+        checks.expect(sandbox.registry_bytes() == registry and sandbox.accounts() == accounts, "a key as a name must store nothing")
+    checks.done("an sk-ant-usr- key is never accepted or echoed as a command-line argument")
+
+
 def subscription_profile(sandbox, checks):
     result = sandbox.run("profile", "add", "work")
     checks.expect(result.returncode == 0, "a subscription profile must still be added", result)
@@ -270,6 +325,7 @@ def main():
         sandbox = Sandbox(cli, "e2e-console")
         sandboxes.append(sandbox)
         console = api_key_profile(sandbox, checks)
+        usr_key_profile(sandbox, checks)
         subscription_profile(sandbox, checks)
         terminal_prompt(sandbox, checks)
         removal(sandbox, checks, console)
