@@ -2,35 +2,37 @@
 
 # Claudock
 
-**Your Claude accounts, one menu bar.** See 5-hour, weekly, and Fable headroom side by side, and keep long-lived tokens in Keychain.
+A macOS menu bar app and `claudock` command for people with more than one Claude account. See every account's limits and Console credit side by side, then start Claude Code under the one you pick.
 
-[Download preview](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md)
+[Download v1.6.0](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md) · [Release notes](https://github.com/luisleo526/claudock/releases/tag/v1.6.0)
 
-> **v1.6.0 preview** for **Apple Silicon**, **macOS 14+**. Ad-hoc signed and **not Apple-notarized**. No Xcode needed to run the app.
+> The published download is v1.6.0, for Apple Silicon and macOS 14 or newer. It is ad-hoc signed and not Apple-notarized. Several features landed after it and are on `main` only: Console accounts (API key and sign-in) with credit tracking, the `claudock profile set-token`, `tokens`, and `setup-token` commands, `claudock require-token`, and the shared usage cache (`claudock usage --fresh` and `--max-age`). Build from source to use them until the next release. A build from `main` still reports version 1.6.0. Sections that need such a build say so.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
-  <img src="docs/screenshots/accounts-light.png" width="620" alt="Claudock demo accounts with aligned 5-hour, Weekly, and Fable usage rows, elapsed-time pace ticks, short reset countdowns, and Full, Not reported, and stale states">
+  <img src="docs/screenshots/accounts-light.png" width="620" alt="Claudock dashboard in demo mode. personal is a Max 20× subscription with 5-hour, Weekly, and Fable bars at 82%, 41%, and 67% used. console is a Console API key with a credit meter reading $187.42 left of $200.00. team is a Console sign-in profile with no credit set. studio is a Team Premium subscription at its 5-hour limit, marked Full.">
 </picture>
 
-*All screenshots show synthetic demo profiles. Percentages show allowance used.*
+*Synthetic demo profiles. Percentages show allowance used. The console and team rows are Console profiles, which need a build from `main`.*
 
-## Get started
+## Install
+
+You need an Apple Silicon Mac with macOS 14 or newer, and [Claude Code](https://code.claude.com/docs/en/setup) to sign in and to start sessions.
 
 1. Open the downloaded DMG and drag **Claudock.app** to **Applications**.
-2. Open Claudock from Applications. If macOS blocks this preview, follow [Apple's instructions for opening an unnotarized app](https://support.apple.com/en-us/102445). After attempting to open it, the approval is under **System Settings → Privacy & Security → Open Anyway**.
-3. Click the menu bar icon. Import your existing profiles, or open **Manage profiles** to add an account and sign in.
+2. Open Claudock from Applications. This build is not notarized, so macOS may block it. Follow [Apple's instructions for opening an unnotarized app](https://support.apple.com/en-us/102445). After you try to open it, approve it under **System Settings → Privacy & Security → Open Anyway**.
+3. Click the menu bar icon. On first launch Claudock imports your default Claude account and any `claude-NAME` zsh functions you already have, without running your shell files. Open **Manage profiles** to add more accounts.
 
-[Claude Code](https://code.claude.com/docs/en/setup) is needed for sign-in and Terminal actions. Existing `claude-work` and `claude-personal` wrappers can be imported without executing your shell startup files.
+Click elsewhere to close the popover. The window icon in its header opens the same dashboard in a regular window. Closing that window leaves the menu bar app running.
 
-Click elsewhere to dismiss the popover. Open the regular dashboard window when you want more room; closing it leaves the menu bar app running.
+Terminal commands in this README start with `claudock`. That command exists in new Terminal tabs once you turn on [shell integration](#shell-integration-optional). Until then, type the app's path in its place: `'/Applications/Claudock.app/Contents/MacOS/claudock'`.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-SHA256SUMS.txt). See the [release notes](https://github.com/luisleo526/claudock/releases/tag/v1.6.0).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-SHA256SUMS.txt).
 
 <details>
 <summary>Build from source</summary>
 
-Building requires **full Xcode 16 or newer**. Open Xcode once to finish setup, then run:
+Building needs full Xcode 16 or newer. Open Xcode once to finish its setup, then run:
 
 ```sh
 git clone https://github.com/luisleo526/claudock.git
@@ -38,142 +40,327 @@ cd claudock
 ./scripts/bootstrap.sh
 ```
 
-You can also double-click **Bootstrap.command** in the source folder. Bootstrap checks the toolchain, runs tests, builds Claudock, and opens it. Quit the app, move it from `dist/Build.*/` to Applications, then reopen it.
+You can also double-click **Bootstrap.command**. Bootstrap checks the toolchain, runs the tests, builds Claudock, and opens it. Quit the app, move it from `dist/Build.*/` to Applications, and open it again.
 
-The build targets your Mac's architecture. Apple Silicon is validated; Intel remains unverified. [Development guide](CONTRIBUTING.md) · [Build and release details](docs/RELEASING.md)
+The build targets your Mac's architecture. Apple Silicon is validated; Intel is unverified. See the [development guide](CONTRIBUTING.md) and the [build and release details](docs/RELEASING.md).
 
 </details>
 
-## Compare all three limits
+## Add your accounts
 
-5-hour, overall Weekly, and Fable limits appear in three equally weighted rows. Their bars share one scale, with percentages and short reset countdowns aligned across accounts. The vertical tick marks how much of the window has elapsed; a fill past the tick means allowance is being used faster than time is passing. Hover a label for the full window title or a countdown for the reset date.
+Claudock has three kinds of profile. Pick the one that matches how the account is billed.
 
-A limit at 100% or more shows a symbol and **Full**. When several Fable limits are reported, the most used one fills the Fable row and the rest remain below as compact meters. If Claude reports no Fable allowance, its row shows an empty track, **—**, and **Not reported**. Missing session or weekly rows are omitted. A tick appears only when both the duration and reset time are known; stale readings stay muted.
+| Kind | Billed to | The dashboard shows |
+| --- | --- | --- |
+| Claude subscription (Pro, Max, Team, or Enterprise) | Your plan | 5-hour, Weekly, and Fable limits |
+| Console account, signed in with a browser | The Anthropic Console organization you sign in to, per token | Console credit, once you set it |
+| Console API key | The Console organization that owns the key, per token | Console credit, once you set it |
 
-Open the profile you need with **Open in Terminal**, or use **Copy** for its launch command.
+*The two Console kinds need a build from `main`; not in v1.6.0.*
 
-## Keep your accounts organized
+In the app, open **Manage profiles**: the button at the bottom of the dashboard, or **Manage profiles…** in the … menu. Under **Add an account**, choose the account type, type a name, and choose **Add profile**. (v1.6.0 has no account type to choose and adds subscription profiles.)
 
-Add, import, rename, re-login, and remove profiles from **Manage profiles**. New profiles keep independent logins while sharing session history, settings, plugins, and skills with your default `~/.claude` setup. Imported folders keep their existing layout and logins.
-
-Renaming preserves account data. Removing a profile keeps its Claude folders, conversations, and credentials.
-
-**Profile management does not edit `.zshrc`.** Terminal integration is a separate option, off by default.
+A name has 1 to 40 letters, numbers, hyphens, or underscores, and starts with a letter or number. The names `default` and `auto` are reserved. A new profile keeps its own login and shares session history, settings, plugins, and skills with your default `~/.claude` setup.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/profiles.png">
-  <img src="docs/screenshots/profiles-light.png" width="620" alt="Claudock profile manager with account setup, re-login controls, and optional zsh integration, using synthetic profiles">
+  <img src="docs/screenshots/profiles-light.png" width="620" alt="Claudock Manage profiles in demo mode. Add an account offers Claude subscription, Console API key, and Console account (sign in), with a name field, Import folder, a sign-in checkbox, and Add profile. Below are the optional zsh integration switch and the profile list: personal is a subscription with Re-login and Set token, console is a Console API key with $187.42 left of $200.00 credit, Set credit, and Replace API key.">
 </picture>
 
-*Synthetic demo profiles. Rename, Remove, and authentication actions are available directly on each row.*
+*Synthetic demo profiles. The Console account types and credit need a build from `main`.*
 
-Profile badges distinguish **Max 5×**, **Max 20×**, and verified **Team Premium** accounts. An unrecognized Team seat is labeled **tier unknown** rather than guessed to be Standard.
+### Claude subscription
 
-## See what your sessions used
+In the app, choose **Claude subscription**. Leave **Open Claude sign-in after adding** on to sign in right away. In Terminal:
 
-Explore 7- or 30-day activity: input, output, cache reads, cache writes, and subagent contributions.
+```sh
+claudock profile add work
+claudock profile login work
+```
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview.png">
-  <img src="docs/screenshots/overview-light.png" width="620" alt="Claudock token activity dashboard with processed tokens, daily activity, cache reuse, and profile totals">
-</picture>
+To sign in again, choose **Re-login** on the profile's row in **Manage profiles**, or run `claudock profile login work`. Sign your browser in to the right claude.ai account first.
 
-Recorded tokens include reused context. They describe local activity, not billing or subscription allowance. New profiles share history by default. Shared histories are counted once and labeled clearly; they cannot be reliably divided between accounts. The dashboard shows scan coverage and marks incomplete history.
+### Console account (sign in)
 
-[How local tokens are counted](docs/GUIDE.md#local-token-activity)
+*Needs a build from `main`; not in v1.6.0.*
 
-## Continue with another profile
+Claude Code signs in to your Anthropic Console account in the browser, creates an API key for it, and keeps the key itself. You paste nothing. Usage is billed per token to that Console organization.
 
-In **Sessions**, choose **Continue as…**, select an account, and open a fork of the conversation in a new Terminal.
+In the app, choose **Console account (sign in)**. **Open Console sign-in after adding** is on by default. In Terminal, this adds the profile and starts the sign-in:
 
-Your original session keeps running. The new session uses the selected profile's login and settings, with Claude Code's normal project and tool permissions.
+```sh
+claudock profile add team --console
+```
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sessions.png">
-  <img src="docs/screenshots/sessions-light.png" width="620" alt="Claudock sessions view with project search, a seven-day filter, and Continue as controls for synthetic conversations">
-</picture>
+If you cancel the sign-in, the profile stays. Sign in again with **Sign in…** on its row in **Manage profiles**, or run `claudock profile login team`. Claudock checked this sign-in with Claude Code 2.1.295.
 
-Continuation is a **preview feature** that depends on compatible Claude Code JSONL resume support. [Compatibility details](docs/GUIDE.md#continue-a-saved-session).
+### Console API key
 
-A conversation still running in another Terminal can be continued with `--resume SESSION_ID --fork-session`. Claude creates a new session from its history while the original process continues. `--continue` selects the latest conversation in the current project. New profiles share this history by default; isolated imported folders remain available through the Sessions view or an explicit JSONL resume path.
+*Needs a build from `main`; not in v1.6.0.*
 
-Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and Anthropic Console accounts, with a pasted API key or Claude Code's own Console sign-in. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
+Use a key when someone gave you one, when the profile must use one particular key, or when you cannot sign in on this Mac. Otherwise a Console sign-in is simpler. Usage is billed per token to the key's Console organization.
 
-## Keep going on a Console API key
-
-Reached a weekly limit? Add a Claude Console API key as its own profile and continue the same conversation there. In **Manage profiles**, choose **Console API key**, enter a name, and paste the key. Or from Terminal:
+In the app, choose **Console API key** and paste the key in **Key**. In Terminal, the key is read from standard input, never from arguments, and stored only in Keychain:
 
 ```sh
 pbpaste | claudock profile add console --api-key
-claudock run console -- --resume
-claudock profile set-credit console 200
+# or type the key at a prompt that hides it:
+claudock profile add console --api-key
 ```
 
-No key to paste? `claudock profile add team --console`, or **Console account (sign in)** in **Manage profiles**, signs the profile in to your Anthropic Console account in the browser, and Claude Code keeps the key itself. [Choosing between a key and a sign-in](docs/GUIDE.md#sign-in-to-a-console-account-instead)
+Replace the key with **Replace API key…** on the row in **Manage profiles**, or `claudock profile set-key console`. There is no sign-in to repeat for a key profile.
 
-The key is read from standard input, never from command arguments, and stored only in Keychain. Like other new profiles, an API-key profile shares your session history, so **Continue as…** and `--resume` pick up where a subscription left off. The first interactive launch asks whether to use the API key; choose **Yes**.
+### Switch between a key and a sign-in
 
-API usage is billed per token by the Claude Console, not by a subscription. Enter the credit the Console shows as left, with **Set credit…** or `claudock profile set-credit`, and the dashboard and `claudock usage` show what remains after the cost Claude Code reports for each request in the sessions Claudock starts on this Mac. Use of the key elsewhere is not seen, so the Console balance stays authoritative; set it again any time. [Add, replace, and remove keys, and track credit](docs/GUIDE.md#console-api-keys)
+*Needs a build from `main`; not in v1.6.0.*
 
-## Fewer login interruptions
-
-Already have an inference token? Open **Manage profiles → Set token…**, paste it, and choose **Save to Keychain**. You can paste the token itself or the `export CLAUDE_CODE_OAUTH_TOKEN=…` line from Claude. No browser round trip or existing OAuth login is required to import it, and no token is written to `.zshrc`.
-
-<img src="docs/screenshots/token-setup.png" width="500" alt="Claudock token setup with Paste token selected, an editable token field, and a Paste button; synthetic profile with no token entered">
-
-From Terminal, `pbpaste | claudock profile set-token work` saves a copied token, and `claudock profile tokens` lists each profile's token status without showing tokens. To create one, run `claudock profile setup-token work` with your browser signed in to that profile's account (`claudock run work -- setup-token` also works while nothing comes before `setup-token`). To make sure launches never fall back to a profile's normal login, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`.
-
-Need a new token? The same dialog offers **Create in browser**, with a separate authorization-code field. Browser-created tokens use Claude's reported expiry and verified account/organization. Pasted tokens are assigned to the profile you choose; their account identity and expiry cannot be established from the opaque string, so they are labeled accordingly.
-
-Claudock-managed shortcuts and **Open in Terminal** prefer the saved inference token. Renames preserve it. Existing user-authored wrappers remain unchanged; use `claudock run NAME` to launch those profiles with their saved token.
-
-Inference tokens do not replace the normal OAuth login used to read quota. The resident app renews that monitoring login when possible. Removing a profile preserves its data and credentials; it does not revoke tokens at Anthropic.
-
-## Terminal, when you want it
-
-In **Manage profiles**, turn on **Enable claudock in zsh**, then open a new Terminal tab:
+A Console profile can change from one to the other and keep its name, folder, and shared history:
 
 ```sh
-claudock profile list
-claudock profile add work
-claudock profile login work
-claude-work
-claudock usage
+claudock profile login console --console   # key profile: sign in to its Console account instead
+claudock profile set-key team              # sign-in profile: use a pasted key instead (read as above)
 ```
 
-Integration adds `claudock` and missing profile shortcuts such as `claude-work`. The profile names `default` and `auto` remain reserved. Existing legacy profiles are preserved. Your existing aliases, functions, and executables keep their names. `claudock run work` remains available as the explicit form.
+The credential you stop using stays in Keychain, unused. The command prints its service name and how to delete it. A subscription profile cannot change kind. Add a separate profile for the Console account.
 
-**Since 1.6.0:** Claudock Auto has been removed. For this release, `claudock auto` with any arguments only prints a removal notice to stderr and exits with status 2. Use `claudock run PROFILE` to choose an account. Older `claude-auto` shortcuts reach the same notice until you load the updated shell integration.
+### Import, rename, remove
 
-**If shell integration was already enabled:** open the updated Claudock app, then open a new Terminal tab or run this once in each existing tab:
+**Import folder…** and **Import zsh profiles** in Manage profiles bring in accounts you already use. Importing from zsh files only reads them and never runs them. **Rename…** and **Remove…** are on each row, except the default profile's. Removing keeps the profile's Claude folder, conversations, and credentials.
 
-```zsh
+```sh
+claudock profile add work --directory /Users/you/.claude-work
+claudock profile import-shell
+claudock profile rename work office
+claudock profile remove office
+```
+
+## Start Claude with a profile
+
+In the app, choose **Open in Terminal** on a profile's row. A new Terminal window opens in your home folder and starts Claude under that profile. **Copy** copies the launch command instead.
+
+In Terminal, `claudock run` starts Claude in the current folder. Everything after `--` goes to Claude Code unchanged:
+
+```sh
+claudock run work
+claudock run work -- --resume
+```
+
+With [shell integration](#shell-integration-optional), `claude-work` does the same as `claudock run work`.
+
+If a profile uses a pasted API key (a Console API key profile, which needs a build from `main`), Claude asks the first time whether to use it. Answer Yes. Claude Code remembers the answer for that profile.
+
+### Move a conversation to another profile
+
+Reached a weekly limit? Continue the same conversation on another profile, for example a Console profile (which needs a build from `main`). New profiles share session history with your default `~/.claude` setup, so any of them can pick it up.
+
+In the app, open the **Sessions** tab, choose **Continue as…** beside a conversation, pick a profile under **Continue using**, and choose **Continue in Terminal**. A fork of the conversation opens in a new Terminal window in its project folder. Your original session keeps running.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sessions.png">
+  <img src="docs/screenshots/sessions-light.png" width="620" alt="Claudock Sessions tab with a project search box, a 7-day filter, and a Continue as button beside each synthetic conversation">
+</picture>
+
+In Terminal, from the project folder:
+
+```sh
+claudock run console -- --resume
+claudock run console -- --continue
+```
+
+`--resume` lets you choose a conversation. `--continue` takes the latest one in the current folder. If the conversation is still running in another Terminal, use `--resume SESSION_ID --fork-session`: Claude then starts a new session from its history while the original keeps running.
+
+Continuation is a preview feature. It needs a Claude Code version that can resume a saved session file. [Compatibility details](docs/GUIDE.md#continue-a-saved-session).
+
+## Watch limits and credit
+
+The menu bar popover and the dashboard window list one row per profile. Claudock refreshes every 5 minutes by default. Choose a 1-, 5-, or 15-minute **Refresh interval** in the … menu. The refresh button asks again now, at most once a minute. The badge beside a subscription name is the plan Claude reports ([how badges are chosen](docs/GUIDE.md#account-plan-badges)). A Console profile's badge says API.
+
+A subscription row has three bars: 5-hour, Weekly, and Fable. A bar that Claude does not report is left out, and other model limits show as small meters below.
+
+- The percentage is the share of the allowance you have already used.
+- The vertical tick shows how much of the time window has passed. A fill beyond the tick means you are using the allowance faster than time passes.
+- The number on the right counts down to the reset.
+- **Full** marks an allowance at 100% or more. **Not reported** means Claude reports no Fable allowance for that account.
+- **STALE** means the last refresh failed. The bars turn grey and keep the last good reading, with its time.
+
+*Console rows need a build from `main`; not in v1.6.0.* A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization.
+
+The **Overview** tab shows the tokens recorded in your local session logs over the last 7 or 30 days. They are not billing or allowance. [How they are counted](docs/GUIDE.md#local-token-activity). Appearance, launch at login, and other settings are in the … menu: [Make it yours](docs/GUIDE.md#make-it-yours).
+
+### claudock usage
+
+In Terminal, `claudock usage` prints the same numbers for scripts. It prints no email addresses or credentials. The output is tab-separated. Spaces are added here to line up the columns:
+
+```text
+PROFILE  PLAN         WINDOW                            USED_PERCENT  RESETS_UTC
+work     Max 20×      5-hour session                    82.00         2026-10-09T16:10:00Z
+work     Max 20×      Weekly · all models               41.00         2026-10-12T18:00:00Z
+work     Max 20×      Weekly · Fable                    67.00         2026-10-12T18:00:00Z
+console  Console API  Credit · $187.42 of $200.00 left  6.29          -
+```
+
+- `PROFILE` is the profile name.
+- `PLAN` is the plan Claude reports, such as Pro, Max 5×, Max 20×, or Team Premium. A Console profile's credit row says `Console API`.
+- `WINDOW` is the allowance the row describes: `5-hour session`, `Weekly · all models`, or a model limit such as `Weekly · Fable`. For a Console profile it is `Credit · $187.42 of $200.00 left`: the credit left, of the credit you set.
+- `USED_PERCENT` is the share of that allowance already used, usually 0 to 100. It reaches 100 when the allowance, or the credit you set, is used up, and can go past it. It is not what is left. For a Console profile it is the share of the credit you set that has been spent.
+- `RESETS_UTC` is when the allowance resets, in UTC. It is `unknown` when Claude gives no time, and `-` for credit, which does not reset.
+
+The `console` row needs a build from `main`; v1.6.0 prints subscription rows only. A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. The exit status is 0 unless a profile has no reading at all.
+
+### Cached readings and rate limits
+
+*Needs a build from `main`; not in v1.6.0.*
+
+The app and `claudock usage` share their readings, so the dashboard shows the last readings as soon as it opens, and frequent `claudock usage` calls do not each ask Claude. A reading younger than 3 minutes is printed without a request.
+
+```sh
+claudock usage --fresh
+claudock usage --max-age 600
+```
+
+`--fresh` asks for new readings of every subscription profile. `--max-age SECONDS` (0 to 86400) accepts readings up to that many seconds old.
+
+When Claude rate-limits an account (HTTP 429), Claudock stops asking for it until a cooldown ends, even with `--fresh`. The cooldown is the time Claude gives, between 5 minutes and a day. Without one, it is 1 minute, doubling up to 30 minutes. Meanwhile `claudock usage` prints the account's last reading, adds one line on stderr, and exits 0. The time in that line is local time:
+
+```text
+claudock: work: rate limited until 14:05; showing reading from 3 min ago.
+```
+
+### Console credit
+
+*Needs a build from `main`; not in v1.6.0.*
+
+Anthropic offers no API for the credit left on a Console organization, so you enter it yourself. Look it up in the Claude Console, then set it:
+
+```sh
+claudock profile set-credit console 187.42
+```
+
+Or choose **Set credit…** on the profile's dashboard row or in Manage profiles. The amount is in US dollars, from 0 to 1,000,000, with at most two decimals.
+
+From then on, Claudock subtracts the cost Claude Code reports for each request in the sessions Claudock starts on this Mac: `claudock run`, the profile's shortcut, **Open in Terminal**, and **Continue as…**. [How the credit is counted](docs/GUIDE.md#track-the-console-credit).
+
+This is an estimate, and the Console balance is authoritative:
+
+- Use of the same key elsewhere, such as other Macs, scripts, or other tools, is not seen.
+- Claude Code sessions started without Claudock are not seen.
+- Spend from before you set the credit does not count.
+- A Claude Code process killed outright (`kill -9`) loses the requests of its last second.
+- A Claude Code settings file that sets `OTEL_…` variables or `CLAUDE_CODE_ENABLE_TELEMETRY` can send the reports elsewhere. Claudock names such a setting before it starts Claude. For these launches it also replaces any `OTEL_…` variables in your own environment.
+
+Set the credit again from the Console whenever you check it.
+
+## Inference tokens (optional)
+
+An inference token is a long-lived Claude Code token (`sk-ant-oat01-…`) for a subscription profile. Claudock keeps it in Keychain and passes it to Claude Code when it starts that profile, so Claude Code uses it instead of the profile's normal login. Console profiles do not use tokens.
+
+In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one.
+
+*The commands and the setting below need a build from `main`; not in v1.6.0.* In Terminal:
+
+```sh
+claudock profile setup-token work
+pbpaste | claudock profile set-token work
+claudock profile tokens
+```
+
+- `setup-token` runs Claude Code's own token command for the profile. It signs in through your browser, so sign the browser in to that profile's claude.ai account first. A private window per account helps. Claude then prints a token.
+- Copy the token, then run `set-token`. It reads the token from standard input, never from arguments, and saves it in Keychain. Add `--expires 2027-10-09` if you know when it expires.
+- `tokens` lists each profile's token status and expiry, never the token. The status is `none`, `active`, `expired`, `pasted-unverified`, `n/a`, or `unavailable`.
+
+To make sure a launch never falls back to a profile's normal login, require a token:
+
+```sh
+claudock require-token on
+claudock require-token status
+claudock require-token off
+```
+
+With it on, `claudock run`, shortcuts, **Open in Terminal**, and **Continue as…** stop with instructions when a subscription profile's token is missing, expired, or unreadable. Signing in and `profile setup-token` always work. The same setting is **Require inference token to launch** in the … menu. It is off by default.
+
+Quota reading still uses the profile's normal login. A re-login warning in the dashboard does not mean the token expired.
+
+## Shell integration (optional)
+
+The app works without it, and so does the CLI through its full path. To get the `claudock` command and `claude-NAME` shortcuts in zsh, open **Manage profiles**, turn on **Enable claudock in zsh**, and open a new Terminal tab. Put the app in its final location first.
+
+- It adds the `claudock` command and a shortcut for each profile, such as `claude-work`.
+- It writes `init.zsh` and an `integration.json` record in `~/.config/claudock/`, and adds one marked loader block to `.zshrc`, after backing up an existing file.
+- Adding, renaming, or removing a profile never edits `.zshrc`. Shells running the current integration pick up new shortcuts before your next command.
+- Your own aliases, functions, and programs with the same name win. Use `claudock run NAME` for those profiles.
+- A wrapper you wrote that runs `claude` directly, instead of `claudock run`, does not use saved inference tokens or Console credit tracking.
+
+If integration was on before you updated from a version older than 1.6.0, open the updated app once, then load the new version in each open tab:
+
+```sh
 source ~/.config/claudock/init.zsh
 ```
 
-Once the new integration is loaded, profiles added in the GUI become available before your next command, including in an idle Terminal tab. Renames and removals update only shortcuts still owned by Claudock. Profile changes never rewrite `.zshrc`, and the GUI works without shell integration.
+You can also turn integration on from Terminal with the app's own command, which works without any shell setup:
 
-Automatic renewal runs in the resident app. The one-shot `claudock usage` command reads quota without rotating credentials. It shares recent readings and rate-limit cooldowns with the app, so frequent checks do not each ask Claude; `claudock usage --fresh` asks again.
+```sh
+'/Applications/Claudock.app/Contents/MacOS/claudock' shell enable
+```
 
-[Shell setup, custom dotfiles, and command reference](docs/GUIDE.md#optional-shell-integration)
+[Shell setup, custom dotfiles, and more](docs/GUIDE.md#optional-shell-integration).
+
+## Command cheat sheet
+
+`claudock help` prints this list with more notes. The Console, `set-key`, `set-credit`, token, `login --console`, `usage` option, and `require-token` lines need a build from `main`; not in v1.6.0.
+
+```sh
+claudock profile list                                       # List profiles, selectors, and kinds
+claudock profile add NAME [--directory ABS_PATH]            # Add a subscription profile, or import a folder
+claudock profile add NAME --api-key [--directory ABS_PATH]  # Add a Console API-key profile (key from stdin)
+claudock profile add NAME --console [--directory ABS_PATH]  # Add a Console profile and sign in in the browser
+claudock profile set-key NAME                               # Save a Console API key (key from stdin)
+claudock profile set-credit NAME AMOUNT                     # Record the Console credit left, in US dollars
+claudock profile set-token NAME [--expires ISO8601_DATE]    # Save an inference token (token from stdin)
+claudock profile setup-token NAME                           # Create an inference token through Claude Code
+claudock profile tokens                                     # Show each profile's token status
+claudock profile rename NAME NEWNAME                        # Rename a profile; its data and login stay
+claudock profile remove NAME                                # Remove a profile; Claude data and credentials stay
+claudock profile login NAME [--console]                     # Sign in again; --console uses a Console account
+claudock profile import-shell                               # Import claude-NAME functions from your zsh files
+claudock run NAME [-- CLAUDE_ARGS...]                       # Start Claude Code under a profile
+claudock usage [--max-age SECONDS | --fresh]                # Print limits and Console credit
+claudock require-token on|off|status                        # Require an inference token to launch
+claudock shell enable|disable|status                        # Turn zsh integration on or off, or check it
+claudock version                                            # Print the version
+claudock help                                               # Print this list and notes
+```
+
+`claudock auto` was removed in 1.6.0. It prints a notice on stderr and exits with status 2. Use `claudock run NAME`.
+
+## Troubleshooting
+
+*Rows about Console profiles, the `claudock` token commands, and cached readings need a build from `main`.*
+
+| Symptom | What to do |
+| --- | --- |
+| `Claude is limiting requests. Refresh will retry after a cooldown.` | Claude rate-limited that account. Wait. Claudock asks again when the cooldown ends, and `--fresh` does not skip it. The last good reading stays on screen, and `claudock usage` prints it with a `rate limited until` note. |
+| `The account information does not match this profile. Use the matching account or replace its token.` or `NAME's saved inference token belongs to a different account than its current Claude login.` | The token and the profile's login are for different accounts. Sign the browser in to the right claude.ai account, then run `claudock profile login NAME` to fix the login, or make a token for the current login: choose **Create in browser** in **Set token…**, or run `claudock profile setup-token NAME` (needs a build from `main`) and save it as shown under Inference tokens. |
+| `Sign in to this Claude profile to see usage.` | The profile has no usable login. Choose **Re-login** in **Manage profiles**, or run `claudock profile login NAME`. |
+| `NAME is not signed in to a Console account. Sign in with: claudock profile login NAME` | The Console sign-in was cancelled, failed, or removed. Run that command, or choose **Sign in…** on the profile's row in **Manage profiles**. |
+| The browser is signed in to the wrong account during a sign-in or `setup-token` | Use a private browsing window, one per account, or sign the browser out first. |
+
+More messages and fixes are in the [guide's troubleshooting table](docs/GUIDE.md#troubleshooting).
 
 ## Local by design
 
-- **No Claudock account or hosted backend.** Profiles live on your Mac.
-- **No telemetry or transcript uploads from the monitor.** Local activity is read locally. For Console credit, Console launches (API key or Console sign-in) send Claude Code's per-request cost reports to `claudock` itself on `127.0.0.1`.
-- **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens and Console API keys use their own Keychain items and are passed to Claude through its launch environment.
+- No Claudock account and no hosted backend. Profiles live on your Mac.
+- No telemetry and no transcript uploads. Local activity is read locally. For Console credit, Claudock points Claude Code's per-request cost reports at `claudock` itself on `127.0.0.1`, so they stay on the Mac unless a Claude Code setting of yours redirects them.
+- Quota credentials stay in Claude's existing store. Inference tokens and Console API keys use their own Keychain items and reach Claude only through its launch environment.
 
-Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).
+Starting or continuing Claude is an explicit action. It uses Claude's normal settings, authentication, and permissions. See [privacy and security details](SECURITY.md).
 
-Claudock is an independent open-source project, unaffiliated with Anthropic. Live subscription limits use Claude's undocumented OAuth usage endpoint. Availability and response formats can change without notice; this app cannot guarantee continuous access.
+Claudock is an independent open-source project, unaffiliated with Anthropic. Live subscription limits come from Claude's undocumented OAuth usage endpoint. It can change or disappear without notice, and Claudock cannot guarantee continuous access.
 
-## Help shape Claudock
+## Contributing
 
-[Report a bug](https://github.com/luisleo526/claudock/issues) with what you clicked, what you expected, and your macOS and Claude Code versions. Please use demo screenshots or redact account details. Report security issues through the [private reporting guidance](SECURITY.md).
+[Report a bug](https://github.com/luisleo526/claudock/issues) with what you clicked, what you expected, and your macOS and Claude Code versions. Use demo screenshots or redact account details. Report security issues through the [private reporting guidance](SECURITY.md).
 
-Contributions to accessibility, profile discovery, and compatibility are welcome. The app uses **SwiftUI and AppKit**, with **no third-party Swift package dependencies**.
-
-Read the [contribution guide](CONTRIBUTING.md), [architecture](docs/ARCHITECTURE.md), and [troubleshooting notes](docs/GUIDE.md#troubleshooting).
+Contributions to accessibility, profile discovery, and compatibility are welcome. The app uses SwiftUI and AppKit, with no third-party Swift package dependencies. Read the [contribution guide](CONTRIBUTING.md) and the [architecture notes](docs/ARCHITECTURE.md).
 
 ## License
 
