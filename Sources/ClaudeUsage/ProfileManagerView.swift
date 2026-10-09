@@ -144,6 +144,12 @@ struct ProfileManagerView: View {
         }.padding(24).frame(width: 650, height: 730)
             .task { await readShellStatus() }
             .task(id: credentialStatusProfiles) { await readCredentialStatuses(credentialStatusProfiles) }
+            // A Console sign-in finishes in Terminal and the browser, outside the app: read it again on return.
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                for profile in credentialStatusProfiles where profile.authKind == .consoleLogin {
+                    Task { await readCredentialStatus(profile) }
+                }
+            }
             .interactiveDismissDisabled(busy)
             .sheet(item: $minting, onDismiss: {
                 if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
