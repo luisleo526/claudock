@@ -138,7 +138,7 @@ The namespaced command and generated shortcuts call the CLI bundled inside the a
 
 Disabling integration removes Claudock's marked loader block and managed integration files. Open a new Terminal tab afterward to unload its functions and hooks; already-open shells retain what they loaded. Existing user shell declarations remain unchanged.
 
-Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login` and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
+Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login`, `profile setup-token`, and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
 
 `claudock usage` makes one sequential quota request for each supported profile and prints tab-separated profile, usage-window, used-percentage, and reset-time columns. It prints no emails or credentials and exits unsuccessfully if a requested profile fails. Console API-key profiles have no subscription limits; it skips them with a note and makes no request for them. This reports subscription allowance; use Overview for local token activity. `claudock shell status`, `enable`, and `disable` expose the same optional integration controls. If the app moves, enable integration again from the app's new location to update its executable path.
 
@@ -220,6 +220,7 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | Claude rejects a resume file | Confirm your Claude version supports absolute JSONL paths with `--resume`; the app's compatibility check used 2.1.263. |
 | No Console API key is saved | Save one with **Replace API key…** in Manage profiles or `claudock profile set-key NAME`. |
 | Claude asks whether to use an API key | Choose Yes. Claude Code remembers the answer for that profile. |
+| NAME's saved inference token belongs to a different account than its current Claude login | The profile was signed in to another account after its token was saved. Run `claudock profile login NAME` with the token's account, or make a new token: `claudock profile setup-token NAME`, then `pbpaste \| claudock profile set-token NAME`. |
 | Launch at login needs approval | Check System Settings → General → Login Items & Extensions. |
 
 ## Development and builds
@@ -295,14 +296,18 @@ The **Create in browser** option remains available for new tokens. It opens Clau
 From Terminal, `claudock profile set-token NAME` saves a token the same way. It reads the token from standard input, with a prompt that hides input at a terminal or from piped input, and never from command arguments. Add `--expires ISO8601_DATE` when you know the expiry. To create a token for a profile, run Claude Code's own `setup-token` command under it. It signs in through your browser, so make sure the browser is signed in to the matching claude.ai account:
 
 ```sh
-claudock run work -- setup-token
+claudock profile setup-token work
 pbpaste | claudock profile set-token work
 claudock profile tokens
 ```
 
-`claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key and unresolved profiles, or `unavailable` when Keychain cannot be read. A last line on stderr shows whether tokens are required. When a pasted token has expired, `claudock run` stops and names `set-token`.
+`claudock profile setup-token work` takes no other arguments and never reads the saved token, so it works whatever that token's state. `claudock run work -- setup-token` also works while `setup-token` is the first Claude argument; if a shell function of yours puts flags before it, use `profile setup-token`.
 
-Without a token, or after a browser-created token expires, a launch uses the profile's normal Claude Code login. To rule that out, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`. Then `claudock run`, managed shortcuts, **Open in Terminal**, and **Continue as…** stop with instructions whenever a subscription profile's token is missing, expired, or unreadable. `claudock profile login` and `claudock run NAME -- setup-token` always work, even after a saved token expires, so you can create a replacement, and Console API-key profiles keep using their key. The setting is off by default; `claudock require-token status` prints `on` or `off`.
+`claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key and unresolved profiles, or `unavailable` when Keychain cannot be read. A last line on stderr shows whether tokens are required. When a pasted token has expired, `claudock run` stops and tells you to make a new one with `profile setup-token`.
+
+A saved token remembers the account the profile was signed in to when it was saved. If the login later moves to another account, `claudock run` and the app's launches stop and say so (with the requirement below on, they report an invalid token instead): sign in again with the token's account (`claudock profile login work`), or make a new token as above.
+
+Without a token, or after a browser-created token expires, a launch uses the profile's normal Claude Code login. To rule that out, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`. Then `claudock run`, managed shortcuts, **Open in Terminal**, and **Continue as…** stop with instructions whenever a subscription profile's token is missing, expired, or unreadable. `claudock profile login`, `claudock profile setup-token`, and `claudock run NAME -- setup-token` always work, even after a saved token expires or belongs to another account, so you can create a replacement, and Console API-key profiles keep using their key. The setting is off by default; `claudock require-token status` prints `on` or `off`.
 
 Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
 
