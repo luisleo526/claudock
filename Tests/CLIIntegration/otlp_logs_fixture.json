@@ -1,0 +1,587 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "arm64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "darwin"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "25.5.0"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.295"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.events",
+      "version": "2.1.295"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1791513632290000000",
+       "observedTimeUnixNano": "1791513632290000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "00000000000000000000000000000000000000000000000017105eb16a223edd"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "8aa2d6b7-ee16-0ecb-c67c-f917d0c20294"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "non-interactive"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-10-09T02:40:32.290Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 9
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7dd7f937-3693-b74e-49fe-a783f2da6b20"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-5-5"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 35
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 17266
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 655
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.00032136
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 321
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 989
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 805
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cfixture0ece23a490"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "9ccce409-5b34-a914-f845-55309feed603"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "sdk"
+         }
+        },
+        {
+         "key": "effort",
+         "value": {
+          "stringValue": "medium"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1791513632290000000",
+       "observedTimeUnixNano": "1791513632290000000",
+       "body": {
+        "stringValue": "claude_code.assistant_response"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "00000000000000000000000000000000000000000000000017105eb16a223edd"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "8aa2d6b7-ee16-0ecb-c67c-f917d0c20294"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "non-interactive"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "assistant_response"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-10-09T02:40:32.290Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 10
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7dd7f937-3693-b74e-49fe-a783f2da6b20"
+         }
+        },
+        {
+         "key": "response_length",
+         "value": {
+          "intValue": 126
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "<REDACTED>"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cfixture0ece23a490"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "b74c28d9-be82-1db3-839d-283735b1ff20"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-5-5"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "sdk"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1791513632952000000",
+       "observedTimeUnixNano": "1791513632952000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "00000000000000000000000000000000000000000000000017105eb16a223edd"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "8aa2d6b7-ee16-0ecb-c67c-f917d0c20294"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "non-interactive"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-10-09T02:40:32.952Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 11
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7dd7f937-3693-b74e-49fe-a783f2da6b20"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-5-5"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 188
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 9933
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.0013358250000000001
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 1336
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1658
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 756
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cfixture4f2171efd3"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "0885f932-5f88-394f-33c0-a9a38372eed8"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "agent:builtin:general-purpose"
+         }
+        },
+        {
+         "key": "effort",
+         "value": {
+          "stringValue": "medium"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "general-purpose"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1791513632956000000",
+       "observedTimeUnixNano": "1791513632956000000",
+       "body": {
+        "stringValue": "claude_code.tool_decision"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "00000000000000000000000000000000000000000000000017105eb16a223edd"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "8aa2d6b7-ee16-0ecb-c67c-f917d0c20294"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "non-interactive"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "tool_decision"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-10-09T02:40:32.956Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 12
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7dd7f937-3693-b74e-49fe-a783f2da6b20"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Read"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_011Cfixturee230ee495e"
+         }
+        },
+        {
+         "key": "tool_source",
+         "value": {
+          "stringValue": "builtin"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1791513632958000000",
+       "observedTimeUnixNano": "1791513632958000000",
+       "body": {
+        "stringValue": "claude_code.tool_result"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "00000000000000000000000000000000000000000000000017105eb16a223edd"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "8aa2d6b7-ee16-0ecb-c67c-f917d0c20294"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "non-interactive"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "tool_result"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-10-09T02:40:32.958Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 13
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7dd7f937-3693-b74e-49fe-a783f2da6b20"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Read"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_011Cfixturee230ee495e"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "tool_input_size_bytes",
+         "value": {
+          "stringValue": "115"
+         }
+        },
+        {
+         "key": "tool_result_size_bytes",
+         "value": {
+          "stringValue": "14"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -38,7 +38,7 @@ def check(base):
                PROJECT / "Sources/UsageCore/SubscriptionPlan.swift"]
     compile_swift(["-emit-library", "-emit-module", "-module-name", "UsageCore", "-o", str(base / "libUsageCore.dylib"),
                    str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2]), str(sources[3]),
-                   str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift")])
+                   str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift"), str(PROJECT / "Sources/UsageCore/APICredit.swift")])
     binary = base / "claudock"
     compile_swift(["-parse-as-library", "-I", str(base), "-L", str(base), "-lUsageCore", "-Xlinker", "-rpath", "-Xlinker", str(base),
                    "-o", str(binary), str(sources[0])])
@@ -86,7 +86,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "add", "auto"], 2), (["profile", "rename", "smoke", "AUTO"], 2),
              (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
              (["profile", "setup-token"], 2), (["profile", "setup-token", "smoke", "extra"], 2),
-             (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2)]
+             (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2),
+             (["profile", "set-credit", "smoke"], 2), (["profile", "set-credit", "smoke", "1.234"], 2),
+             (["profile", "set-credit", "smoke", "-5"], 2), (["profile", "set-credit", "smoke", "5", "extra"], 2),
+             (["profile", "set-credit", "sk-ant-api03-x", "5"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)

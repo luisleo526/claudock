@@ -84,6 +84,24 @@ public enum APIKeyStore {
     public static func save(_ key: ConsoleAPIKey, profile: Profile) throws { markAccess("API key") }
 }
 
+// Console credit is covered by credit_e2e.py against the real ledger and launcher; amounts and row
+// formatting come from the production APICredit.swift.
+public enum APICreditStore {
+    public static func status(profile: Profile) throws -> APICreditStatus? { markAccess("credit ledger"); return nil }
+    public static func setBalance(_ amount: Decimal, profile: Profile) throws -> APICreditStatus {
+        markAccess("credit ledger")
+        throw MonitorError.unsupported("The synthetic fixture stores no credit.")
+    }
+}
+public enum APICreditLaunchError: Error { case receiverUnavailable, launchFailed(Int32) }
+public enum APICreditLaunch {
+    public static func run(profile: Profile, executable: String, arguments: [String], environment: [String: String],
+                           warn: (String) -> Void) throws -> Int32 {
+        markAccess("credit launch")
+        throw APICreditLaunchError.receiverUnavailable
+    }
+}
+
 // CLI inference-token commands are covered by token_e2e.py against the real Keychain.
 public enum MintTokenError: Error, LocalizedError {
     case unsupportedProfile, tokenExpired, accountMismatch, accountChanged
