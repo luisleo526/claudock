@@ -73,7 +73,7 @@ struct ProfileManagerView: View {
                         if addKind == .apiKey {
                             HStack {
                                 Text("Key").foregroundStyle(.secondary)
-                                SecureField("sk-ant-api…", text: $apiKeyText).textFieldStyle(.roundedBorder)
+                                SecureField("sk-ant-…", text: $apiKeyText).textFieldStyle(.roundedBorder)
                                     .accessibilityLabel("Console API key")
                                     .accessibilityIdentifier("profileAPIKeyField")
                                     .onSubmit { save() }

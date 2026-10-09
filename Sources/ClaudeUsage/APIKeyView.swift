@@ -25,7 +25,7 @@ struct APIKeyView: View {
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("New API key").font(.callout.weight(.medium))
-                    SecureField("sk-ant-api…", text: $keyText)
+                    SecureField("sk-ant-…", text: $keyText)
                         .textFieldStyle(.roundedBorder)
                         .disabled(busy || isDemo)
                         .accessibilityLabel("New Console API key")
