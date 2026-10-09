@@ -17,6 +17,12 @@ struct AccountState: Identifiable, Equatable {
     /// A Console-login profile's organization from Claude Code's `.claude.json`: untrusted display text.
     var organization: String?
 
+    /// The subscription quota part of the row, kept by `UsageRow`'s rules.
+    var usage: UsageRow {
+        get { UsageRow(snapshot: snapshot, plan: plan, error: error, retryAt: retryAt) }
+        set { snapshot = newValue.snapshot; plan = newValue.plan; error = newValue.error; retryAt = newValue.retryAt }
+    }
+
     /// How a Console profile is billed, for display: "Console API key" or "Console login · ORGANIZATION".
     var consoleLabel: String? {
         switch profile.authKind {
@@ -29,15 +35,20 @@ struct AccountState: Identifiable, Equatable {
 
 struct AccountReading: Sendable {
     var email: String?
+    /// For a subscription profile without any reading, the plan its login names.
     var plan: SubscriptionPlan?
-    var snapshot: UsageSnapshot?
+    /// A subscription profile's quota.
+    var usage: UsageResult?
+    /// Why the profile has no subscription quota to read.
     var error: MonitorError?
     var credit: APICreditStatus?
     var creditError: String?
     var organization: String?
 }
 
-func readAccount(_ profile: Profile) async -> AccountReading {
+/// Subscription quota comes through `fetcher`, which reuses a reading younger than `maxAge` from the cache shared
+/// with `claudock usage` and requests nothing for a profile cooling down after HTTP 429.
+func readAccount(_ profile: Profile, fetcher: UsageFetcher, maxAge: TimeInterval) async -> AccountReading {
     if let note = profile.discoveryNote { return AccountReading(error: .unsupported(note)) }
     if profile.isVertex { return AccountReading(error: .unsupported("Vertex AI · billed through Google Cloud. Claude subscription limits do not apply.")) }
     // Billed per token: no Claude login or subscription limits to read, only the local credit ledger
@@ -47,14 +58,22 @@ func readAccount(_ profile: Profile) async -> AccountReading {
         do { return AccountReading(credit: try APICreditStore.status(profile: profile), organization: organization) }
         catch { return AccountReading(creditError: error.localizedDescription, organization: organization) }
     }
-    var result = AccountReading(email: CredentialStore.email(for: profile))
-    do {
-        let credentials = try CredentialStore.read(profile: profile)
-        result.plan = credentials.subscriptionPlan
-        result.snapshot = try await UsageClient.fetch(profile: profile, credentials: credentials)
-    } catch let error as MonitorError { result.error = error }
-    catch { result.error = .invalidResponse }
-    return result
+    let usage = await fetcher.reading(for: profile, maxAge: maxAge, fetch: subscriptionReading)
+    // Without any reading the plan still comes from the login.
+    var plan: SubscriptionPlan?
+    if case .failed = usage { plan = try? CredentialStore.read(profile: profile).subscriptionPlan }
+    return AccountReading(email: CredentialStore.email(for: profile), plan: plan, usage: usage)
+}
+
+/// The account and plan a row names while its profile cools down and nothing is requested for it.
+func accountDetails(_ profile: Profile, knownPlan: SubscriptionPlan?) -> (email: String?, plan: SubscriptionPlan?) {
+    (CredentialStore.email(for: profile), knownPlan ?? (try? CredentialStore.read(profile: profile).subscriptionPlan))
+}
+
+/// One quota request, renewing an expired or rejected access token once.
+@Sendable func subscriptionReading(_ profile: Profile) async throws -> UsageReading {
+    let credentials = try CredentialStore.read(profile: profile)
+    return UsageReading(plan: credentials.subscriptionPlan, snapshot: try await UsageClient.fetch(profile: profile, credentials: credentials))
 }
 
 @MainActor final class MonitorStore: ObservableObject {
@@ -200,29 +219,48 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 if let previous = accounts.first(where: { $0.profile == profile }) { return previous }
                 return AccountState(profile: profile)
             }
+            // Before any request, show what any Claudock process read last, at launch too, and its cooldowns.
+            let cached = await Task.detached(priority: .utility) { UsageCache.entries(for: profiles) }.value
+            for index in accounts.indices {
+                if let entry = cached[accounts[index].id] { accounts[index].usage.merge(entry) }
+            }
+            statusChanged?()
             loadAnalytics(force: manual)
-            // Stagger requests so a large collection of accounts does not burst.
+            // An automatic refresh reuses readings younger than half its interval; a manual one asks again. The
+            // fetcher spaces requests, also from `claudock usage`, so a large collection of accounts does not burst.
+            let fetcher = UsageFetcher()
+            let maxAge = manual ? 0 : interval / 2
             for profile in profiles {
                 guard let index = accounts.firstIndex(where: { $0.id == profile.id }) else { continue }
-                if let retry = accounts[index].retryAt, retry > Date() { continue }
+                if accounts[index].usage.isCoolingDown(at: Date()) {
+                    // Nothing is requested during a cooldown, but the row still names its account and plan.
+                    let plan = accounts[index].plan
+                    let details = await Task.detached(priority: .utility) { accountDetails(profile, knownPlan: plan) }.value
+                    accounts[index].email = details.email
+                    accounts[index].plan = details.plan
+                    continue
+                }
                 accounts[index].loading = true
                 let creditSave = creditSaves[profile.id]
-                let reading = await Task.detached(priority: .utility) { await readAccount(profile) }.value
+                let reading = await Task.detached(priority: .utility) { await readAccount(profile, fetcher: fetcher, maxAge: maxAge) }.value
                 accounts[index].loading = false
                 accounts[index].email = reading.email
-                accounts[index].plan = reading.plan ?? accounts[index].plan
-                accounts[index].error = reading.error
-                accounts[index].retryAt = nil
-                if case .rateLimited(let retry) = reading.error { accounts[index].retryAt = retry }
-                if let snapshot = reading.snapshot { accounts[index].snapshot = snapshot }
+                if let usage = reading.usage {
+                    accounts[index].usage.apply(usage)
+                    accounts[index].plan = accounts[index].plan ?? reading.plan
+                } else {
+                    accounts[index].plan = reading.plan ?? accounts[index].plan
+                    accounts[index].error = reading.error
+                    accounts[index].retryAt = nil
+                }
                 if creditSaves[profile.id] == creditSave {
                     accounts[index].credit = reading.credit
                     accounts[index].creditError = reading.creditError
                 }
                 accounts[index].organization = reading.organization
                 statusChanged?()
-                if !profile.isVertex && profile.authKind == .subscription { try? await Task.sleep(nanoseconds: 200_000_000) }
             }
+            await fetcher.finish()
             now = Date(); lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             refreshing = false; statusChanged?()
             if refreshPending { refreshPending = false; refresh() }

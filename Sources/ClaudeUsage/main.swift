@@ -50,20 +50,30 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
             }
             exit(0)
         }
+        // A diagnosis asks for new readings, still within cooldowns and the spacing of the shared fetch lock.
+        let fetcher = UsageFetcher()
         for profile in profiles {
             if discoverOnly {
                 let kind = profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login" : "subscription"
                 print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : kind))")
             } else {
-                let result = await Task.detached { await readAccount(profile) }.value
-                let windows = result.snapshot?.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
+                let result = await Task.detached { await readAccount(profile, fetcher: fetcher, maxAge: 0) }.value
+                var shown: UsageReading?, problem = result.error
+                switch result.usage {
+                case .current(let reading)?: shown = reading
+                case .cached(let reading, let error)?: shown = reading; problem = error
+                case .failed(let error)?: problem = error
+                case nil: break
+                }
+                let windows = shown?.snapshot.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
                 let console = profile.authKind == .apiKey ? "Console API key" : result.organization.map { "Console login · " + $0 } ?? "Console login"
                 let fallback = !profile.authKind.isConsole ? "Unavailable"
                     : result.credit.map { "\(console); \($0.usageWindow)" } ?? result.creditError ?? "\(console); billed per token, no credit set"
-                print("\(profile.command): \(windows ?? result.error?.localizedDescription ?? fallback)")
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                let stale = windows != nil ? problem.map { " (last reading: \($0.localizedDescription))" } ?? "" : ""
+                print("\(profile.command): \(windows ?? problem?.localizedDescription ?? fallback)\(stale)")
             }
         }
+        await fetcher.finish()
         exit(0)
     }
     RunLoop.main.run()
