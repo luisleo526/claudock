@@ -153,7 +153,7 @@ source ~/.config/claudock/init.zsh
 
 Once the new integration is loaded, profiles added in the GUI become available before your next command, including in an idle Terminal tab. Renames and removals update only shortcuts still owned by Claudock. Profile changes never rewrite `.zshrc`, and the GUI works without shell integration.
 
-Automatic renewal runs in the resident app. The one-shot `claudock usage` command reads quota without rotating credentials.
+Automatic renewal runs in the resident app. The one-shot `claudock usage` command reads quota without rotating credentials. It shares recent readings and rate-limit cooldowns with the app, so frequent checks do not each ask Claude; `claudock usage --fresh` asks again.
 
 [Shell setup, custom dotfiles, and command reference](docs/GUIDE.md#optional-shell-integration)
 
