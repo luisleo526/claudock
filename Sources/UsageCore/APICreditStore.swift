@@ -15,6 +15,8 @@ public enum APICreditStore {
     private static let startSlack: TimeInterval = 1
     /// A run that captured no event adopts only an entry that started this soon after the launch.
     private static let uncapturedStartWindow: TimeInterval = 10
+    /// How much longer than the launch a session's `lastDuration` may be and still be this launch's alone.
+    private static let durationSlack: TimeInterval = 2
 
     struct Ledger: Codable {
         var version = 1
@@ -80,7 +82,8 @@ public enum APICreditStore {
     /// Compares Claude Code's own session total in `.claude.json` (`claudeState`) with the requests captured for
     /// that session and records any shortfall as a `session-total` adjustment; never subtracts. An entry
     /// qualifies only when its `lastStartTime` falls inside this launch (`spawn`…`exit`) and after `asOf`:
-    /// a resumed session restores its earlier cost and start time, so its total is not this launch's alone.
+    /// a resumed session restores its earlier cost, start time, and duration, so its total is not this launch's alone,
+    /// and a `lastDuration` longer than the launch shows the same.
     /// It must also be a session this launch captured, or, when the launch captured nothing, the one entry
     /// that started within seconds of it. Re-checking the same session replaces its adjustment.
     @discardableResult
@@ -90,7 +93,10 @@ public enum APICreditStore {
         guard !entries.isEmpty else { return nil }
         return try withLedger(home: home, exclusive: true, createIfMissing: false) { ledger, changed in
             guard var account = ledger.profiles[profileID] else { return nil }
-            let started = entries.filter { $0.start >= spawn.addingTimeInterval(-startSlack) && $0.start <= exit && $0.start >= account.asOf }
+            let started = entries.filter {
+                $0.start >= spawn.addingTimeInterval(-startSlack) && $0.start <= exit && $0.start >= account.asOf
+                    && ($0.duration ?? 0) <= exit.timeIntervalSince(spawn) + durationSlack
+            }
             let chosen: [SessionTotal]
             if capturedSessions.isEmpty {
                 let near = started.filter { $0.start <= spawn.addingTimeInterval(uncapturedStartWindow) }
@@ -124,6 +130,8 @@ public enum APICreditStore {
         let session: String
         let start: Date
         let lastCost: Double
+        /// `lastDuration`, cumulative over the runs of a resumed session.
+        let duration: TimeInterval?
     }
 
     /// `projects[*]` entries of a `.claude.json` with a cost, a session, and a start time. The key is
@@ -135,8 +143,10 @@ public enum APICreditStore {
             guard let entry = value as? [String: Any], let session = entry["lastSessionId"] as? String, !session.isEmpty,
                   let cost = (entry["lastCost"] as? NSNumber)?.doubleValue, cost.isFinite, cost >= 0, cost < 1_000_000,
                   let start = (entry["lastStartTime"] as? NSNumber)?.doubleValue, start.isFinite, start > 0 else { return nil }
+            let duration = (entry["lastDuration"] as? NSNumber)?.doubleValue
             // Same millisecond precision as stored ledger dates.
-            return SessionTotal(session: session, start: Date(timeIntervalSince1970: start.rounded() / 1000), lastCost: cost)
+            return SessionTotal(session: session, start: Date(timeIntervalSince1970: start.rounded() / 1000), lastCost: cost,
+                                duration: duration.flatMap { $0.isFinite && $0 >= 0 ? $0 / 1000 : nil })
         }
     }
 
@@ -203,18 +213,25 @@ public enum APICreditStore {
     private static func read(_ file: URL) throws -> Ledger? {
         let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if descriptor < 0 {
-            if errno == ENOENT { return nil }
-            throw APICreditError.ledgerUnreadable
+            switch errno {
+            case ENOENT: return nil
+            // A symbolic link (refused by O_NOFOLLOW) is not a ledger.
+            case ELOOP: throw APICreditError.ledgerUnreadable
+            // Out of descriptors, I/O errors, permissions: the file may be fine, so it is never set aside for these.
+            default: throw APICreditError.ledgerUnavailable
+            }
         }
         defer { close(descriptor) }
         var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
-              info.st_size <= maximumBytes else { throw APICreditError.ledgerUnreadable }
+        guard fstat(descriptor, &info) == 0 else { throw APICreditError.ledgerUnavailable }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_size <= maximumBytes else {
+            throw APICreditError.ledgerUnreadable
+        }
         var data = Data(), buffer = [UInt8](repeating: 0, count: 65_536)
         while true {
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count < 0, errno == EINTR { continue }
-            guard count >= 0 else { throw APICreditError.ledgerUnreadable }
+            guard count >= 0 else { throw APICreditError.ledgerUnavailable }
             if count == 0 { break }
             data.append(contentsOf: buffer.prefix(count))
             guard data.count <= maximumBytes else { throw APICreditError.ledgerUnreadable }
@@ -248,7 +265,10 @@ public enum APICreditStore {
             }
             return true
         }
-        guard written, fsync(descriptor) == 0, close(descriptor) == 0 else { throw APICreditError.ledgerWriteFailed }
+        // Close in every case: a full disk must not leak a descriptor on each retry.
+        let synced = written && fsync(descriptor) == 0
+        let closed = close(descriptor) == 0
+        guard synced, closed else { throw APICreditError.ledgerWriteFailed }
         guard rename(temporary.path, file.path) == 0 else { throw APICreditError.ledgerWriteFailed }
         renamed = true
         let directory = open(base.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)

@@ -181,7 +181,9 @@ struct ProfileManagerView: View {
         switch status {
         case .apiKey(let saved):
             guard saved else { return "API key missing" }
-            guard let credit = store.accounts.first(where: { $0.profile == profile })?.credit else { return "Console API key · no credit set" }
+            let account = store.accounts.first(where: { $0.profile == profile })
+            if let error = account?.creditError { return "Console API key · " + error }
+            guard let credit = account?.credit else { return "Console API key · no credit set" }
             return "Console API key · \(credit.leftText) left of \(credit.balanceText) credit"
         case .token(.notConfigured): return "No inference token"
         case .token(.active(let expiry)):

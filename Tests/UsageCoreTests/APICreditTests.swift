@@ -64,8 +64,9 @@ final class APICreditTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: ["numStartups": 3, "projects": projects])
     }
 
-    private func entry(cost: Double, start: Date, session: String) -> [String: Any] {
-        ["lastCost": cost, "lastStartTime": Int((start.timeIntervalSince1970 * 1000).rounded()), "lastSessionId": session, "lastDuration": 1000]
+    private func entry(cost: Double, start: Date, session: String, durationMilliseconds: Int = 1000) -> [String: Any] {
+        ["lastCost": cost, "lastStartTime": Int((start.timeIntervalSince1970 * 1000).rounded()), "lastSessionId": session,
+         "lastDuration": durationMilliseconds]
     }
 
     // MARK: Amounts
@@ -254,6 +255,23 @@ final class APICreditTests: XCTestCase {
         }
     }
 
+    func testALedgerThatCannotBeOpenedNowIsNeverMovedAside() throws {
+        try withHome { home in
+            try APICreditStore.setBalance(100, profileID: "P", home: home, now: asOf)
+            try APICreditStore.setBalance(70, profileID: "Q", home: home, now: asOf)
+            XCTAssertEqual(chmod(ledger(home).path, 0), 0)
+            defer { chmod(ledger(home).path, 0o600) }
+            XCTAssertThrowsError(try APICreditStore.status(profileID: "P", home: home)) { XCTAssertEqual($0 as? APICreditError, .ledgerUnavailable) }
+            XCTAssertThrowsError(try APICreditStore.setBalance(50, profileID: "P", home: home, now: asOf.addingTimeInterval(1))) {
+                XCTAssertEqual($0 as? APICreditError, .ledgerUnavailable)
+            }
+            let directory = try FileManager.default.contentsOfDirectory(atPath: ProfileStore.directory(home: home).path)
+            XCTAssertFalse(directory.contains { $0.hasPrefix("api-credit.unreadable-") }, "a transient failure keeps the ledger in place")
+            XCTAssertEqual(chmod(ledger(home).path, 0o600), 0)
+            XCTAssertEqual(try APICreditStore.status(profileID: "Q", home: home)?.balance, 70)
+        }
+    }
+
     // MARK: Session-total cross-check
 
     func testALargerSessionTotalAddsTheDifferenceOnce() throws {
@@ -285,6 +303,8 @@ final class APICreditTests: XCTestCase {
                 ("resumed session started before the run", ["/w": entry(cost: 2, start: spawn.addingTimeInterval(-3600), session: "S")], ["S"]),
                 ("started after the run", ["/w": entry(cost: 2, start: exit.addingTimeInterval(5), session: "S")], ["S"]),
                 ("another process's session", ["/w": entry(cost: 2, start: spawn.addingTimeInterval(1), session: "T")], ["S"]),
+                ("a session total that lasted longer than the launch", ["/w": entry(cost: 2, start: spawn.addingTimeInterval(1), session: "S",
+                                                                                   durationMilliseconds: 3_600_000)], ["S"]),
                 ("no cost recorded", ["/w": ["lastSessionId": "S", "lastStartTime": Int(spawn.timeIntervalSince1970 * 1000) + 10]], ["S"])]
             for (label, projects, captured) in cases {
                 let adjustment = try APICreditStore.reconcile(profileID: "P", home: home, claudeState: try claudeState(projects),
@@ -447,6 +467,7 @@ final class APICreditTests: XCTestCase {
             ("text/plain", post(Data(#"{"c":3}"#.utf8), headers: "Content-Type: text/plain\r\n"), "415"),
             ("a GET", Data("GET \(receiver.path) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8), "404"),
             ("an empty chunk size", post(Data(), chunks: ["\r\n", "{}\r\n0\r\n\r\n"]), "413"),
+            ("a chunk size that overflows the total", post(Data(), chunks: ["1\r\n{\r\n", "7fffffffffffffff\r\n}\r\n0\r\n\r\n"]), "413"),
             ("no request line", Data("\r\n\r\n".utf8), "400")]
         for (label, request, status) in refused {
             let socket = connection()

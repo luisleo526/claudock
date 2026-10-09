@@ -105,6 +105,8 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     private let analyticsCache = SessionAnalyticsCache(url: SessionAnalyticsCache.defaultURL, writeInterval: 3 * 3600)
     private var analyticsProfiles: [Profile] = []
     private var refreshPending = false
+    /// Bumped when Set credit… saves, so a refresh that read the ledger before the save does not show the old credit.
+    private var creditSaves: [String: Int] = [:]
 
     var sortedAccounts: [AccountState] {
         if !sortByUsage { return accounts }
@@ -189,6 +191,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 guard let index = accounts.firstIndex(where: { $0.id == profile.id }) else { continue }
                 if let retry = accounts[index].retryAt, retry > Date() { continue }
                 accounts[index].loading = true
+                let creditSave = creditSaves[profile.id]
                 let reading = await Task.detached(priority: .utility) { await readAccount(profile) }.value
                 accounts[index].loading = false
                 accounts[index].email = reading.email
@@ -197,8 +200,10 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 accounts[index].retryAt = nil
                 if case .rateLimited(let retry) = reading.error { accounts[index].retryAt = retry }
                 if let snapshot = reading.snapshot { accounts[index].snapshot = snapshot }
-                accounts[index].credit = reading.credit
-                accounts[index].creditError = reading.creditError
+                if creditSaves[profile.id] == creditSave {
+                    accounts[index].credit = reading.credit
+                    accounts[index].creditError = reading.creditError
+                }
                 statusChanged?()
                 if !profile.isVertex && profile.authKind == .subscription { try? await Task.sleep(nanoseconds: 200_000_000) }
             }
@@ -210,6 +215,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     /// Records an API-key profile's remaining Console credit as of now and shows it right away.
     func setCredit(_ amount: Decimal, profile: Profile) async throws -> APICreditStatus {
         let credit = try await Task.detached(priority: .userInitiated) { try APICreditStore.setBalance(amount, profile: profile) }.value
+        creditSaves[profile.id, default: 0] += 1
         if let index = accounts.firstIndex(where: { $0.profile == profile }) {
             accounts[index].credit = credit
             accounts[index].creditError = nil
