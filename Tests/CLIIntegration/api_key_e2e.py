@@ -22,7 +22,8 @@ from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_c
 
 PROMPT = b"Console API key: "
 USAGE_HEADER = "PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC\n"
-SKIP_LINE = "claudock: {}: skipped; Console API key profiles are billed per token and have no subscription limits.\n"
+SKIP_LINE = ("claudock: {0}: skipped; Console API key profiles are billed per token and have no subscription limits. "
+             "Set its balance with: claudock profile set-credit {0} AMOUNT\n")
 
 
 def synthetic(prefix="sk-ant-api03-"):

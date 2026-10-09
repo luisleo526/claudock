@@ -35,6 +35,7 @@ private enum CLIError: LocalizedError {
 private enum Command {
     case help, version, list, importShell
     case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
+    case setCredit(String, Decimal)
     case rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
     /// nil prints the current setting.
@@ -78,6 +79,9 @@ private enum Command {
             case "setup-token" where arguments.count > 3:
                 throw CLIError.arguments("profile setup-token takes only a profile name: claudock profile setup-token NAME.")
             case "tokens" where arguments.count == 2: return .tokens
+            case "set-credit" where arguments.count == 4: return .setCredit(try name(arguments[2]), try creditAmount(arguments[3]))
+            case "set-credit" where arguments.count > 2:
+                throw CLIError.arguments("profile set-credit takes a profile name and an amount in US dollars: claudock profile set-credit NAME AMOUNT.")
             case "rename" where arguments.count == 4: return .rename(try name(arguments[2]), try newName(arguments[3]))
             case "remove" where arguments.count == 3: return .remove(try name(arguments[2]))
             case "login" where arguments.count == 3: return .login(try name(arguments[2]))
@@ -134,6 +138,12 @@ private enum Command {
             if let date = formatter.date(from: value) { return date }
         }
         throw CLIError.arguments("--expires needs an ISO 8601 date, such as 2026-12-31 or 2026-12-31T23:59:59Z.")
+    }
+
+    /// The remaining Console credit in US dollars; the input is never echoed.
+    private static func creditAmount(_ value: String) throws -> Decimal {
+        do { return try APICreditAmount.parse(value) }
+        catch { throw CLIError.arguments(APICreditError.invalidAmount.localizedDescription) }
     }
 
     /// A Claude key or token typed where a profile name belongs must not be echoed in an error.
@@ -222,6 +232,13 @@ private struct ClaudockCLI {
             try launch(profile: profile, arguments: ["setup-token"], signIn: true,
                        notice: "Sign the browser in to the claude.ai account for \(profile.name) first. "
                            + "When the token is shown, save it with: pbpaste | claudock profile set-token \(profile.name)")
+        case .setCredit(let name, let amount):
+            let profile = try resolve(name)
+            guard profile.authKind == .apiKey else { throw APICreditError.subscriptionProfile(profile.name) }
+            let credit = try APICreditStore.setBalance(amount, profile: profile)
+            print("Set \(profile.name)'s Console credit to \(credit.balanceText) as of \(ISO8601DateFormatter().string(from: credit.asOf)). "
+                  + "'claudock usage' shows what is left after the Claude Code sessions Claudock starts on this Mac; "
+                  + "set it again from the Console balance any time.")
         case .tokens:
             let profiles = try ProfileStore.load()
             print("PROFILE\tTOKEN_STATUS\tEXPIRES_UTC")
@@ -340,6 +357,17 @@ private struct ClaudockCLI {
             throw CLIError.launchFailed(ENOMEM)
         }
         if let notice { FileHandle.standardError.write(Data((field(notice) + "\n").utf8)) }
+        if case .consoleAPIKey = credential {
+            // A child process instead of execve: Claude Code reports each request's cost to Claudock while it runs.
+            do {
+                exit(try APICreditLaunch.run(profile: profile, executable: executable, arguments: arguments, environment: environment,
+                                             warn: writeError))
+            } catch APICreditLaunchError.receiverUnavailable {
+                writeError("Could not start Claudock's local usage receiver; this run's spend is not counted toward the Console credit.")
+            } catch APICreditLaunchError.launchFailed(let code) {
+                throw CLIError.launchFailed(code)
+            }
+        }
         _ = argv.withUnsafeBufferPointer { arguments in
             envp.withUnsafeBufferPointer { variables in
                 execve(executable, arguments.baseAddress!, variables.baseAddress!)
@@ -375,7 +403,17 @@ private struct ClaudockCLI {
                 continue
             }
             guard profile.authKind == .subscription else {
-                writeError("\(field(profile.name)): skipped; Console API key profiles are billed per token and have no subscription limits.")
+                do {
+                    if let credit = try APICreditStore.status(profile: profile) {
+                        print([profile.name, APICreditStatus.plan, credit.usageWindow, credit.usedPercentText, "-"].map(field).joined(separator: "\t"))
+                    } else {
+                        writeError("\(field(profile.name)): skipped; Console API key profiles are billed per token and have no subscription limits. "
+                                   + "Set its balance with: claudock profile set-credit \(profile.name) AMOUNT")
+                    }
+                } catch {
+                    failed = true
+                    writeError("\(field(profile.name)): \(error.localizedDescription)")
+                }
                 continue
             }
             do {
@@ -409,6 +447,7 @@ private struct ClaudockCLI {
       claudock profile add NAME [--directory ABS_PATH]
       claudock profile add NAME --api-key [--directory ABS_PATH]
       claudock profile set-key NAME
+      claudock profile set-credit NAME AMOUNT
       claudock profile set-token NAME [--expires ISO8601_DATE]
       claudock profile setup-token NAME
       claudock profile tokens
@@ -429,8 +468,9 @@ private struct ClaudockCLI {
     Selectors are profile identifiers; they do not create shell commands.
     'run', 'profile login', and 'profile setup-token' use the current terminal and
     working directory.
-    'usage' requests subscription quota once for each supported profile; output
-    is tab-separated and contains no account emails or credentials.
+    'usage' requests subscription quota once for each supported profile and
+    lists the Console credit left on API-key profiles; output is tab-separated
+    and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
     loader; disable removes only that integration. Existing wrappers stay intact.
 
@@ -440,7 +480,17 @@ private struct ClaudockCLI {
     standard input, never from arguments: at a terminal Claudock prompts without
     echoing, otherwise it reads the piped input. Keys are stored only in the
     macOS Keychain and reach Claude as ANTHROPIC_API_KEY. The first interactive
-    launch asks whether to use the key; choose Yes. 'usage' skips these profiles.
+    launch asks whether to use the key; choose Yes.
+
+    Console credit: 'profile set-credit NAME AMOUNT' records the remaining
+    prepaid credit shown in the Claude Console for an API-key profile, in US
+    dollars (such as 200 or 187.42). 'usage' then lists what is left, less the
+    cost Claude Code reports for each request in sessions Claudock starts on
+    this Mac; for that, these launches run Claude as a child of claudock with
+    OpenTelemetry log export to 127.0.0.1. Use of the same key elsewhere (other
+    Macs, scripts, other tools) is not seen. The Console balance is
+    authoritative: set it again any time. Without a credit, 'usage' skips the
+    profile.
 
     Inference tokens: 'profile set-token NAME' saves a long-lived Claude Code
     OAuth token (sk-ant-oat01-…, or its export CLAUDE_CODE_OAUTH_TOKEN=… line)
@@ -467,6 +517,7 @@ private struct ClaudockCLI {
       claude-work                    After enabling shell integration
       claudock run work -- --resume
       pbpaste | claudock profile add console --api-key
+      claudock profile set-credit console 187.42
       claudock run console -- --resume
     """
 }
