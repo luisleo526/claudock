@@ -84,7 +84,9 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "add", "bad name"], 2), (["profile", "add", "work", "--directory", "relative"], 2),
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
              (["profile", "add", "auto"], 2), (["profile", "rename", "smoke", "AUTO"], 2),
-             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2)]
+             (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
+             (["profile", "setup-token"], 2), (["profile", "setup-token", "smoke", "extra"], 2),
+             (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
@@ -134,6 +136,25 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in json.loads(result.stdout)["env"]
     passed.append("relogin is isolated from stored mint")
 
+    # `profile setup-token` is the sign-in path with Claude's setup-token: the profile's own login, never a saved credential.
+    setup_hint = ("Sign the browser in to the claude.ai account for smoke first. "
+                  "When the token is shown, save it with: pbpaste | claudock profile set-token smoke\n")
+    for label, extra in (("a stored mint", {"CLAUDOCK_TEST_MINT": "1"}),
+                         ("a required token", {"CLAUDOCK_TEST_REQUIRE_TOKEN": "1", "CLAUDOCK_TEST_MINT": "1"}),
+                         ("a saved token of another account", {"CLAUDOCK_TEST_ACCOUNT_MISMATCH": "mismatch"})):
+        marker.unlink(missing_ok=True)
+        result = run(["profile", "setup-token", "smoke"], {**conflicts, **extra})
+        assert result.returncode == 0 and json.loads(result.stdout)["argv"] == ["setup-token"], (label, result.stderr)
+        assert json.loads(result.stdout)["env"] == {"CLAUDE_CONFIG_DIR": "/synthetic/account space"}, (label, "setup-token must run on the profile's own login")
+        assert result.stderr == setup_hint, (label, result.stderr)
+        assert marker.read_text() == "profile store", (label, "setup-token must read only the profile registry")
+        passed.append("profile setup-token runs on the profile's own login despite " + label)
+    # The Vertex profile resolves, so this fails inside launch's own profile validation, just before it would exec.
+    result = run(["profile", "setup-token", "vertex"])
+    assert result.returncode == 1 and not result.stdout and "cannot be launched safely" in result.stderr, result.stderr
+    assert "Sign the browser in" not in result.stderr, "the hint must wait until Claude is about to run"
+    passed.append("profile setup-token prints its hint only when it is about to run Claude")
+
     # A synthetic inference-token requirement: launches need a token; sign-in and setup-token do not.
     required = {**conflicts, "CLAUDOCK_TEST_REQUIRE_TOKEN": "1"}
     for arguments in (["run", "smoke", "--", "--resume"], ["launch-bound", "fixture-stable", "Claude Code-credentials-aabbccdd", "run", "--", "--resume", "fixture.jsonl"]):
@@ -159,6 +180,27 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
         marker.unlink(missing_ok=True)
         assert run(arguments).returncode == 2 and not marker.exists(), arguments
     passed.append("require-token argument errors before any I/O")
+
+    # A saved token that belongs to another account stops run and the app's launches with guidance, never sign-in or setup-token.
+    mismatch = ("claudock: smoke's saved inference token belongs to a different account than its current Claude login. "
+                "Sign in with the token's account: claudock profile login smoke — or make a new token: "
+                "claudock profile setup-token smoke, then pbpaste | claudock profile set-token smoke.\n")
+    for kind in ("mismatch", "changed"):
+        for arguments in (["run", "smoke", "--", "--resume"],
+                          ["launch-bound", "fixture-stable", "Claude Code-credentials-aabbccdd", "run", "--", "--resume", "fixture.jsonl"]):
+            result = run(arguments, {**conflicts, "CLAUDOCK_TEST_ACCOUNT_MISMATCH": kind})
+            assert result.returncode == 1 and not result.stdout and result.stderr == mismatch, (kind, arguments, result.stderr)
+    passed.append("a saved token of another account stops run and app launches with guidance")
+    # With the requirement on, the policy reports any unreadable token as a missing one, so the guidance does not apply.
+    for kind in ("mismatch", "changed"):
+        result = run(["run", "smoke", "--", "--resume"], {**required, "CLAUDOCK_TEST_ACCOUNT_MISMATCH": kind})
+        assert result.returncode == 1 and not result.stdout and "Synthetic token requirement" in result.stderr, (kind, result.stderr)
+    passed.append("a required token that cannot be read is refused as missing")
+    for arguments, argv in ((["profile", "login", "smoke"], ["auth", "login", "--claudeai"]),
+                            (["run", "smoke", "--", "setup-token"], ["setup-token"])):
+        result = run(arguments, {**conflicts, "CLAUDOCK_TEST_ACCOUNT_MISMATCH": "mismatch"})
+        assert result.returncode == 0 and json.loads(result.stdout)["argv"] == argv, (arguments, result.stderr)
+    passed.append("sign-in and run NAME -- setup-token ignore a saved token of another account")
 
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout

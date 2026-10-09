@@ -11,6 +11,7 @@ endpoint, or Claude executable is used.
 """
 
 import json
+from pathlib import Path
 import secrets
 import sys
 
@@ -21,10 +22,37 @@ from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_c
 
 PROMPT = b"Inference token: "
 HEADER = "PROFILE\tTOKEN_STATUS\tEXPIRES_UTC\n"
+# Synthetic logins for a profile's .claude.json. They share an organization, so only the account differs.
+ACCOUNT_A = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+ACCOUNT_B = ("33333333-3333-4333-8333-333333333333", "22222222-2222-4222-8222-222222222222")
 
 
 def synthetic(prefix="sk-ant-oat01-"):
     return prefix + secrets.token_urlsafe(48)
+
+
+def setup_token_hint(name):
+    return (f"Sign the browser in to the claude.ai account for {name} first. "
+            f"When the token is shown, save it with: pbpaste | claudock profile set-token {name}\n")
+
+
+def token_required_error(name):
+    return (f"claudock: {name} has no valid inference token and Claudock requires one. Create one with "
+            f"'claudock profile setup-token {name}', then 'pbpaste | claudock profile set-token {name}'.\n")
+
+
+def mismatch_error(name):
+    return (f"claudock: {name}'s saved inference token belongs to a different account than its current Claude login. "
+            f"Sign in with the token's account: claudock profile login {name} — or make a new token: "
+            f"claudock profile setup-token {name}, then pbpaste | claudock profile set-token {name}.\n")
+
+
+def sign_in_as(sandbox, name, account):
+    """Records a Claude login for the profile the way Claude Code does: the account in its own .claude.json."""
+    directory = Path(sandbox.listed()[name]["configDirectory"]).resolve()
+    if sandbox.base not in directory.parents:
+        raise AssertionError(f"refusing to write a login outside the sandbox: {directory}")
+    (directory / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account[0], "organizationUuid": account[1]}}))
 
 
 def token_rows(sandbox, checks, secret=None):
@@ -66,6 +94,8 @@ def tokens_from_stdin(sandbox, checks):
     result = sandbox.run("run", "work")
     checks.expect(result.returncode == 1 and "has expired" in result.stderr, "run must fail on an expired token", result)
     checks.expect("claudock profile set-token work" in result.stderr, "the expired-token message must name set-token", result)
+    checks.expect("claudock profile setup-token work" in result.stderr and "run work -- setup-token" not in result.stderr,
+                  "the expired-token message must recommend profile setup-token", result)
     checks.expect(sandbox.record() is None, "an expired token must not launch claude")
     checks.done("an expired token makes run fail with the expired-token message")
 
@@ -148,13 +178,11 @@ def require_token_policy(sandbox, checks, api_key):
     checks.expect(result.returncode == 0 and result.stdout == "on\n", "require-token status must print on", result)
     checks.done("require-token on sets the shared preference")
 
-    def refused(name):
-        return (f"claudock: {name} has no valid inference token and Claudock requires one. Create one with "
-                f"'claudock run {name} -- setup-token', then 'pbpaste | claudock profile set-token {name}'.\n")
     for arguments in (("run", "bare"), ("run", "bare", "--", "--resume", "abc"),
                       ("launch-bound", sandbox.registry_id("bare"), credential_service(bare), "run", "--", "--resume", "abc")):
         result = sandbox.run(*arguments)
-        checks.expect(result.returncode == 1 and result.stderr == refused("bare"), f"{arguments[0]} without a token must be refused", result)
+        checks.expect(result.returncode == 1 and result.stderr == token_required_error("bare"),
+                      f"{arguments[0]} without a token must be refused", result)
         checks.expect(sandbox.record() is None, "a refused launch must not run claude")
     checks.done("policy on: no token refuses run, Open in Terminal, and Continue as…")
 
@@ -167,7 +195,7 @@ def require_token_policy(sandbox, checks, api_key):
     result = sandbox.run("profile", "set-token", "work", "--expires", "2001-01-01T00:00:00Z", stdin=synthetic())
     checks.expect(result.returncode == 0, "set-token must accept an expired token", result)
     result = sandbox.run("run", "work")
-    checks.expect(result.returncode == 1 and result.stderr == refused("work"), "policy on: an expired token must be refused", result)
+    checks.expect(result.returncode == 1 and result.stderr == token_required_error("work"), "policy on: an expired token must be refused", result)
     checks.expect(sandbox.record() is None, "an expired token must not run claude")
     checks.done("policy on: an expired token is refused")
 
@@ -216,11 +244,141 @@ def require_token_policy(sandbox, checks, api_key):
     checks.done("policy off: an expired token does not block setup-token")
 
 
+def setup_token_launch(sandbox, checks, name, state, extra=None):
+    """`profile setup-token NAME` must hand Claude exactly `setup-token`, on the profile's own login."""
+    result = sandbox.run("profile", "setup-token", name, extra=extra)
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None, f"profile setup-token {name} must run claude {state}", result)
+    checks.expect(record["argv"] == ["setup-token"], f"claude must get exactly ['setup-token'] {state}, got {record['argv']!r}")
+    checks.expect(result.stdout == "" and result.stderr == setup_token_hint(name),
+                  f"profile setup-token must print only its hint on stderr {state}", result)
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        checks.expect(key not in record["env"], f"{key} must not reach setup-token {state}")
+    return record
+
+
+def setup_token_command(sandbox, checks):
+    work = sandbox.listed()["work"]
+    saved = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=saved)
+    checks.expect(result.returncode == 0, "the setup-token checks need a saved token", result)
+    conflicts = {"ANTHROPIC_API_KEY": "synthetic-parent-api-key", "ANTHROPIC_AUTH_TOKEN": "synthetic-parent-auth-token",
+                 "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-parent-oauth-token", "CLAUDE_CONFIG_DIR": "/synthetic/other-profile",
+                 "E2E_UNRELATED": "kept"}
+    record = setup_token_launch(sandbox, checks, "work", "with a saved token", extra=conflicts)
+    checks.expect(record["env"].get("CLAUDE_CONFIG_DIR") == work["configDirectory"],
+                  "setup-token must run in the profile's own config folder")
+    checks.expect(record["env"].get("E2E_UNRELATED") == "kept" and record["cwd"] == str(sandbox.base),
+                  "setup-token must keep unrelated variables and the working directory")
+    checks.expect(saved not in json.dumps(record), "the saved token must not reach setup-token")
+    checks.expect(launched_token(sandbox, checks, "work") == saved, "setup-token must leave the saved token in place")
+    checks.done("profile setup-token runs setup-token on the profile's own login, apart from the saved token")
+
+    result = sandbox.run("profile", "set-token", "work", "--expires", "2001-01-01T00:00:00Z", stdin=synthetic())
+    checks.expect(result.returncode == 0, "set-token must accept an expired token", result)
+    result = sandbox.run("run", "work")
+    checks.expect(result.returncode == 1 and "has expired" in result.stderr and sandbox.record() is None,
+                  "run must still refuse the expired token", result)
+    setup_token_launch(sandbox, checks, "work", "with an expired saved token")
+    checks.done("profile setup-token runs although the saved token has expired")
+
+    result = sandbox.run("profile", "add", "fresh")
+    checks.expect(result.returncode == 0, "the policy check needs a subscription profile without a token", result)
+    sandbox.track(inference_service(sandbox.listed()["fresh"]))
+    result = sandbox.run("require-token", "on")
+    checks.expect(result.returncode == 0, "require-token on must succeed", result)
+    for name, state in (("work", "with an expired saved token while the policy is on"),
+                        ("fresh", "without a token while the policy is on")):
+        setup_token_launch(sandbox, checks, name, state)
+    result = sandbox.run("run", "fresh")
+    checks.expect(result.returncode == 1 and result.stderr == token_required_error("fresh") and sandbox.record() is None,
+                  "the policy must still refuse run without a token", result)
+    result = sandbox.run("require-token", "off")
+    checks.expect(result.returncode == 0 and not read_policy_preference(), "require-token off must clear the shared preference", result)
+    checks.done("profile setup-token runs while the policy is on")
+
+
+def account_mismatch(sandbox, checks):
+    """A pasted token remembers the login it was saved under. Once the login moves to another account, launches
+    stop with guidance and every way out stays available."""
+    work = sandbox.listed()["work"]
+    sign_in_as(sandbox, "work", ACCOUNT_A)
+    bound = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=bound)
+    checks.expect(result.returncode == 0, "the mismatch checks need a token saved under account A", result)
+    checks.expect(launched_token(sandbox, checks, "work") == bound, "the token must launch while the login still matches")
+    sign_in_as(sandbox, "work", ACCOUNT_B)
+
+    for label, arguments in (("run", ("run", "work")), ("run with arguments", ("run", "work", "--", "--resume", "abc")),
+                             ("launch-bound", ("launch-bound", sandbox.registry_id("work"), credential_service(work), "run", "--", "--resume", "abc")),
+                             ("run with a flag before setup-token", ("run", "work", "--", "--dangerously-skip-permissions", "setup-token"))):
+        result = sandbox.run(*arguments)
+        checks.expect(result.returncode == 1 and result.stdout == "" and result.stderr == mismatch_error("work"),
+                      f"{label} must stop with the account guidance", result)
+        checks.expect(sandbox.record() is None, f"{label} must not run claude")
+        checks.expect(bound not in result.stdout + result.stderr, f"{label} must not print the token")
+    checks.done("run and launch-bound stop with guidance when the token belongs to another account")
+
+    setup_token_launch(sandbox, checks, "work", "when the saved token belongs to another account")
+    result = sandbox.run("run", "work", "--", "setup-token")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and record["argv"] == ["setup-token"]
+                  and "CLAUDE_CODE_OAUTH_TOKEN" not in record["env"], "run NAME -- setup-token must still run", result)
+    result = sandbox.run("profile", "login", "work")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and record["argv"] == ["auth", "login", "--claudeai"],
+                  "profile login must still run", result)
+    result = sandbox.run("require-token", "on")
+    checks.expect(result.returncode == 0, "require-token on must succeed", result)
+    setup_token_launch(sandbox, checks, "work", "when the saved token belongs to another account while the policy is on")
+    result = sandbox.run("run", "work")
+    checks.expect(result.returncode == 1 and result.stderr == token_required_error("work") and sandbox.record() is None,
+                  "with the policy on, a token of another account is refused like any invalid token", result)
+    result = sandbox.run("require-token", "off")
+    checks.expect(result.returncode == 0 and not read_policy_preference(), "require-token off must clear the shared preference", result)
+    checks.done("setup-token, run -- setup-token, and login stay available when the token belongs to another account")
+
+    sign_in_as(sandbox, "work", ACCOUNT_A)
+    checks.expect(launched_token(sandbox, checks, "work") == bound, "signing in with the token's account must make the token usable again")
+    sign_in_as(sandbox, "work", ACCOUNT_B)
+    replacement = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=replacement)
+    checks.expect(result.returncode == 0, "set-token must replace a token that belongs to another account", result)
+    checks.expect(launched_token(sandbox, checks, "work") == replacement, "the replacement token must launch under the current login")
+    checks.done("signing in with the token's account, or saving a new token, makes run work again")
+
+
+def setup_token_rejections(sandbox, checks):
+    result = sandbox.run("profile", "setup-token", "console")
+    checks.expect(result.returncode == 1 and "Console API key" in result.stderr and "Inference tokens are only for" in result.stderr,
+                  "profile setup-token must refuse an API-key profile", result)
+    checks.expect(sandbox.record() is None and "Sign the browser in" not in result.stderr, "a refused profile must not run claude or print the hint")
+    result = sandbox.run("profile", "setup-token", "default")
+    checks.expect(result.returncode == 1 and "cannot be launched safely" in result.stderr and sandbox.record() is None
+                  and "Sign the browser in" not in result.stderr, "profile setup-token must refuse an unresolved profile", result)
+    checks.done("profile setup-token refuses API-key and unresolved profiles")
+
+    value = synthetic()
+    for arguments in (("profile", "setup-token"), ("profile", "setup-token", "work", "extra"),
+                      ("profile", "setup-token", "work", "--expires", "2099-01-01"),
+                      ("profile", "setup-token", "work", value), ("profile", "setup-token", value)):
+        result = sandbox.run(*arguments, stdin=value)
+        checks.expect(result.returncode == 2, f"{' '.join(arguments[:4])} must be a usage error", result)
+        checks.expect(value not in result.stdout + result.stderr, "a usage error must not echo a token")
+        checks.expect(sandbox.record() is None, "a usage error must not run claude")
+        if len(arguments) > 3:
+            checks.expect("claudock profile setup-token NAME" in result.stderr, "extra arguments must get the setup-token usage", result)
+    checks.done("profile setup-token takes only a profile name")
+
+
 def help_text(sandbox, checks):
     result = sandbox.run("help")
-    for text in ("profile set-token NAME [--expires ISO8601_DATE]", "profile tokens", "claudock run NAME -- setup-token",
+    for text in ("profile set-token NAME [--expires ISO8601_DATE]", "profile tokens", "run NAME -- setup-token",
                  "pbpaste | claudock profile set-token NAME", "require-token on|off|status"):
         checks.expect(text in result.stdout, f"help must document {text!r}", result)
+    checks.expect(result.stdout.count("claudock profile setup-token NAME") >= 2,
+                  "help must list profile setup-token in its usage and in the token flow", result)
+    checks.expect("claudock run NAME -- setup-token" not in result.stdout, "help must recommend profile setup-token instead", result)
     checks.done("help documents set-token, tokens, and the setup-token flow")
 
 
@@ -249,6 +407,9 @@ def main():
         rejections(sandbox, checks, stored)
         terminal_prompt(sandbox, checks)
         require_token_policy(sandbox, checks, api_key)
+        setup_token_command(sandbox, checks)
+        account_mismatch(sandbox, checks)
+        setup_token_rejections(sandbox, checks)
         help_text(sandbox, checks)
     except AssertionError as error:
         failure = str(error)

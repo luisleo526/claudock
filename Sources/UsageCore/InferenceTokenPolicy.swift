@@ -17,7 +17,7 @@ public enum InferenceTokenPolicyError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .tokenRequired(let name):
-            return "\(name) has no valid inference token and Claudock requires one. Create one with 'claudock run \(name) -- setup-token', then 'pbpaste | claudock profile set-token \(name)'."
+            return "\(name) has no valid inference token and Claudock requires one. Create one with 'claudock profile setup-token \(name)', then 'pbpaste | claudock profile set-token \(name)'."
         case .preferenceNotSaved: return "Claudock could not save the inference token requirement. Try again."
         }
     }

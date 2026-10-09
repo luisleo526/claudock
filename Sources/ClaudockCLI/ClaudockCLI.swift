@@ -5,6 +5,7 @@ import UsageCore
 private enum CLIError: LocalizedError {
     case arguments(String), missingProfile(String), ambiguousProfile(String), missingExecutable, missingOwnExecutable, launchFailed(Int32), invalidEnvironment
     case input(String), missingAPIKey(String), apiKeySignIn(String), subscriptionKey(String), apiKeyToken(String), expiredToken(String)
+    case tokenAccountMismatch(String)
 
     var errorDescription: String? {
         switch self {
@@ -20,7 +21,12 @@ private enum CLIError: LocalizedError {
         case .apiKeySignIn(let name): return "'\(name)' uses a Console API key and has no Claude sign-in. Replace its key with: claudock profile set-key \(name)"
         case .subscriptionKey(let name): return "'\(name)' is a Claude subscription profile. Only profiles added with 'claudock profile add NAME --api-key' store a Console API key."
         case .apiKeyToken(let name): return "'\(name)' uses a Console API key. Inference tokens are only for Claude subscription profiles."
-        case .expiredToken(let name): return "The inference token saved for '\(name)' has expired. Replace it with: claudock profile set-token \(name)"
+        case .expiredToken(let name):
+            return "The inference token saved for '\(name)' has expired. Make a new one: claudock profile setup-token \(name), then pbpaste | claudock profile set-token \(name)."
+        case .tokenAccountMismatch(let name):
+            return "\(name)'s saved inference token belongs to a different account than its current Claude login. "
+                + "Sign in with the token's account: claudock profile login \(name) — or make a new token: "
+                + "claudock profile setup-token \(name), then pbpaste | claudock profile set-token \(name)."
         }
     }
 }
@@ -28,7 +34,7 @@ private enum CLIError: LocalizedError {
 /// Validate the complete command before reading profiles, credentials, or shell files.
 private enum Command {
     case help, version, list, importShell
-    case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), tokens
+    case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
     case rename(String, String), remove(String), login(String), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
     /// nil prints the current setting.
@@ -68,6 +74,9 @@ private enum Command {
             case "set-token" where arguments.count == 5 && arguments[3] == "--expires": return .setToken(try name(arguments[2]), try expiry(arguments[4]))
             case "set-token" where arguments.count > 3:
                 throw CLIError.arguments("The token is read from standard input, never from arguments: claudock profile set-token NAME [--expires ISO8601_DATE].")
+            case "setup-token" where arguments.count == 3: return .setupToken(try name(arguments[2]))
+            case "setup-token" where arguments.count > 3:
+                throw CLIError.arguments("profile setup-token takes only a profile name: claudock profile setup-token NAME.")
             case "tokens" where arguments.count == 2: return .tokens
             case "rename" where arguments.count == 4: return .rename(try name(arguments[2]), try newName(arguments[3]))
             case "remove" where arguments.count == 3: return .remove(try name(arguments[2]))
@@ -206,6 +215,13 @@ private struct ClaudockCLI {
             let token = try MintTokenStore.importToken(raw: SecretInput.read(prompt: "Inference token: "), profile: profile, expiresAt: expiry)
             print("Saved an inference token for \(profile.name) in Keychain; 'claudock run \(profile.name)' uses it. "
                   + "Expires: \(token.expiresAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"). Its account is not verified.")
+        case .setupToken(let name):
+            let profile = try resolve(name)
+            guard profile.authKind == .subscription else { throw CLIError.apiKeyToken(profile.name) }
+            // Runs like sign-in, on the profile's own login: the saved token and the token requirement play no part.
+            try launch(profile: profile, arguments: ["setup-token"], signIn: true,
+                       notice: "Sign the browser in to the claude.ai account for \(profile.name) first. "
+                           + "When the token is shown, save it with: pbpaste | claudock profile set-token \(profile.name)")
         case .tokens:
             let profiles = try ProfileStore.load()
             print("PROFILE\tTOKEN_STATUS\tEXPIRES_UTC")
@@ -290,13 +306,16 @@ private struct ClaudockCLI {
         return profile
     }
 
-    /// Sign-in runs on the profile's own login and is never subject to the inference-token requirement.
-    private static func launch(profile: Profile, arguments: [String], signIn: Bool = false) throws {
+    /// Sign-in and token creation (`signIn`) run on the profile's own login and are never subject to the inference-token
+    /// requirement. A `notice` goes to stderr just before Claude replaces this process, so a refused launch prints none.
+    private static func launch(profile: Profile, arguments: [String], signIn: Bool = false, notice: String? = nil) throws {
         guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
         var environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
         let credential: LaunchCredential
         do { credential = try InferenceTokenPolicy.launchCredential(profile: profile, claudeArguments: arguments, signIn: signIn) }
         catch MintTokenError.tokenExpired { throw CLIError.expiredToken(profile.name) }
+        // Both mean the saved token's account is not the profile's current login: reading raises the first, saving the second.
+        catch MintTokenError.accountMismatch, MintTokenError.accountChanged { throw CLIError.tokenAccountMismatch(profile.name) }
         // Inherited credentials were cleared above, so the chosen one is the only one.
         switch credential {
         case .consoleAPIKey:
@@ -320,6 +339,7 @@ private struct ClaudockCLI {
         guard argv.dropLast().allSatisfy({ $0 != nil }), envp.dropLast().allSatisfy({ $0 != nil }) else {
             throw CLIError.launchFailed(ENOMEM)
         }
+        if let notice { FileHandle.standardError.write(Data((field(notice) + "\n").utf8)) }
         _ = argv.withUnsafeBufferPointer { arguments in
             envp.withUnsafeBufferPointer { variables in
                 execve(executable, arguments.baseAddress!, variables.baseAddress!)
@@ -390,6 +410,7 @@ private struct ClaudockCLI {
       claudock profile add NAME --api-key [--directory ABS_PATH]
       claudock profile set-key NAME
       claudock profile set-token NAME [--expires ISO8601_DATE]
+      claudock profile setup-token NAME
       claudock profile tokens
       claudock profile rename NAME NEWNAME
       claudock profile remove NAME
@@ -406,7 +427,8 @@ private struct ClaudockCLI {
     Profile names or exact SELECTOR values select a profile. An exact selector
     takes precedence; ambiguous display names require the selector from 'list'.
     Selectors are profile identifiers; they do not create shell commands.
-    'run' and 'profile login' use the current terminal and working directory.
+    'run', 'profile login', and 'profile setup-token' use the current terminal and
+    working directory.
     'usage' requests subscription quota once for each supported profile; output
     is tab-separated and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
@@ -428,13 +450,15 @@ private struct ClaudockCLI {
     never the token. To create a token, run Claude Code's own command for the
     profile. It signs in through your browser, so the browser must be signed in
     to the matching claude.ai account. Then copy the printed token and save it:
-      claudock run NAME -- setup-token
+      claudock profile setup-token NAME
       pbpaste | claudock profile set-token NAME
+    'run NAME -- setup-token' does the same when nothing comes before setup-token.
     'require-token on' makes every Claudock launch of a subscription profile
     ('run', shortcuts, Open in Terminal, Continue as…) use its inference token:
     a missing, expired, or unreadable token stops the launch instead of using
-    the profile's normal login. 'profile login' and 'run NAME -- setup-token'
-    always work, even when the saved token has expired. The setting is shared with the app; it is off by default.
+    the profile's normal login. 'profile login', 'profile setup-token', and
+    'run NAME -- setup-token' always work, even when the saved token has expired
+    or belongs to another account. The setting is shared with the app; it is off by default.
 
     Examples:
       claudock profile add work
