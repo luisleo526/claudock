@@ -243,6 +243,11 @@ def switch_api_key_profile(checks, sandbox):
     replacement = synthetic_key()
     result = sandbox.run("profile", "set-key", "k1", stdin=replacement)
     checks.expect(result.returncode == 0 and sandbox.listed()["k1"]["kind"] == "api-key", "set-key must switch a console-login profile to api-key", result)
+    managed = managed_key_service(k1)
+    checks.expect(f"security delete-generic-password -s '{managed}'" in result.stdout
+                  and "To switch back, sign in again with: claudock profile login k1 --console" in result.stdout,
+                  "set-key must name Claude Code's unused key item and say that switching back means signing in again", result)
+    checks.expect(keychain_item_exists(managed), "set-key must keep Claude Code's key item")
     checks.expect(replacement not in result.stdout + result.stderr, "set-key must not print the key")
     checks.expect(launched_key() == replacement, "after set-key, run must inject the new key")
     checks.done("set-key on a console-login profile switches it to api-key and injects the key again")

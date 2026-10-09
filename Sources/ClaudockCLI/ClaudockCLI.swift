@@ -242,9 +242,11 @@ private struct ClaudockCLI {
             } else {
                 // The key is saved before the registry lists the profile as an API-key profile.
                 let switched = try ProfileStore.setAuthKind(.apiKey, for: profile) { try APIKeyStore.save(key, profile: $0) }
+                let service = LaunchCommand.quote(ConsoleLogin.keychainService(for: switched))
                 print("Saved a Console API key for \(switched.name) in Keychain; \(switched.name) now uses it instead of its Console account sign-in.")
-                print("Claude Code keeps that sign-in in Keychain under service \(LaunchCommand.quote(ConsoleLogin.keychainService(for: switched))). "
-                      + "To use it again: claudock profile login \(switched.name) --console")
+                print("Claude Code's key from that sign-in stays in Keychain, unused, under service \(service). "
+                      + "To delete it: security delete-generic-password -s \(service)")
+                print("To switch back, sign in again with: claudock profile login \(switched.name) --console")
             }
         case .setToken(let name, let expiry):
             let profile = try resolve(name)

@@ -97,7 +97,7 @@ Continuation is a **preview feature** that depends on compatible Claude Code JSO
 
 A conversation still running in another Terminal can be continued with `--resume SESSION_ID --fork-session`. Claude creates a new session from its history while the original process continues. `--continue` selects the latest conversation in the current project. New profiles share this history by default; isolated imported folders remain available through the Sessions view or an explicit JSONL resume path.
 
-Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and Claude Console API keys. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
+Claudock accepts Claude Pro, Max, Team, and Enterprise subscription profiles, and Anthropic Console accounts, with a pasted API key or Claude Code's own Console sign-in. External-provider wrappers such as Vertex, Bedrock, and Foundry are excluded from import; legacy cloud registrations are retired without deleting their shared history.
 
 ## Keep going on a Console API key
 
@@ -160,7 +160,7 @@ Automatic renewal runs in the resident app. The one-shot `claudock usage` comman
 ## Local by design
 
 - **No Claudock account or hosted backend.** Profiles live on your Mac.
-- **No telemetry or transcript uploads from the monitor.** Local activity is read locally. For Console credit, API-key launches send Claude Code's per-request cost reports to `claudock` itself on `127.0.0.1`.
+- **No telemetry or transcript uploads from the monitor.** Local activity is read locally. For Console credit, Console launches (API key or Console sign-in) send Claude Code's per-request cost reports to `claudock` itself on `127.0.0.1`.
 - **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens and Console API keys use their own Keychain items and are passed to Claude through its launch environment.
 
 Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).
