@@ -106,11 +106,12 @@ Reached a weekly limit? Add a Claude Console API key as its own profile and cont
 ```sh
 pbpaste | claudock profile add console --api-key
 claudock run console -- --resume
+claudock profile set-credit console 200
 ```
 
 The key is read from standard input, never from command arguments, and stored only in Keychain. Like other new profiles, an API-key profile shares your session history, so **Continue as…** and `--resume` pick up where a subscription left off. The first interactive launch asks whether to use the API key; choose **Yes**.
 
-API usage is billed per token by the Claude Console, not by a subscription. The dashboard shows these profiles with an **API** badge and no limit bars, and `claudock usage` skips them. [Add, replace, and remove keys](docs/GUIDE.md#console-api-keys)
+API usage is billed per token by the Claude Console, not by a subscription. Enter the credit the Console shows as left, with **Set credit…** or `claudock profile set-credit`, and the dashboard and `claudock usage` show what remains after the cost Claude Code reports for each request in the sessions Claudock starts on this Mac. Use of the key elsewhere is not seen, so the Console balance stays authoritative; set it again any time. [Add, replace, and remove keys, and track credit](docs/GUIDE.md#console-api-keys)
 
 ## Fewer login interruptions
 
@@ -157,7 +158,7 @@ Automatic renewal runs in the resident app. The one-shot `claudock usage` comman
 ## Local by design
 
 - **No Claudock account or hosted backend.** Profiles live on your Mac.
-- **No telemetry or transcript uploads from the monitor.** Local activity is read locally.
+- **No telemetry or transcript uploads from the monitor.** Local activity is read locally. For Console credit, API-key launches send Claude Code's per-request cost reports to `claudock` itself on `127.0.0.1`.
 - **Existing Claude authentication.** Quota credentials stay in the existing Claude store. Minted inference tokens and Console API keys use their own Keychain items and are passed to Claude through its launch environment.
 
 Starting or continuing Claude is an explicit action and uses Claude's normal settings, authentication, and permissions. [Privacy and security details](SECURITY.md).

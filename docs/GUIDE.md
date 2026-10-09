@@ -92,6 +92,7 @@ Claudock saves names and directory bindings in:
 ```text
 ~/Library/Application Support/Claudock/profiles.json
 ~/Library/Application Support/Claudock/accounts/<stable-id>/claude/
+~/Library/Application Support/Claudock/api-credit.json      # Console credit, once set
 ```
 
 New accounts receive a private, stable config directory whose UUID does not depend on the display name. This keeps each account's login separate. The directory links its projects and history, plus common settings, plugins, and skills, to the default `~/.claude` setup. You can keep using the same conversations and preferences across accounts; changes to shared settings affect the profiles linked to them.
@@ -132,15 +133,16 @@ claudock usage
 claudock profile remove office
 claudock profile add console --api-key
 claudock profile set-key console
+claudock profile set-credit console 200
 ```
 
 The namespaced command and generated shortcuts call the CLI bundled inside the app. Shortcuts forward the full profile selector, such as `claude-office`, so similarly named profiles remain distinct. The internal `claudock shell profile-names` helper reads the existing registry and emits selectors as data; it does not discover accounts, create or write the registry, access credentials, or make network requests.
 
 Disabling integration removes Claudock's marked loader block and managed integration files. Open a new Terminal tab afterward to unload its functions and hooks; already-open shells retain what they loaded. Existing user shell declarations remain unchanged.
 
-Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login`, `profile setup-token`, and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
+Import a pre-existing account with `claudock profile add work --directory /absolute/config/folder`. `profile login`, `profile setup-token`, and `run` replace the CLI process with Claude in the **current Terminal and working directory**, using the selected account's config directory and a cleared set of conflicting authentication/provider settings. A Console API-key profile's `run` keeps `claudock` running as Claude's parent instead, so it can [count the credit](#track-the-console-credit). Additional Claude arguments go after `--` and are forwarded as literal arguments without shell evaluation. The configured Claude executable in Settings applies to both the app and CLI.
 
-`claudock usage` makes one sequential quota request for each supported profile and prints tab-separated profile, usage-window, used-percentage, and reset-time columns. It prints no emails or credentials and exits unsuccessfully if a requested profile fails. Console API-key profiles have no subscription limits; it skips them with a note and makes no request for them. This reports subscription allowance; use Overview for local token activity. `claudock shell status`, `enable`, and `disable` expose the same optional integration controls. If the app moves, enable integration again from the app's new location to update its executable path.
+`claudock usage` makes one sequential quota request for each supported profile and prints tab-separated profile, usage-window, used-percentage, and reset-time columns. It prints no emails or credentials and exits unsuccessfully if a requested profile fails. Console API-key profiles have no subscription limits and get no request: with a [credit set](#track-the-console-credit) they print a row of the same shape, `console  Console API  Credit · $187.42 of $200.00 left  6.29  -`, and without one a note on stderr that names `profile set-credit`. This reports subscription allowance and Console credit; use Overview for local token activity. `claudock shell status`, `enable`, and `disable` expose the same optional integration controls. If the app moves, enable integration again from the app's new location to update its executable path.
 
 Without shell integration, all GUI features work and the CLI can still be invoked by its absolute path:
 
@@ -175,7 +177,23 @@ Paste the raw key (`sk-ant-api03-…`, `sk-ant-usr-…`, or any other `sk-ant-` 
 
 The first interactive launch asks whether to use the API key; choose **Yes**. Claude Code saves the answer in the profile's own config folder, so later launches do not ask again. Non-interactive `-p` runs use the key directly.
 
-**Replace it** with **Replace API key…** in **Manage profiles**, or `claudock profile set-key console`. **Re-login** is not offered for these profiles, and `claudock profile login` refuses them. The dashboard shows an **API** badge and no limit bars; these profiles never count as needing attention, and **Highest usage first** lists them after subscription accounts.
+**Replace it** with **Replace API key…** in **Manage profiles**, or `claudock profile set-key console`. **Re-login** is not offered for these profiles, and `claudock profile login` refuses them. The dashboard shows an **API** badge and, once a credit is set, a **Credit** meter instead of limit bars; **Highest usage first** lists these profiles after subscription accounts.
+
+### Track the Console credit
+
+Anthropic offers no API for the prepaid credit left on a Console organization, so you enter it yourself. Look up the remaining credit in the Claude Console, then choose **Set credit…** on the profile's dashboard row (or in **Manage profiles**), or run:
+
+```sh
+claudock profile set-credit console 187.42
+```
+
+The amount is in US dollars, from 0 to 1,000,000, with at most two decimals. Claudock records it with the current time; spend from before that no longer counts. From then on the dashboard row shows a meter of what has been spent, **$187.42 left of $200.00**, and **since** the date you set it, and `claudock usage` prints the same as a row. Below 10% of the credit or below $5 left, the row turns red, shows **LOW CREDIT**, and counts toward the number beside the menu bar icon.
+
+Claudock subtracts what Claude Code itself reports for every request in sessions that Claudock starts on this Mac: `claudock run`, the profile's shortcut, **Open in Terminal**, and **Continue as…**. For these launches `claudock` stays running as Claude's parent with a small receiver on `127.0.0.1`, and Claude Code sends it the cost of each request through its OpenTelemetry log export, about once a second: the same figures Claude Code adds up as its own session cost. Each one is saved as it arrives. Ctrl-C, Ctrl-Z, `fg`, and the exit status behave as before.
+
+This is an estimate, and the Console balance is authoritative. Use of the same key elsewhere, on other Macs, in scripts, or in other tools, is not seen; neither are Claude Code sessions started without Claudock. Set the credit again from the Console whenever you check it. A few things can make the estimate low: Claude Code runs that are killed outright (`kill -9`) lose the requests of their last second, and settings that change Claude Code's telemetry (an `env` entry for `OTEL_…` or `CLAUDE_CODE_ENABLE_TELEMETRY` in the profile's or project's settings, or managed settings) can send its reports elsewhere; Claudock names such a setting before it starts Claude. When an interactive session ends normally, Claudock also compares Claude Code's own session total in the profile's `.claude.json` and adds any difference.
+
+For these launches Claudock replaces any `OTEL_*` variables in your environment, so your own OpenTelemetry collector does not receive them.
 
 **Remove it** like any profile. Removal keeps the key in Keychain, as Claudock keeps other credentials, and the CLI prints the item's service name. To delete the key, use that name:
 
@@ -192,6 +210,8 @@ Claudock versions before Console API-key support cannot open a profile registry 
 The app reads each profile's existing Claude OAuth credentials from the corresponding macOS Keychain item, with Claude's `.credentials.json` fallback only when that item is absent. Access tokens are sent to `https://api.anthropic.com/api/oauth/usage`. When an access token expires or that endpoint returns HTTP 401, Claudock uses the saved refresh token at `https://platform.claude.com/v1/oauth/token` and updates the same existing credential store. Both HTTP clients reject redirects and use ephemeral sessions without cookies or caches.
 
 Console API keys live in their own Keychain items, named `Claudock-apikey-` followed by a hash. Claudock reads one only to launch its profile and passes it to Claude Code through that process's environment; it never sends the key anywhere itself.
+
+For a Console API-key launch, Claudock turns on Claude Code's OpenTelemetry log export and points it at a receiver inside `claudock`, on `127.0.0.1` at a random port and path; the reports never leave the Mac. Claudock keeps only each request's cost, model, session ID, and time, in `~/Library/Application Support/Claudock/api-credit.json` (readable only by you), never keys, prompts, or responses.
 
 There is no analytics service, telemetry, or developer-operated backend. Automatic renewal coordinates with Claude Code's credential locks, preserves unrelated fields, and stores replacement refresh tokens returned by Anthropic. It does not renew on quota HTTP 403, 429, or network failures. When the refresh token is missing, expired, or rejected, re-login delegates to Claude Code in Terminal through a temporary local command file that deletes itself when it runs. macOS may request Keychain access. Profile configuration contains local paths and names; keep it out of public issues and repositories. See [SECURITY.md](../SECURITY.md) for reporting guidance.
 
@@ -220,6 +240,9 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | Claude rejects a resume file | Confirm your Claude version supports absolute JSONL paths with `--resume`; the app's compatibility check used 2.1.263. |
 | No Console API key is saved | Save one with **Replace API key…** in Manage profiles or `claudock profile set-key NAME`. |
 | Claude asks whether to use an API key | Choose Yes. Claude Code remembers the answer for that profile. |
+| The credit left differs from the Console | The estimate counts only Claude Code sessions Claudock starts on this Mac. Set the credit again from the Console balance: `claudock profile set-credit NAME AMOUNT` or **Set credit…**. |
+| `… sets OTEL_… for Claude Code, which can send its usage events elsewhere` | A settings file gives Claude Code its own telemetry settings, which override Claudock's. Remove that `env` entry for API-key profiles, or set the credit again later. |
+| `usage events from this run could not be saved` | The credit ledger was busy or unreadable. Set the credit again from the Console balance. |
 | NAME's saved inference token belongs to a different account than its current Claude login | The profile was signed in to another account after its token was saved. Run `claudock profile login NAME` with the token's account, or make a new token: `claudock profile setup-token NAME`, then `pbpaste \| claudock profile set-token NAME`. |
 | Launch at login needs approval | Check System Settings → General → Login Items & Extensions. |
 

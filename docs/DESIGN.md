@@ -11,6 +11,7 @@ The design review uses variance 3, motion 1, and density 6: predictable placemen
 - Give 5-hour, overall Weekly, and Fable limits equal weight in three aligned rows, with 6 pt bars and 15 pt rounded, monospaced percentages. Fixed label, percentage/status, and short reset columns keep bars aligned across accounts, including at 460 pt width.
 - Mark elapsed window time with a 2 pt pace tick extending 2 pt above and below each bar. Show it only for a known 5-hour or 7-day duration and a reported reset time. A fill past the tick means usage is ahead of elapsed time.
 - Keep full window titles and reset dates on hover and include elapsed time in accessibility labels. At 100% or more, add a symbol and “Full”; stale readings remain muted. Omit missing session/weekly rows and show a missing Fable allowance as an empty track, “—”, and “Not reported”. Keep additional limits compact, with reset times and stale indicators visible.
+- Show an API-key profile's Console credit as one meter row aligned with the limit rows: spent of the credit set, "$X left of $Y", and "since" the date it was set, with Set credit… beside it. Use the limit red only below 10% or $5 left, with LOW CREDIT, which also counts toward attention.
 - Use plain functional headings such as Daily tokens and Tokens by profile. Put detailed accounting mechanics behind a disclosure.
 - Use native controls and SF Symbols. Avoid custom cursor effects, decorative motion, card stacks, and invented usage scores.
 
