@@ -11,6 +11,8 @@ private func markAccess(_ boundary: String) {
 public enum MonitorError: Error, LocalizedError {
     case unsupported(String)
     case invalidResponse
+    case rateLimited(Date?)
+    case usageBusy
     public var errorDescription: String? {
         if case .unsupported(let value) = self { return value }
         return nil
@@ -184,9 +186,33 @@ public struct UsageWindow {
     public let percent: Double
     public let resetsAt: Date?
 }
-public struct UsageSnapshot { public let windows: [UsageWindow] }
+public struct UsageSnapshot {
+    public let windows: [UsageWindow]
+    public var fetchedAt = Date()
+}
 public enum UsageClient {
     public static func fetch(credentials: Credentials) async throws -> UsageSnapshot {
         UsageSnapshot(windows: [UsageWindow(title: "Weekly", percent: 25.0, resetsAt: nil)])
     }
+}
+
+// The shared cache, fetch lock, cooldowns, and pacing are covered by usage_e2e.py against a stub endpoint; here
+// every reading is requested, so the smoke checks cover how the CLI prints rows and reports a failed profile.
+public struct UsageReading {
+    public let plan: SubscriptionPlan
+    public let snapshot: UsageSnapshot
+    public init(plan: SubscriptionPlan, snapshot: UsageSnapshot) { self.plan = plan; self.snapshot = snapshot }
+}
+public enum UsageResult {
+    case current(UsageReading), cached(UsageReading, MonitorError), failed(MonitorError)
+}
+public actor UsageFetcher {
+    public init() {}
+    public func reading(for profile: Profile, maxAge: TimeInterval, fetch: @Sendable (Profile) async throws -> UsageReading) async -> UsageResult {
+        markAccess("usage reading")
+        do { return .current(try await fetch(profile)) }
+        catch let error as MonitorError { return .failed(error) }
+        catch { return .failed(.invalidResponse) }
+    }
+    public func finish() {}
 }

@@ -46,7 +46,9 @@ private enum Command {
     case setCredit(String, Decimal)
     /// `login(NAME, console)`: `--console` asks for an Anthropic Console sign-in.
     case rename(String, String), remove(String), login(String, Bool), run(String, [String])
-    case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
+    /// `usage(maxAge)`: how old, in seconds, a cached reading may be and still be shown without a request.
+    case usage(TimeInterval)
+    case shellEnable, shellDisable, shellStatus, shellProfileNames
     /// nil prints the current setting.
     case requireToken(Bool?)
     case removedAuto
@@ -56,7 +58,7 @@ private enum Command {
         guard let first = arguments.first else { return .help }
         if ["help", "--help", "-h"].contains(first), arguments.count == 1 { return .help }
         if ["version", "--version"].contains(first), arguments.count == 1 { return .version }
-        if first == "usage", arguments.count == 1 { return .usage }
+        if first == "usage" { return .usage(try usageMaxAge(Array(arguments.dropFirst()))) }
         if first == "require-token", arguments.count == 2 {
             switch arguments[1] {
             case "on": return .requireToken(true)
@@ -142,6 +144,20 @@ private enum Command {
             }
         }
         return apiKey ? .addAPIKey(name, directory) : console ? .addConsoleLogin(name, directory) : .add(name, directory)
+    }
+
+    /// `usage [--max-age SECONDS | --fresh]`: 180 seconds by default, 0 to 86400, and `--fresh` for 0.
+    private static func usageMaxAge(_ options: [String]) throws -> TimeInterval {
+        switch options.count {
+        case 0: return 180
+        case 1 where options[0] == "--fresh": return 0
+        case 2 where options[0] == "--max-age":
+            guard options[1].allSatisfy({ $0.isASCII && $0.isNumber }), let seconds = Int(options[1]), seconds <= 86_400 else {
+                throw CLIError.arguments("--max-age takes a whole number of seconds from 0 to 86400.")
+            }
+            return TimeInterval(seconds)
+        default: throw CLIError.arguments("Use 'claudock usage', 'claudock usage --max-age SECONDS', or 'claudock usage --fresh'.")
+        }
     }
 
     /// An ISO 8601 date and time (2026-12-31T23:59:59Z) or a full date (2026-12-31, midnight UTC).
@@ -321,8 +337,8 @@ private struct ClaudockCLI {
             if login, profile.authKind == .apiKey { throw CLIError.apiKeySignIn(profile.name) }
             let signIn = profile.authKind == .consoleLogin ? consoleSignIn : ["auth", "login", "--claudeai"]
             try launch(profile: profile, arguments: login ? signIn : arguments, signIn: login)
-        case .usage:
-            try await usage()
+        case .usage(let maxAge):
+            try await usage(maxAge: maxAge)
         case .requireToken(let required?):
             try InferenceTokenPolicy.setRequired(required)
             print(required
@@ -484,9 +500,13 @@ private struct ClaudockCLI {
         } catch { return ("unavailable", "-") }
     }
 
-    private static func usage() async throws {
+    /// Reads go through the cache shared with the app: a reading younger than `maxAge` is printed without a request,
+    /// a profile cooling down after HTTP 429 is not requested, and a cached reading stands in, with a note on stderr,
+    /// when there is no newer one. Only a profile with no reading at all fails the command.
+    private static func usage(maxAge: TimeInterval) async throws {
         let profiles = try ProfileStore.load()
         let formatter = ISO8601DateFormatter()
+        let fetcher = UsageFetcher()
         var failed = false
         print("PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC")
         for profile in profiles {
@@ -511,19 +531,49 @@ private struct ClaudockCLI {
                 }
                 continue
             }
-            do {
+            let result = await fetcher.reading(for: profile, maxAge: maxAge) { profile in
+                // One request with the saved access token: renewal belongs to the resident app.
                 let credentials = try CredentialStore.read(profile: profile)
-                let snapshot = try await UsageClient.fetch(credentials: credentials)
-                for window in snapshot.windows {
-                    let percent = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), window.percent)
-                    print([profile.name, credentials.subscriptionPlan.displayName, window.title, percent, window.resetsAt.map(formatter.string(from:)) ?? "unknown"].map(field).joined(separator: "\t"))
-                }
-            } catch {
+                return UsageReading(plan: credentials.subscriptionPlan, snapshot: try await UsageClient.fetch(credentials: credentials))
+            }
+            let shown: UsageReading
+            switch result {
+            case .current(let reading): shown = reading
+            case .cached(let reading, let reason):
+                shown = reading
+                writeError("\(field(profile.name)): \(staleReason(reason)); showing reading from \(age(of: reading.snapshot.fetchedAt)).")
+            case .failed(let error):
                 failed = true
                 writeError("\(field(profile.name)): \(error.localizedDescription)")
+                continue
+            }
+            for window in shown.snapshot.windows {
+                let percent = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), window.percent)
+                print([profile.name, shown.plan.displayName, window.title, percent, window.resetsAt.map(formatter.string(from:)) ?? "unknown"].map(field).joined(separator: "\t"))
             }
         }
+        await fetcher.finish()
         if failed { exit(1) }
+    }
+
+    /// Why `usage` shows an older cached reading.
+    private static func staleReason(_ reason: MonitorError) -> String {
+        switch reason {
+        case .rateLimited(let until?):
+            let clock = DateFormatter()
+            clock.locale = Locale(identifier: "en_US_POSIX")
+            clock.dateFormat = "HH:mm"
+            return "rate limited until " + clock.string(from: until)
+        case .usageBusy: return "another Claudock process is reading usage"
+        default:
+            let text = reason.localizedDescription
+            return text.hasSuffix(".") ? String(text.dropLast()) : text
+        }
+    }
+
+    /// "N min ago", in whole minutes at any age, so scripts can read it.
+    private static func age(of date: Date) -> String {
+        "\(max(1, Int((max(0, Date().timeIntervalSince(date)) / 60).rounded()))) min ago"
     }
 
     private static func field(_ string: String) -> String {
@@ -552,7 +602,7 @@ private struct ClaudockCLI {
       claudock profile login NAME [--console]
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
-      claudock usage
+      claudock usage [--max-age SECONDS | --fresh]
       claudock require-token on|off|status
       claudock shell enable|disable|status
       claudock version
@@ -564,9 +614,20 @@ private struct ClaudockCLI {
     Selectors are profile identifiers; they do not create shell commands.
     'run', 'profile login', and 'profile setup-token' use the current terminal and
     working directory.
-    'usage' requests subscription quota once for each supported profile and
-    lists the Console credit left on Console profiles; output is tab-separated
-    and contains no account emails or credentials.
+    'usage' lists each subscription profile's quota and the Console credit left
+    on Console profiles; output is tab-separated and contains no account
+    emails or credentials. Quota readings are shared with the app in
+    ~/Library/Application Support/Claudock/usage-cache.json, and a reading
+    younger than 180 seconds is printed without asking Claude again.
+    '--max-age SECONDS' (0 to 86400) sets that age; '--fresh' asks for new
+    readings. A profile that Claude rate-limits (HTTP 429) is not asked again
+    until its cooldown ends, not even with --fresh: the Retry-After time, kept
+    between 5 minutes and a day, or else 1 minute doubling up to 30. While a
+    profile cools down or its request fails, 'usage' prints its last reading
+    and a note on stderr, and exits 0; only a profile with no reading at all
+    makes it fail. One Claudock process asks Claude at a time, half a second
+    between requests; other 'usage' runs wait up to 30 seconds for its
+    readings, then print what is cached.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
     loader; disable removes only that integration. Existing wrappers stay intact.
 

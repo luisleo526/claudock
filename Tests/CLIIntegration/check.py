@@ -85,6 +85,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "add", "default"], 2), (["profile", "add", "a" * 41], 2),
              (["profile", "add", "auto"], 2), (["profile", "rename", "smoke", "AUTO"], 2),
              (["shell", "enable", "extra"], 2), (["shell", "profile-names", "extra"], 2), (["usage", "extra"], 2),
+             (["usage", "--max-age"], 2), (["usage", "--max-age", "-1"], 2), (["usage", "--max-age", "86401"], 2),
+             (["usage", "--max-age", "1.5"], 2), (["usage", "--max-age", "+5"], 2), (["usage", "--max-age", ""], 2),
+             (["usage", "--max-age", "99999999999999999999999"], 2), (["usage", "--fresh", "--max-age", "5"], 2),
+             (["usage", "--fresh", "extra"], 2), (["usage", "--fresh", "--fresh"], 2), (["usage", "--max-age", "1", "--max-age", "2"], 2),
              (["profile", "setup-token"], 2), (["profile", "setup-token", "smoke", "extra"], 2),
              (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2),
              (["profile", "set-credit", "smoke"], 2), (["profile", "set-credit", "smoke", "1.234"], 2),
@@ -293,6 +297,11 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert ("claudock: team: skipped; Console login · Fixture Org is billed per token and has no subscription limits. "
             "Set its balance with: claudock profile set-credit team AMOUNT\n") in result.stderr, result.stderr
     passed.append("synthetic quota TSV and skipped unsupported, with the Console organization")
+
+    for flags in (["--fresh"], ["--max-age", "0"], ["--max-age", "86400"]):
+        flagged = run(["usage", *flags])
+        assert flagged.returncode == 0 and flagged.stdout == result.stdout and flagged.stderr == result.stderr, (flags, flagged.stderr)
+    passed.append("usage accepts --fresh and --max-age 0 to 86400 with the same output")
 
     result = run(["usage"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})
     assert result.returncode == 1 and "Synthetic quota error" in result.stderr and "25.00" not in result.stdout
