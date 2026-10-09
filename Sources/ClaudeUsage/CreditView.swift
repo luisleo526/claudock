@@ -1,7 +1,7 @@
 import SwiftUI
 import UsageCore
 
-/// Records an API-key profile's remaining Console credit, as `claudock profile set-credit` does.
+/// Records a Console profile's remaining credit, as `claudock profile set-credit` does.
 struct CreditView: View {
     /// How far the estimate reaches; also the help text of the dashboard's credit rows.
     static let estimateNote = "An estimate from the Claude Code sessions Claudock starts on this Mac, using the cost Claude Code reports "

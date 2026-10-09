@@ -11,9 +11,20 @@ struct AccountState: Identifiable, Equatable {
     var error: MonitorError?
     var retryAt: Date?
     var loading = false
-    /// An API-key profile's Console credit, when one is set.
+    /// A Console profile's credit, when one is set.
     var credit: APICreditStatus?
     var creditError: String?
+    /// A Console-login profile's organization from Claude Code's `.claude.json`: untrusted display text.
+    var organization: String?
+
+    /// How a Console profile is billed, for display: "Console API key" or "Console login · ORGANIZATION".
+    var consoleLabel: String? {
+        switch profile.authKind {
+        case .apiKey: return "Console API key"
+        case .consoleLogin: return organization.map { "Console login · " + $0 } ?? "Console login"
+        case .subscription: return nil
+        }
+    }
 }
 
 struct AccountReading: Sendable {
@@ -23,15 +34,18 @@ struct AccountReading: Sendable {
     var error: MonitorError?
     var credit: APICreditStatus?
     var creditError: String?
+    var organization: String?
 }
 
 func readAccount(_ profile: Profile) async -> AccountReading {
     if let note = profile.discoveryNote { return AccountReading(error: .unsupported(note)) }
     if profile.isVertex { return AccountReading(error: .unsupported("Vertex AI · billed through Google Cloud. Claude subscription limits do not apply.")) }
-    // Billed per token: no Claude login or subscription limits to read, only the local credit ledger.
-    if profile.authKind == .apiKey {
-        do { return AccountReading(credit: try APICreditStore.status(profile: profile)) }
-        catch { return AccountReading(creditError: error.localizedDescription) }
+    // Billed per token: no Claude login or subscription limits to read, only the local credit ledger
+    // and, for a Console sign-in, the organization Claude Code recorded.
+    if profile.authKind.isConsole {
+        let organization = profile.authKind == .consoleLogin ? ConsoleLogin.organizationName(profile: profile) : nil
+        do { return AccountReading(credit: try APICreditStore.status(profile: profile), organization: organization) }
+        catch { return AccountReading(creditError: error.localizedDescription, organization: organization) }
     }
     var result = AccountReading(email: CredentialStore.email(for: profile))
     do {
@@ -111,8 +125,8 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var sortedAccounts: [AccountState] {
         if !sortByUsage { return accounts }
         return accounts.sorted {
-            // API-key profiles have no limits, so they follow every subscription account.
-            if ($0.profile.authKind == .apiKey) != ($1.profile.authKind == .apiKey) { return $1.profile.authKind == .apiKey }
+            // Console profiles have no limits, so they follow every subscription account.
+            if $0.profile.authKind.isConsole != $1.profile.authKind.isConsole { return $1.profile.authKind.isConsole }
             let a = $0.error == nil ? ($0.snapshot?.peak ?? -1) : -1
             let b = $1.error == nil ? ($1.snapshot?.peak ?? -1) : -1
             return a == b ? $0.profile.command < $1.profile.command : a > b
@@ -124,7 +138,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
     var attentionCount: Int {
         max(profileError == nil ? 0 : 1, accounts.filter {
             guard !$0.profile.isVertex else { return false }
-            if $0.profile.authKind == .apiKey { return $0.credit?.isLow == true }
+            if $0.profile.authKind.isConsole { return $0.credit?.isLow == true }
             return $0.error != nil || ($0.snapshot?.peak ?? 0) >= 90
         }.count)
     }
@@ -158,8 +172,9 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                 AccountState(profile: profile, plan: [SubscriptionPlan.max20x, .teamPremium, .pro, .max5x][index % 4],
                              snapshot: DemoData.usage(index: index, now: now), error: index == 3 ? .network : nil)
             }
-            // Second in the list, so previews show the API-key row beside a subscription account.
+            // Second and third in the list, so previews show the Console rows beside a subscription account.
             demo.insert(AccountState(profile: DemoData.apiKeyProfile, credit: DemoData.apiKeyCredit(now: now)), at: min(1, demo.count))
+            demo.insert(AccountState(profile: DemoData.consoleLoginProfile, organization: DemoData.consoleOrganization), at: min(2, demo.count))
             accounts = demo
             lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return
@@ -204,6 +219,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
                     accounts[index].credit = reading.credit
                     accounts[index].creditError = reading.creditError
                 }
+                accounts[index].organization = reading.organization
                 statusChanged?()
                 if !profile.isVertex && profile.authKind == .subscription { try? await Task.sleep(nanoseconds: 200_000_000) }
             }
@@ -212,7 +228,7 @@ func readAccount(_ profile: Profile) async -> AccountReading {
             if refreshPending { refreshPending = false; refresh() }
         }
     }
-    /// Records an API-key profile's remaining Console credit as of now and shows it right away.
+    /// Records a Console profile's remaining credit as of now and shows it right away.
     func setCredit(_ amount: Decimal, profile: Profile) async throws -> APICreditStatus {
         let credit = try await Task.detached(priority: .userInitiated) { try APICreditStore.setBalance(amount, profile: profile) }.value
         creditSaves[profile.id, default: 0] += 1

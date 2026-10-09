@@ -70,8 +70,8 @@ struct ContinueSessionView: View {
             Picker("Continue using", selection: $target) {
                 Text("Choose a profile").tag("")
                 ForEach(candidates) { account in
-                    Text(account.profile.command + (account.profile.authKind == .apiKey ? " · Console API key"
-                        : account.error == nil ? account.snapshot?.preferredLaunchWindow.map { " · \($0.title) \(Int($0.percent))% used" } ?? "" : " · check sign-in")).tag(account.id)
+                    Text(account.profile.command + (account.consoleLabel.map { " · " + $0 }
+                        ?? (account.error == nil ? account.snapshot?.preferredLaunchWindow.map { " · \($0.title) \(Int($0.percent))% used" } ?? "" : " · check sign-in"))).tag(account.id)
                 }
             }
             Text("Claude opens the selected project in a new Terminal and forks the saved conversation under this profile’s login. The existing conversation file stays in place. Claude’s normal project trust and permission prompts still apply.")

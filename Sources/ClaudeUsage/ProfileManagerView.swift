@@ -54,6 +54,7 @@ struct ProfileManagerView: View {
                         Picker("Account type", selection: $addKind) {
                             Text("Claude subscription").tag(ProfileAuthKind.subscription)
                             Text("Console API key").tag(ProfileAuthKind.apiKey)
+                            Text("Console account (sign in)").tag(ProfileAuthKind.consoleLogin)
                         }
                         .pickerStyle(.segmented).labelsHidden().accessibilityIdentifier("profileKindPicker")
                     }
@@ -81,6 +82,11 @@ struct ProfileManagerView: View {
                             }
                             Text("Billed per token by the Claude Console. The key is stored only in Keychain.")
                                 .font(.caption).foregroundStyle(.secondary)
+                        } else if addKind == .consoleLogin {
+                            Text("Signs in to an Anthropic Console account in your browser; Claude Code creates and keeps the API key. "
+                                 + "Billed per token to that Console organization.")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Toggle("Open Console sign-in after adding", isOn: $loginAfterAdd).font(.caption)
                         } else {
                             Toggle("Open Claude sign-in after adding", isOn: $loginAfterAdd).font(.caption)
                         }
@@ -153,11 +159,11 @@ struct ProfileManagerView: View {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Remove profile", role: .destructive) { remove(profile) }.disabled(actionsUnavailable)
             } message: { profile in
-                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and \(profile.authKind == .apiKey ? "its Console API key in Keychain" : "saved login"), and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
+                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and \(profile.authKind == .apiKey ? "its Console API key in Keychain" : profile.authKind == .consoleLogin ? "its Console sign-in" : "saved login"), and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
             }
     }
     private var canSave: Bool {
-        !name.isEmpty && (editing != nil || addKind == .subscription || !apiKeyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        !name.isEmpty && (editing != nil || addKind != .apiKey || !apiKeyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     private func resetEditor() { editing = nil; name = ""; configPath = ""; apiKeyText = "" }
     private func credentialButtonTitle(_ profile: Profile) -> String {
@@ -168,17 +174,28 @@ struct ProfileManagerView: View {
         }
     }
     private func beginCredentialChange(_ profile: Profile) {
-        guard !actionsUnavailable, !profile.isVertex, profile.discoveryNote == nil else { return }
+        guard !actionsUnavailable, !profile.isVertex, profile.discoveryNote == nil, profile.authKind != .consoleLogin else { return }
         lastCredentialProfile = profile
         if profile.authKind == .apiKey { replacingKey = profile } else { minting = profile }
     }
     private func credentialStatusDescription(_ profile: Profile) -> String {
-        let apiKey = profile.authKind == .apiKey
-        if store.isDemo && !apiKey { return "Inference token: demo preview" }
+        let apiKey = profile.authKind == .apiKey, console = profile.authKind == .consoleLogin
+        if store.isDemo && !profile.authKind.isConsole { return "Inference token: demo preview" }
         if profile.isVertex || profile.discoveryNote != nil { return "Inference token unavailable for this profile" }
-        if unavailableCredentialStatuses.contains(profile.id) { return apiKey ? "API key status unavailable" : "Inference token status unavailable" }
-        guard let status = credentialStatuses[profile.id] else { return apiKey ? "Checking API key…" : "Checking inference token…" }
+        if unavailableCredentialStatuses.contains(profile.id) {
+            return apiKey ? "API key status unavailable" : console ? "Console sign-in status unavailable" : "Inference token status unavailable"
+        }
+        guard let status = credentialStatuses[profile.id] else {
+            return apiKey ? "Checking API key…" : console ? "Checking Console sign-in…" : "Checking inference token…"
+        }
         switch status {
+        case .consoleLogin(let signedIn):
+            guard signedIn else { return "Not signed in to a Console account · choose Sign in…" }
+            let account = store.accounts.first(where: { $0.profile == profile })
+            let label = account?.consoleLabel ?? "Console login"
+            if let error = account?.creditError { return label + " · " + error }
+            guard let credit = account?.credit else { return label + " · no credit set" }
+            return "\(label) · \(credit.leftText) left of \(credit.balanceText) credit"
         case .apiKey(let saved):
             guard saved else { return "API key missing" }
             let account = store.accounts.first(where: { $0.profile == profile })
@@ -288,7 +305,7 @@ struct ProfileManagerView: View {
         busy = true; failure = nil; notice = nil
         let existing = editing; let requestedName = name; let directory = configPath
         let kind = addKind, rawKey = apiKeyText
-        let shouldLogin = loginAfterAdd && kind == .subscription
+        let shouldLogin = loginAfterAdd && kind != .apiKey
         apiKeyText = ""
         Task {
             defer { busy = false }
@@ -300,11 +317,13 @@ struct ProfileManagerView: View {
                         // The key is checked before anything is created, and saved before the profile is listed.
                         return try ProfileManager.addAPIKeyProfile(name: requestedName, apiKey: ConsoleAPIKey(parsing: rawKey), configDirectory: folder)
                     }
+                    if kind == .consoleLogin { return try ProfileManager.addConsoleLoginProfile(name: requestedName, configDirectory: folder) }
                     return try ProfileManager.add(name: requestedName, configDirectory: folder)
                 }.value
                 await readShellStatus()
                 notice = (existing == nil ? "Added \(profile.name). " : "Renamed to \(profile.name). ") + shortcutNotice(profile)
                     + (existing == nil && kind == .apiKey ? " The first Terminal launch asks whether to use the API key; choose Yes." : "")
+                    + (existing == nil && kind == .consoleLogin && !shouldLogin ? " Choose Sign in… to sign it in to its Console account." : "")
                 resetEditor()
                 store.refresh()
                 if existing == nil && shouldLogin {
@@ -322,9 +341,14 @@ struct ProfileManagerView: View {
             do {
                 try await Task.detached { try ProfileManager.remove(profile: profile) }.value
                 if editing?.id == profile.id { resetEditor() }
-                notice = profile.authKind == .apiKey
-                    ? "Removed \(profile.name). Shared history and settings were kept, and its Console API key stays in Keychain under service \(APIKeyStore.serviceName(for: profile)). Your own shell commands are unchanged."
-                    : "Removed \(profile.name). Shared history, settings, and the saved login were kept. Your own shell commands are unchanged."
+                switch profile.authKind {
+                case .apiKey:
+                    notice = "Removed \(profile.name). Shared history and settings were kept, and its Console API key stays in Keychain under service \(APIKeyStore.serviceName(for: profile)). Your own shell commands are unchanged."
+                case .consoleLogin:
+                    notice = "Removed \(profile.name). Shared history and settings were kept, and Claude Code's Console sign-in stays in Keychain under service \(ConsoleLogin.keychainService(for: profile)). Your own shell commands are unchanged."
+                case .subscription:
+                    notice = "Removed \(profile.name). Shared history, settings, and the saved login were kept. Your own shell commands are unchanged."
+                }
                 store.refresh()
             } catch { failure = error.localizedDescription }
         }
@@ -336,7 +360,9 @@ struct ProfileManagerView: View {
             defer { busy = false }
             do {
                 try await TerminalLauncher.login(profile: profile)
-                notice = "Finish signing in to \(profile.name) in Terminal, then refresh the monitor."
+                notice = profile.authKind == .consoleLogin
+                    ? "Finish signing in to \(profile.name)'s Anthropic Console account in Terminal and your browser."
+                    : "Finish signing in to \(profile.name) in Terminal, then refresh the monitor."
             } catch { failure = error.localizedDescription }
         }
     }
@@ -388,7 +414,7 @@ struct ProfileManagerView: View {
 /// only reach the sheet's state and the store, which stay the same objects.
 private struct ProfileRow: View, Equatable {
     let profile: Profile
-    /// The inference token, or the Console API key for an API-key profile.
+    /// The inference token, the Console API key of an API-key profile, or the sign-in of a Console-login profile.
     let credentialStatus: String
     let credentialButton: String
     let actionsUnavailable: Bool
@@ -442,19 +468,28 @@ private struct ProfileRow: View, Equatable {
                 Text(credentialStatus).font(.system(size: 10)).foregroundStyle(.secondary)
                     .accessibilityLabel(credentialStatus)
                 Spacer(minLength: 8)
-                if profile.authKind == .apiKey {
+                if profile.authKind.isConsole {
                     Button("Set credit…", action: setCredit)
                         .buttonStyle(.bordered).controlSize(.small)
                         .disabled(actionsUnavailable)
                         .accessibilityIdentifier("setCredit-\(profile.id)")
                         .accessibilityLabel("Set Console credit for \(profile.name)")
                         .help("Enter the remaining credit shown in the Claude Console")
-                    Button(credentialButton, action: setCredential)
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .disabled(actionsUnavailable)
-                        .accessibilityIdentifier("replaceAPIKey-\(profile.id)")
-                        .accessibilityLabel("Replace Console API key for \(profile.name)")
-                        .help("Paste a new Console API key; it replaces the key saved in Keychain")
+                    if profile.authKind == .apiKey {
+                        Button(credentialButton, action: setCredential)
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(actionsUnavailable)
+                            .accessibilityIdentifier("replaceAPIKey-\(profile.id)")
+                            .accessibilityLabel("Replace Console API key for \(profile.name)")
+                            .help("Paste a new Console API key; it replaces the key saved in Keychain")
+                    } else {
+                        Button("Sign in…", action: login)
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(actionsUnavailable)
+                            .accessibilityIdentifier("consoleSignIn-\(profile.id)")
+                            .accessibilityLabel("Sign in to the Anthropic Console account for \(profile.name)")
+                            .help("Opens Claude Code’s Console sign-in for this profile in Terminal")
+                    }
                 } else {
                     Button(credentialButton, action: setCredential)
                         .buttonStyle(.bordered).controlSize(.small)
@@ -474,12 +509,17 @@ private enum CredentialStatus: Equatable {
     /// The saved token was bound to an account other than the profile's current login.
     case tokenOfAnotherAccount
     case apiKey(saved: Bool)
+    /// Whether Claude Code's Console sign-in keeps an API key for the profile.
+    case consoleLogin(signedIn: Bool)
 }
 
 /// Reads one profile's credential status; it may start a `security` process, so call it off the main actor.
 private func readLaunchCredential(_ profile: Profile, isDemo: Bool) throws -> CredentialStatus {
     if profile.authKind == .apiKey {
         return .apiKey(saved: isDemo ? DemoData.apiKeySaved(profile: profile) : try APIKeyStore.isSaved(profile: profile))
+    }
+    if profile.authKind == .consoleLogin {
+        return .consoleLogin(signedIn: isDemo ? DemoData.consoleSignedIn(profile: profile) : try ConsoleLogin.isSignedIn(profile: profile))
     }
     do { return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile)) }
     catch MintTokenError.accountMismatch { return .tokenOfAnotherAccount }

@@ -52,12 +52,14 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
         }
         for profile in profiles {
             if discoverOnly {
-                print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : profile.authKind == .apiKey ? "api-key" : "subscription"))")
+                let kind = profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login" : "subscription"
+                print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : kind))")
             } else {
                 let result = await Task.detached { await readAccount(profile) }.value
                 let windows = result.snapshot?.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
-                let fallback = profile.authKind != .apiKey ? "Unavailable"
-                    : result.credit.map { "Console API key; \($0.usageWindow)" } ?? result.creditError ?? "Console API key; billed per token, no credit set"
+                let console = profile.authKind == .apiKey ? "Console API key" : result.organization.map { "Console login · " + $0 } ?? "Console login"
+                let fallback = !profile.authKind.isConsole ? "Unavailable"
+                    : result.credit.map { "\(console); \($0.usageWindow)" } ?? result.creditError ?? "\(console); billed per token, no credit set"
                 print("\(profile.command): \(windows ?? result.error?.localizedDescription ?? fallback)")
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
