@@ -76,6 +76,16 @@ final class APIKeyTests: XCTestCase {
         }
     }
 
+    func testRefusedTypesAllowUpToFourVersionDigitsAndAreRecognisedOnlyAtTheStart() {
+        let cases: [(String, APIKeyError)] = [
+            ("sk-ant-oat-x", .oauthToken), ("sk-ant-oat0001-x", .oauthToken), ("sk-ant-oat00001-x", .invalidKey),
+            ("sk-ant-admin0001-x", .adminKey), ("sk-ant-sid0001-x", .notAnAPIKey),
+            ("Bearer sk-ant-oat01-fixture", .invalidKey), ("x sk-ant-sid01-fixture", .invalidKey)]
+        for (raw, expected) in cases {
+            XCTAssertThrowsError(try ConsoleAPIKey(parsing: raw), raw) { XCTAssertEqual($0 as? APIKeyError, expected, raw) }
+        }
+    }
+
     func testInvalidKeyMessageNamesTheAcceptedKeyShapes() {
         let message = APIKeyError.invalidKey.localizedDescription
         XCTAssertTrue(message.contains("sk-ant-api03-"))
