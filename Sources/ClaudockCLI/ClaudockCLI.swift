@@ -5,7 +5,7 @@ import UsageCore
 private enum CLIError: LocalizedError {
     case arguments(String), missingProfile(String), ambiguousProfile(String), missingExecutable, missingOwnExecutable, launchFailed(Int32), invalidEnvironment
     case input(String), missingAPIKey(String), apiKeySignIn(String), subscriptionKey(String), apiKeyToken(String), expiredToken(String)
-    case tokenAccountMismatch(String)
+    case tokenAccountMismatch(String), consoleSignIn(String), subscriptionConsoleSignIn(String), consoleLoginToken(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,9 +18,17 @@ private enum CLIError: LocalizedError {
         case .invalidEnvironment: return "The launch environment contains an invalid value."
         case .input(let detail): return detail
         case .missingAPIKey(let name): return "No Console API key is saved for '\(name)'. Save one with: claudock profile set-key \(name)"
-        case .apiKeySignIn(let name): return "'\(name)' uses a Console API key and has no Claude sign-in. Replace its key with: claudock profile set-key \(name)"
-        case .subscriptionKey(let name): return "'\(name)' is a Claude subscription profile. Only profiles added with 'claudock profile add NAME --api-key' store a Console API key."
+        case .apiKeySignIn(let name):
+            return "'\(name)' uses a Console API key and has no Claude sign-in. Replace its key with: claudock profile set-key \(name) "
+                + "— or sign in to its Anthropic Console account instead: claudock profile login \(name) --console"
+        case .subscriptionKey(let name):
+            return "'\(name)' is a Claude subscription profile. Only profiles added with 'claudock profile add NAME --api-key' or '--console' use a Console API key."
         case .apiKeyToken(let name): return "'\(name)' uses a Console API key. Inference tokens are only for Claude subscription profiles."
+        case .consoleLoginToken(let name): return "'\(name)' signs in to an Anthropic Console account. Inference tokens are only for Claude subscription profiles."
+        case .consoleSignIn(let name): return "\(name) is not signed in to a Console account. Sign in with: claudock profile login \(name)"
+        case .subscriptionConsoleSignIn(let name):
+            return "'\(name)' is a Claude subscription profile and signs in with: claudock profile login \(name). "
+                + "For an Anthropic Console account, add a profile with: claudock profile add NAME --console"
         case .expiredToken(let name):
             return "The inference token saved for '\(name)' has expired. Make a new one: claudock profile setup-token \(name), then pbpaste | claudock profile set-token \(name)."
         case .tokenAccountMismatch(let name):
@@ -34,9 +42,10 @@ private enum CLIError: LocalizedError {
 /// Validate the complete command before reading profiles, credentials, or shell files.
 private enum Command {
     case help, version, list, importShell
-    case add(String, String?), addAPIKey(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
+    case add(String, String?), addAPIKey(String, String?), addConsoleLogin(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
     case setCredit(String, Decimal)
-    case rename(String, String), remove(String), login(String), run(String, [String])
+    /// `login(NAME, console)`: `--console` asks for an Anthropic Console sign-in.
+    case rename(String, String), remove(String), login(String, Bool), run(String, [String])
     case usage, shellEnable, shellDisable, shellStatus, shellProfileNames
     /// nil prints the current setting.
     case requireToken(Bool?)
@@ -84,7 +93,8 @@ private enum Command {
                 throw CLIError.arguments("profile set-credit takes a profile name and an amount in US dollars: claudock profile set-credit NAME AMOUNT.")
             case "rename" where arguments.count == 4: return .rename(try name(arguments[2]), try newName(arguments[3]))
             case "remove" where arguments.count == 3: return .remove(try name(arguments[2]))
-            case "login" where arguments.count == 3: return .login(try name(arguments[2]))
+            case "login" where arguments.count == 3: return .login(try name(arguments[2]), false)
+            case "login" where arguments.count == 4 && arguments[3] == "--console": return .login(try name(arguments[2]), true)
             default: break
             }
         }
@@ -106,15 +116,19 @@ private enum Command {
         throw CLIError.arguments("Unknown command or unexpected arguments.")
     }
 
-    /// `profile add NAME [--api-key] [--directory ABS_PATH]`, options in either order.
+    /// `profile add NAME [--api-key | --console] [--directory ABS_PATH]`, options in any order.
     /// A key is never taken from arguments; with --api-key it is read from standard input.
     private static func add(name value: String, options: [String]) throws -> Command {
         let name = try newName(value)
-        var apiKey = false, directory: String?
+        var apiKey = false, console = false, directory: String?
         var index = 0
         while index < options.count {
-            if options[index] == "--api-key", !apiKey {
+            if (options[index] == "--api-key" && console) || (options[index] == "--console" && apiKey) {
+                throw CLIError.arguments("Choose either --api-key or --console, not both.")
+            } else if options[index] == "--api-key", !apiKey {
                 apiKey = true; index += 1
+            } else if options[index] == "--console", !console {
+                console = true; index += 1
             } else if options[index] == "--directory", directory == nil, index + 1 < options.count {
                 let path = options[index + 1]
                 guard path.hasPrefix("/"), !path.contains(where: { $0 == "\0" || $0 == "\n" || $0 == "\r" }) else {
@@ -127,7 +141,7 @@ private enum Command {
                 throw CLIError.arguments("Unknown command or unexpected arguments.")
             }
         }
-        return apiKey ? .addAPIKey(name, directory) : .add(name, directory)
+        return apiKey ? .addAPIKey(name, directory) : console ? .addConsoleLogin(name, directory) : .add(name, directory)
     }
 
     /// An ISO 8601 date and time (2026-12-31T23:59:59Z) or a full date (2026-12-31, midnight UTC).
@@ -197,7 +211,8 @@ private struct ClaudockCLI {
             print("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY")
             for profile in profiles {
                 let kind = profile.discoveryNote != nil ? "needs-import" : profile.isVertex ? "vertex"
-                    : profile.authKind == .apiKey ? "api-key" : profile.managed ? "managed" : "imported"
+                    : profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login"
+                    : profile.managed ? "managed" : "imported"
                 print([profile.name, profile.command, kind, profile.configDirectory].map(field).joined(separator: "\t"))
             }
         case .importShell:
@@ -212,29 +227,42 @@ private struct ClaudockCLI {
             let profile = try ProfileStore.addAPIKeyProfile(name: name, apiKey: key, configDirectory: directory)
             print("Added \(profile.name) with its Console API key saved in Keychain. Start it with: claudock run \(profile.name)")
             print("The first interactive launch asks whether to use the API key; choose Yes.")
+        case .addConsoleLogin(let name, let directory):
+            let profile = try ProfileStore.addConsoleLoginProfile(name: name, configDirectory: directory)
+            print("Added \(profile.name). Sign in to its Anthropic Console account in your browser. "
+                  + "If sign-in does not finish, sign in later with: claudock profile login \(profile.name)")
+            try launch(profile: profile, arguments: consoleSignIn, signIn: true)
         case .setKey(let name):
             let profile = try resolve(name)
-            guard profile.authKind == .apiKey else { throw CLIError.subscriptionKey(profile.name) }
+            guard profile.authKind.isConsole else { throw CLIError.subscriptionKey(profile.name) }
             let key = try ConsoleAPIKey(parsing: SecretInput.read(prompt: "Console API key: "))
-            try APIKeyStore.save(key, profile: profile)
-            print("Saved a new Console API key for \(profile.name) in Keychain.")
+            if profile.authKind == .apiKey {
+                try APIKeyStore.save(key, profile: profile)
+                print("Saved a new Console API key for \(profile.name) in Keychain.")
+            } else {
+                // The key is saved before the registry lists the profile as an API-key profile.
+                let switched = try ProfileStore.setAuthKind(.apiKey, for: profile) { try APIKeyStore.save(key, profile: $0) }
+                print("Saved a Console API key for \(switched.name) in Keychain; \(switched.name) now uses it instead of its Console account sign-in.")
+                print("Claude Code keeps that sign-in in Keychain under service \(LaunchCommand.quote(ConsoleLogin.keychainService(for: switched))). "
+                      + "To use it again: claudock profile login \(switched.name) --console")
+            }
         case .setToken(let name, let expiry):
             let profile = try resolve(name)
-            guard profile.authKind == .subscription else { throw CLIError.apiKeyToken(profile.name) }
+            try requireTokenSupport(profile)
             guard profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else { throw MintTokenError.unsupportedProfile }
             let token = try MintTokenStore.importToken(raw: SecretInput.read(prompt: "Inference token: "), profile: profile, expiresAt: expiry)
             print("Saved an inference token for \(profile.name) in Keychain; 'claudock run \(profile.name)' uses it. "
                   + "Expires: \(token.expiresAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"). Its account is not verified.")
         case .setupToken(let name):
             let profile = try resolve(name)
-            guard profile.authKind == .subscription else { throw CLIError.apiKeyToken(profile.name) }
+            try requireTokenSupport(profile)
             // Runs like sign-in, on the profile's own login: the saved token and the token requirement play no part.
             try launch(profile: profile, arguments: ["setup-token"], signIn: true,
                        notice: "Sign the browser in to the claude.ai account for \(profile.name) first. "
                            + "When the token is shown, save it with: pbpaste | claudock profile set-token \(profile.name)")
         case .setCredit(let name, let amount):
             let profile = try resolve(name)
-            guard profile.authKind == .apiKey else { throw APICreditError.subscriptionProfile(profile.name) }
+            guard profile.authKind.isConsole else { throw APICreditError.subscriptionProfile(profile.name) }
             let credit = try APICreditStore.setBalance(amount, profile: profile)
             print("Set \(profile.name)'s Console credit to \(credit.balanceText) as of \(ISO8601DateFormatter().string(from: credit.asOf)). "
                   + "'claudock usage' shows what is left after the Claude Code sessions Claudock starts on this Mac; "
@@ -253,17 +281,30 @@ private struct ClaudockCLI {
         case .remove(let name):
             let profile = try resolve(name)
             try ProfileStore.remove(profile: profile)
-            if profile.authKind == .apiKey {
+            switch profile.authKind {
+            case .apiKey:
                 let service = APIKeyStore.serviceName(for: profile)
                 print("Removed \(name) from Claudock. Claude data, its Console API key, and your own shell commands were preserved.")
                 print("The key stays in Keychain under service \(service). To delete it: security delete-generic-password -s \(service)")
-            } else {
+            case .consoleLogin:
+                let service = LaunchCommand.quote(ConsoleLogin.keychainService(for: profile))
+                print("Removed \(name) from Claudock. Claude data, its Console sign-in, and your own shell commands were preserved.")
+                print("Claude Code keeps the sign-in's API key in Keychain under service \(service). To delete it: security delete-generic-password -s \(service)")
+            case .subscription:
                 print("Removed \(name) from Claudock. Claude data, credentials, and your own shell commands were preserved.")
             }
-        case .login(let name):
+        case .login(let name, let console):
             let profile = try resolve(name)
-            guard profile.authKind == .subscription else { throw CLIError.apiKeySignIn(profile.name) }
-            try launch(profile: profile, arguments: ["auth", "login", "--claudeai"], signIn: true)
+            switch profile.authKind {
+            case .subscription:
+                guard !console else { throw CLIError.subscriptionConsoleSignIn(profile.name) }
+                try launch(profile: profile, arguments: ["auth", "login", "--claudeai"], signIn: true)
+            case .consoleLogin:
+                try launch(profile: profile, arguments: consoleSignIn, signIn: true)
+            case .apiKey:
+                guard console else { throw CLIError.apiKeySignIn(profile.name) }
+                try switchToConsoleSignIn(profile)
+            }
         case .run(let name, let arguments):
             try launch(profile: resolve(name), arguments: arguments)
         case .removedAuto:
@@ -275,8 +316,9 @@ private struct ClaudockCLI {
             guard matches.count == 1, let profile = matches.first, CredentialStore.serviceName(for: profile) == service else {
                 throw CLIError.arguments("The selected profile changed. Choose it again in Claudock.")
             }
-            if login, profile.authKind != .subscription { throw CLIError.apiKeySignIn(profile.name) }
-            try launch(profile: profile, arguments: login ? ["auth", "login", "--claudeai"] : arguments, signIn: login)
+            if login, profile.authKind == .apiKey { throw CLIError.apiKeySignIn(profile.name) }
+            let signIn = profile.authKind == .consoleLogin ? consoleSignIn : ["auth", "login", "--claudeai"]
+            try launch(profile: profile, arguments: login ? signIn : arguments, signIn: login)
         case .usage:
             try await usage()
         case .requireToken(let required?):
@@ -323,6 +365,46 @@ private struct ClaudockCLI {
         return profile
     }
 
+    /// Claude Code's sign-in to an Anthropic Console account; it creates and keeps the profile's API key itself.
+    private static let consoleSignIn = ["auth", "login", "--console"]
+
+    /// Inference tokens belong to subscription profiles.
+    private static func requireTokenSupport(_ profile: Profile) throws {
+        switch profile.authKind {
+        case .subscription: return
+        case .apiKey: throw CLIError.apiKeyToken(profile.name)
+        case .consoleLogin: throw CLIError.consoleLoginToken(profile.name)
+        }
+    }
+
+    /// Runs Claude Code's Console sign-in for an API-key profile as a child, and switches the profile to that sign-in
+    /// only once it finished: Claude exited 0 and its key item exists. Otherwise the profile keeps using its saved key,
+    /// which stays in Keychain either way.
+    private static func switchToConsoleSignIn(_ profile: Profile) throws -> Never {
+        guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
+        let environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
+        guard !executable.contains("\0"), environment.allSatisfy({ !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
+            throw CLIError.invalidEnvironment
+        }
+        fflush(stdout)
+        let status: Int32
+        do { status = try APICreditLaunch.supervise(executable: executable, arguments: consoleSignIn, environment: environment) }
+        catch APICreditLaunchError.launchFailed(let code) { throw CLIError.launchFailed(code) }
+        guard status == 0 else {
+            writeError("The Console sign-in did not finish; \(profile.name) still uses its Console API key.")
+            exit(status)
+        }
+        guard try ConsoleLogin.isSignedIn(profile: profile) else {
+            writeError("Claude Code finished without saving a Console sign-in; \(profile.name) still uses its Console API key.")
+            exit(1)
+        }
+        let switched = try ProfileStore.setAuthKind(.consoleLogin, for: profile)
+        let service = APIKeyStore.serviceName(for: profile)
+        print("\(switched.name) now uses its Anthropic Console account sign-in; Claudock no longer passes it the saved Console API key.")
+        print("The key stays in Keychain under service \(service). To delete it: security delete-generic-password -s \(service)")
+        exit(0)
+    }
+
     /// Sign-in and token creation (`signIn`) run on the profile's own login and are never subject to the inference-token
     /// requirement. A `notice` goes to stderr just before Claude replaces this process, so a refused launch prints none.
     private static func launch(profile: Profile, arguments: [String], signIn: Bool = false, notice: String? = nil) throws {
@@ -334,10 +416,16 @@ private struct ClaudockCLI {
         // Both mean the saved token's account is not the profile's current login: reading raises the first, saving the second.
         catch MintTokenError.accountMismatch, MintTokenError.accountChanged { throw CLIError.tokenAccountMismatch(profile.name) }
         // Inherited credentials were cleared above, so the chosen one is the only one.
+        var counted = false
         switch credential {
         case .consoleAPIKey:
             guard let key = try APIKeyStore.environmentKey(profile: profile) else { throw CLIError.missingAPIKey(profile.name) }
             environment["ANTHROPIC_API_KEY"] = key
+            counted = true
+        case .consoleLogin:
+            // Claude Code uses the key its Console sign-in keeps; without one it would start signed out.
+            guard try ConsoleLogin.isSignedIn(profile: profile) else { throw CLIError.consoleSignIn(profile.name) }
+            counted = true
         case .inferenceToken(let token): environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
         case .profileLogin: break
         }
@@ -357,7 +445,9 @@ private struct ClaudockCLI {
             throw CLIError.launchFailed(ENOMEM)
         }
         if let notice { FileHandle.standardError.write(Data((field(notice) + "\n").utf8)) }
-        if case .consoleAPIKey = credential {
+        // Claude takes over the terminal; anything printed before it must come first.
+        fflush(stdout)
+        if counted {
             // A child process instead of execve: Claude Code reports each request's cost to Claudock while it runs.
             do {
                 exit(try APICreditLaunch.run(profile: profile, executable: executable, arguments: arguments, environment: environment,
@@ -407,7 +497,10 @@ private struct ClaudockCLI {
                     if let credit = try APICreditStore.status(profile: profile) {
                         print([profile.name, APICreditStatus.plan, credit.usageWindow, credit.usedPercentText, "-"].map(field).joined(separator: "\t"))
                     } else {
-                        writeError("\(field(profile.name)): skipped; Console API key profiles are billed per token and have no subscription limits. "
+                        let billing = profile.authKind == .apiKey ? "Console API key profiles are billed per token and have"
+                            : ConsoleLogin.organizationName(profile: profile).map { "Console login · \($0) is billed per token and has" }
+                                ?? "Console login profiles are billed per token and have"
+                        writeError("\(field(profile.name)): skipped; \(billing) no subscription limits. "
                                    + "Set its balance with: claudock profile set-credit \(profile.name) AMOUNT")
                     }
                 } catch {
@@ -446,6 +539,7 @@ private struct ClaudockCLI {
       claudock profile list
       claudock profile add NAME [--directory ABS_PATH]
       claudock profile add NAME --api-key [--directory ABS_PATH]
+      claudock profile add NAME --console [--directory ABS_PATH]
       claudock profile set-key NAME
       claudock profile set-credit NAME AMOUNT
       claudock profile set-token NAME [--expires ISO8601_DATE]
@@ -453,7 +547,7 @@ private struct ClaudockCLI {
       claudock profile tokens
       claudock profile rename NAME NEWNAME
       claudock profile remove NAME
-      claudock profile login NAME
+      claudock profile login NAME [--console]
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
       claudock usage
@@ -469,7 +563,7 @@ private struct ClaudockCLI {
     'run', 'profile login', and 'profile setup-token' use the current terminal and
     working directory.
     'usage' requests subscription quota once for each supported profile and
-    lists the Console credit left on API-key profiles; output is tab-separated
+    lists the Console credit left on Console profiles; output is tab-separated
     and contains no account emails or credentials.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
     loader; disable removes only that integration. Existing wrappers stay intact.
@@ -482,15 +576,24 @@ private struct ClaudockCLI {
     macOS Keychain and reach Claude as ANTHROPIC_API_KEY. The first interactive
     launch asks whether to use the key; choose Yes.
 
+    Console login: 'profile add NAME --console' creates a profile that signs in
+    to an Anthropic Console account in the browser instead (claude auth login
+    --console). Claude Code then creates and keeps the account's API key itself;
+    nothing is pasted, and usage is billed per token to that Console
+    organization. 'profile login NAME' signs it in again. On an API-key profile,
+    'profile login NAME --console' switches it to its Console sign-in once the
+    sign-in finishes, keeping the saved key unused in Keychain; 'profile set-key
+    NAME' switches a Console-login profile back to a pasted key.
+
     Console credit: 'profile set-credit NAME AMOUNT' records the remaining
-    prepaid credit shown in the Claude Console for an API-key profile, in US
-    dollars (such as 200 or 187.42). 'usage' then lists what is left, less the
-    cost Claude Code reports for each request in sessions Claudock starts on
-    this Mac; for that, these launches run Claude as a child of claudock with
-    OpenTelemetry log export to 127.0.0.1. Use of the same key elsewhere (other
-    Macs, scripts, other tools) is not seen. The Console balance is
-    authoritative: set it again any time. Without a credit, 'usage' skips the
-    profile.
+    prepaid credit shown in the Claude Console for an API-key or Console-login
+    profile, in US dollars (such as 200 or 187.42). 'usage' then lists what is
+    left, less the cost Claude Code reports for each request in sessions
+    Claudock starts on this Mac; for that, these launches run Claude as a child
+    of claudock with OpenTelemetry log export to 127.0.0.1. Use of the same key
+    elsewhere (other Macs, scripts, other tools) is not seen. The Console
+    balance is authoritative: set it again any time. Without a credit, 'usage'
+    skips the profile.
 
     Inference tokens: 'profile set-token NAME' saves a long-lived Claude Code
     OAuth token (sk-ant-oat01-…, or its export CLAUDE_CODE_OAUTH_TOKEN=… line)
@@ -519,6 +622,7 @@ private struct ClaudockCLI {
       pbpaste | claudock profile add console --api-key
       claudock profile set-credit console 187.42
       claudock run console -- --resume
+      claudock profile add team --console
     """
 }
 

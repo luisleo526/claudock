@@ -15,7 +15,8 @@ public enum APICreditError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidAmount: return "Enter the credit in US dollars, such as 200 or 187.42: from 0 to 1,000,000, with at most two decimals."
         case .subscriptionProfile(let name):
-            return "'\(name)' is a Claude subscription profile. Credit applies only to Console API-key profiles added with 'claudock profile add NAME --api-key'."
+            return "'\(name)' is a Claude subscription profile. Credit applies only to Console API-key profiles and Console-login profiles, "
+                + "added with 'claudock profile add NAME --api-key' or '--console'."
         case .ledgerUnreadable:
             return "The Console credit ledger (api-credit.json in Claudock's Application Support folder) is unreadable. Set the credit again to start a new one; the unreadable file is kept beside it."
         case .ledgerUnavailable: return "Claudock could not read the Console credit ledger just now. Try again."
@@ -219,7 +220,7 @@ public enum APICreditEvents {
     }
 }
 
-/// How an API-key launch gets Claude Code to report each request to Claudock.
+/// How a Console profile's launch gets Claude Code to report each request to Claudock.
 public enum APICreditCapture {
     /// Short, so a killed Claude Code loses at most about a second of unexported requests.
     public static let exportIntervalMilliseconds = 1000

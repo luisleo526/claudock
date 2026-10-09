@@ -50,10 +50,23 @@ public struct Credentials: Sendable {
 
 public enum CredentialStore {
     public static func serviceName(for profile: Profile) -> String {
-        if profile.command == "claude" { return "Claude Code-credentials" }
+        "Claude Code-credentials" + serviceSuffix(for: profile)
+    }
+
+    /// Claude Code's per-folder Keychain suffix: none for the default profile, which launches without
+    /// CLAUDE_CONFIG_DIR, otherwise "-" and the first 8 hex digits of the SHA-256 of the NFC config path.
+    static func serviceSuffix(for profile: Profile) -> String {
+        if profile.command == "claude" { return "" }
         let path = profile.configDirectory.precomposedStringWithCanonicalMapping
         let hash = SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "Claude Code-credentials-" + hash.prefix(8)
+        return "-" + hash.prefix(8)
+    }
+
+    /// Claude Code's state file: `~/.claude.json` for the default profile, `.claude.json` in the config folder otherwise.
+    static func claudeState(for profile: Profile) -> URL {
+        profile.command == "claude"
+            ? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude.json")
+            : URL(fileURLWithPath: profile.configDirectory).appendingPathComponent(".claude.json")
     }
     public static func read(profile: Profile) throws -> Credentials {
         try readStored(profile: profile).credentials
@@ -106,9 +119,7 @@ public enum CredentialStore {
     }
 
     public static func email(for profile: Profile) -> String? {
-        let path = profile.command == "claude"
-            ? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude.json")
-            : URL(fileURLWithPath: profile.configDirectory).appendingPathComponent(".claude.json")
+        let path = claudeState(for: profile)
         guard let size = try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize, size < 10_485_760,
               let data = try? Data(contentsOf: path), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let account = root["oauthAccount"] as? [String: Any] else { return nil }

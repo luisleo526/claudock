@@ -89,7 +89,11 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2),
              (["profile", "set-credit", "smoke"], 2), (["profile", "set-credit", "smoke", "1.234"], 2),
              (["profile", "set-credit", "smoke", "-5"], 2), (["profile", "set-credit", "smoke", "5", "extra"], 2),
-             (["profile", "set-credit", "sk-ant-api03-x", "5"], 2)]
+             (["profile", "set-credit", "sk-ant-api03-x", "5"], 2),
+             (["profile", "add", "work", "--console", "--api-key"], 2), (["profile", "add", "work", "--api-key", "--console"], 2),
+             (["profile", "add", "work", "--console", "--console"], 2), (["profile", "add", "work", "--console=yes"], 2),
+             (["profile", "add", "work", "--console", "extra"], 2), (["profile", "login", "smoke", "--console", "extra"], 2),
+             (["profile", "login", "smoke", "--claudeai"], 2), (["profile", "login", "--console", "smoke"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
@@ -205,6 +209,38 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
         assert result.returncode == 0 and json.loads(result.stdout)["argv"] == argv, (arguments, result.stderr)
     passed.append("sign-in and run NAME -- setup-token ignore a saved token of another account")
 
+    # Console-login profiles sign in with --console, and a launch needs Claude Code's own sign-in and injects nothing.
+    for arguments in (["profile", "login", "team"], ["profile", "login", "team", "--console"], ["profile", "login", "claude-team", "--console"],
+                      ["launch-bound", "fixture-console", "Claude Code-credentials-c0ffee00", "login", "--"]):
+        result = run(arguments, {**conflicts, "CLAUDOCK_TEST_MINT": "1"})
+        assert result.returncode == 0 and json.loads(result.stdout) == {
+            "argv": ["auth", "login", "--console"], "cwd": str(base), "env": {"CLAUDE_CONFIG_DIR": "/synthetic/console team"}}, (arguments, result.stderr)
+    passed.append("console-login sign-in runs auth login --console with nothing injected")
+    not_signed_in = "claudock: team is not signed in to a Console account. Sign in with: claudock profile login team\n"
+    for arguments in (["run", "team", "--", "x"], ["launch-bound", "fixture-console", "Claude Code-credentials-c0ffee00", "run", "--", "x"]):
+        marker.unlink(missing_ok=True)
+        result = run(arguments, conflicts)
+        assert result.returncode == 1 and not result.stdout and result.stderr == not_signed_in, (arguments, result.stderr)
+        assert marker.read_text() == "console sign-in", (arguments, "a refused launch must stop at the sign-in check")
+    passed.append("console-login launch without Claude Code's sign-in stops before exec")
+    for extra in ({}, {"CLAUDOCK_TEST_REQUIRE_TOKEN": "1"}, {"CLAUDOCK_TEST_MINT": "1"}):
+        marker.unlink(missing_ok=True)
+        result = run(["run", "team", "--", "x"], {**conflicts, **extra, "CLAUDOCK_TEST_CONSOLE_SIGNED_IN": "1"})
+        # The synthetic receiver is unavailable, so the CLI says so and execs Claude directly.
+        assert result.returncode == 0 and json.loads(result.stdout)["argv"] == ["x"], (extra, result.stderr)
+        assert json.loads(result.stdout)["env"] == {"CLAUDE_CONFIG_DIR": "/synthetic/console team"}, (extra, "console-login launch must inject nothing")
+        assert "usage receiver" in result.stderr and marker.read_text() == "credit launch", (extra, result.stderr)
+    passed.append("signed-in console-login launch goes to the credit launcher and injects no key or token, whatever the token policy")
+    marker.unlink(missing_ok=True)
+    result = run(["profile", "login", "smoke", "--console"], conflicts)
+    assert result.returncode == 1 and not result.stdout and "subscription" in result.stderr, result.stderr
+    assert marker.read_text() == "profile store", "a refused --console sign-in must not launch or change anything"
+    passed.append("profile login --console refused for subscription profiles")
+    for arguments in (["profile", "setup-token", "team"], ["profile", "set-token", "team"]):
+        result = run(arguments)
+        assert result.returncode == 1 and "Inference tokens are only for" in result.stderr and not result.stdout, (arguments, result.stderr)
+    passed.append("inference-token commands refused for console-login profiles")
+
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout
     passed.append("unsupported Vertex blocked")
@@ -225,7 +261,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
 
     result = run(["profile", "list"])
     assert result.returncode == 0 and "SELECTOR" in result.stdout and "claude-default" in result.stdout
-    passed.append("list exact selectors")
+    assert "team\tclaude-team\tconsole-login\t/synthetic/console team\n" in result.stdout, result.stdout
+    passed.append("list exact selectors and the console-login kind")
 
     # Reproduce the real app layout: the running CLI is a secondary executable,
     # while CFBundleExecutable points at the GUI. Integration must call the CLI.
@@ -253,7 +290,9 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert result.returncode == 0 and "25.00" in result.stdout and "skipped" in result.stderr
     assert result.stdout.startswith("PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC\n")
     assert "Max 20×" in result.stdout
-    passed.append("synthetic quota TSV and skipped unsupported")
+    assert ("claudock: team: skipped; Console login · Fixture Org is billed per token and has no subscription limits. "
+            "Set its balance with: claudock profile set-credit team AMOUNT\n") in result.stderr, result.stderr
+    passed.append("synthetic quota TSV and skipped unsupported, with the Console organization")
 
     result = run(["usage"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})
     assert result.returncode == 1 and "Synthetic quota error" in result.stderr and "25.00" not in result.stdout

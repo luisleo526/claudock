@@ -5,7 +5,7 @@ public enum ProfileManager {
     public enum ManagementError: LocalizedError {
         case invalidName, reservedName, duplicateName, duplicateDirectory, missingProfile, protectedProfile, unresolvedProfile
         case directoryExists, invalidDirectory, invalidManagedFiles, concurrentChange, busy
-        case unsupportedShellFile, ioFailure
+        case unsupportedShellFile, ioFailure, unsupportedKindChange
 
         public var errorDescription: String? {
             switch self {
@@ -23,6 +23,8 @@ public enum ProfileManager {
             case .busy: return "Another profile update is in progress. Wait a moment and try again."
             case .unsupportedShellFile: return "The .zshrc file must be a regular file to update shell integration safely."
             case .ioFailure: return "The profile could not be saved. Check that Claudock's data folder is writable."
+            case .unsupportedKindChange:
+                return "Only a Console profile added through Claudock can switch between a Console API key and a Console account sign-in."
             }
         }
     }
@@ -34,6 +36,10 @@ public enum ProfileManager {
     public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String? = nil,
                                         home: String = NSHomeDirectory()) throws -> Profile {
         try ProfileStore.addAPIKeyProfile(name: name, apiKey: apiKey, configDirectory: configDirectory, home: home)
+    }
+
+    public static func addConsoleLoginProfile(name: String, configDirectory: String? = nil, home: String = NSHomeDirectory()) throws -> Profile {
+        try ProfileStore.addConsoleLoginProfile(name: name, configDirectory: configDirectory, home: home)
     }
 
     public static func rename(profile: Profile, to name: String, home: String = NSHomeDirectory()) throws -> Profile {
