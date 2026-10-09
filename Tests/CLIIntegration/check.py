@@ -2,7 +2,10 @@
 """Exercise the production CLI without accessing real profiles, shell files, or APIs.
 
 Builds the exact CLI, Profile, and LaunchCommand sources with synthetic I/O
-boundaries, then checks the real execve process handoff. Requires macOS + Xcode.
+boundaries, then checks the real execve process handoff. Also runs every
+`claudock` command in README.md's shell code blocks against the same synthetic
+build, so the README cannot document a command the parser rejects. Requires
+macOS + Xcode.
 """
 
 import hashlib
@@ -11,6 +14,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +23,124 @@ import tempfile
 
 PROJECT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent
+README = PROJECT / "README.md"
+# The usage lines of `claudock help` are syntax, such as `claudock profile add NAME [--directory ABS_PATH]`. The README's
+# command list repeats them, and every form a line stands for runs with these synthetic values in place of its
+# placeholders. Any other README command runs exactly as written.
+PLACEHOLDERS = {"NAME": "smoke", "NEWNAME": "renamed", "ABS_PATH": "/synthetic/readme-check", "AMOUNT": "187.42",
+                "ISO8601_DATE": "2031-01-01", "SECONDS": "60", "CLAUDE_ARGS...": "--resume"}
+SHELL_LANGUAGES = {"sh", "bash", "zsh", "shell", "console"}
+SHELL_OPERATORS = {"|", "||", "&", "&&", ";", "<", ">", ">>"}
+
+
+def fenced_lines(text):
+    """(line number, language, line) for every line inside a fenced code block: ``` or ~~~, closed by a fence of the
+    same kind that is at least as long."""
+    fence = language = None
+    for number, line in enumerate(text.splitlines(), 1):
+        marker = re.match(r"\s*(`{3,}|~{3,})\s*(.*)$", line)
+        if fence is None:
+            if marker:
+                fence, language = marker.group(1), marker.group(2).split(" ")[0]
+        elif marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) and not marker.group(2):
+            fence = None
+        else:
+            yield number, language, line
+
+
+def readme_commands(text):
+    """([(line number, words)], [problems]): each `claudock` command in the README's shell code blocks; output belongs in
+    `text` blocks. Comments are dropped. A command may follow a `$ ` prompt, environment assignments, or a shell
+    operator, as in `pbpaste | claudock profile set-token work`, and the app's absolute path stands for `claudock`."""
+    commands, problems = [], []
+    for number, language, line in fenced_lines(text):
+        if language not in SHELL_LANGUAGES:
+            continue
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError as error:
+            problems.append(f"README.md:{number}: cannot read `{line.strip()}` as shell words ({error})")
+            continue
+        segment, depth = [], 0
+        for word in [*words, None]:
+            if word is None or (word in SHELL_OPERATORS and depth == 0):
+                while segment and (segment[0] in ("$", "%") or re.fullmatch(r"\w+=\S*", segment[0])):
+                    segment = segment[1:]
+                if segment and re.fullmatch(r"claudock|/.*/Contents/MacOS/claudock", segment[0]):
+                    commands.append((number, ["claudock", *segment[1:]]))
+                segment = []
+            else:
+                # An operator inside `[...]`, as in `[--max-age SECONDS | --fresh]`, belongs to the syntax.
+                depth += word.count("[") - word.count("]")
+                segment.append(word)
+    return commands, problems
+
+
+def expand_syntax(command):
+    """Each command that a usage line stands for: every optional `[...]` part left out and put in, and each
+    `on|off|status` choice taken."""
+    group = re.search(r"\[([^\[\]]*)\]", command)
+    if group:
+        return [variant for choice in [""] + [option.strip() for option in group.group(1).split("|")]
+                for variant in expand_syntax(command[:group.start()] + choice + command[group.end():])]
+    words = command.split()
+    for index, word in enumerate(words):
+        if re.fullmatch(r"[^|]+(\|[^|]+)+", word):
+            return [variant for choice in word.split("|") for variant in expand_syntax(" ".join(words[:index] + [choice] + words[index + 1:]))]
+    return [" ".join(words)]
+
+
+def heading_anchors(text):
+    """GitHub's anchor for each heading outside code blocks: link text only, lower case, punctuation dropped, spaces as
+    hyphens, and `-1`, `-2` on repeats."""
+    fenced = {number for number, _, _ in fenced_lines(text)}
+    anchors, seen = set(), {}
+    for number, line in enumerate(text.splitlines(), 1):
+        heading = re.match(r"#{1,6}\s+(.*?)(\s+#+)?\s*$", line)
+        if heading and number not in fenced:
+            title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading.group(1))
+            anchor = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
+            anchors.add(anchor if anchor not in seen else f"{anchor}-{seen[anchor]}")
+            seen[anchor] = seen.get(anchor, 0) + 1
+    return anchors
+
+
+def exists_exactly(path):
+    """Whether `path`, relative to the repository, exists with the letter case of every part. GitHub tells
+    `docs/guide.md` from `docs/GUIDE.md`; this Mac's file system usually does not."""
+    normal = os.path.normpath(path)
+    if normal.startswith("..") or os.path.isabs(normal):
+        return False
+    current = PROJECT
+    for part in Path(normal).parts:
+        try:
+            if part not in os.listdir(current):
+                return False
+        except OSError:
+            return False
+        current = current / part
+    return True
+
+
+def readme_link_problems(text):
+    """Relative links and images of the README that point at a missing file or heading, or at a path in the wrong
+    letter case. Inline links and `src`, `srcset`, and `href` attributes outside code are read."""
+    fenced = {number for number, _, _ in fenced_lines(text)}
+    prose = "\n".join(line for number, line in enumerate(text.splitlines(), 1) if number not in fenced)
+    prose = re.sub(r"`[^`\n]*`", "", prose)
+    targets = re.findall(r"\]\(([^)\s]+)", prose) + re.findall(r'(?:src|srcset|href)="([^"\s]+)', prose)
+    problems = []
+    for target in sorted(set(targets)):
+        if re.match(r"[a-z][a-z0-9+.-]*:", target, re.IGNORECASE):
+            continue
+        path, _, anchor = target.partition("#")
+        if path and not exists_exactly(path):
+            problems.append(f"{target}: no such file")
+        elif anchor:
+            headings = text if not path else (PROJECT / path).read_text() if path.endswith(".md") else None
+            if headings is not None and anchor not in heading_anchors(headings):
+                problems.append(f"{target}: no such heading")
+    return problems
 
 
 def check(base):
@@ -59,8 +181,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     environment["CLAUDOCK_TEST_EXECUTABLE"] = str(fake)
     passed = []
 
-    def run(arguments, extra=None):
-        return subprocess.run([str(binary), *arguments], cwd=base, env={**environment, **(extra or {})}, capture_output=True, text=True, timeout=15)
+    def run(arguments, extra=None, stdin=None):
+        return subprocess.run([str(binary), *arguments], cwd=base, env={**environment, **(extra or {})}, stdin=stdin, capture_output=True, text=True, timeout=15)
 
     notice = "Claudock Auto has been removed. Use 'claudock run PROFILE' to start Claude with a specific profile.\n"
     removal_failures = []
@@ -306,6 +428,32 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     result = run(["usage"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})
     assert result.returncode == 1 and "Synthetic quota error" in result.stderr and "25.00" not in result.stdout
     passed.append("quota error returns failure without fabricated readings")
+
+    # README.md must keep telling the truth about the CLI. The commands a reader runs are in its shell code blocks: each
+    # `claudock` command runs against these synthetic boundaries, with an empty standard input, and the parser must
+    # accept it (no argument error). The usage lines of `claudock help` must appear in them, as the cheat sheet does. Inline
+    # code in prose and tables is not run. Relative links, images, and headings they point at must exist.
+    text = README.read_text()
+    help_text = run(["help"]).stdout
+    usage_lines = [" ".join(line.split()) for line in help_text.partition("Usage:\n")[2].partition("\n\n")[0].splitlines()
+                   if line.strip().startswith("claudock ")]
+    assert usage_lines, "claudock help lists no commands"
+    commands, problems = readme_commands(text)
+    documented, runs = set(), 0
+    for number, words in commands:
+        line = " ".join(words)
+        documented.add(line)
+        forms = ([[PLACEHOLDERS.get(word, word) for word in shlex.split(form)[1:]] for form in expand_syntax(line)]
+                 if line in usage_lines else [words[1:]])
+        for arguments in forms:
+            result = run(arguments, stdin=subprocess.DEVNULL)
+            runs += 1
+            if result.returncode not in (0, 1) or "Run 'claudock help' for usage." in result.stderr:
+                problems.append(f"README.md:{number}: `claudock {shlex.join(arguments)}` is rejected by the CLI (exit {result.returncode}): {result.stderr.strip()}")
+    problems += [f"README.md: no shell code block has the `claudock help` line `{line}`" for line in usage_lines if line not in documented]
+    problems += [f"README.md: link {problem}" for problem in readme_link_problems(text)]
+    assert not problems, "\n" + "\n".join(problems)
+    passed.append(f"README commands ({runs} runs), the full help usage list, and relative links are valid")
 
     return {"passed": len(passed), "checks": passed,
             "source_sha256": {str(source.relative_to(PROJECT)): hashlib.sha256(source.read_bytes()).hexdigest() for source in sources},
