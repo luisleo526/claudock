@@ -109,6 +109,8 @@ claudock run console -- --resume
 claudock profile set-credit console 200
 ```
 
+No key to paste? `claudock profile add team --console`, or **Console account (sign in)** in **Manage profiles**, signs the profile in to your Anthropic Console account in the browser, and Claude Code keeps the key itself. [Choosing between a key and a sign-in](docs/GUIDE.md#sign-in-to-a-console-account-instead)
+
 The key is read from standard input, never from command arguments, and stored only in Keychain. Like other new profiles, an API-key profile shares your session history, so **Continue as…** and `--resume` pick up where a subscription left off. The first interactive launch asks whether to use the API key; choose **Yes**.
 
 API usage is billed per token by the Claude Console, not by a subscription. Enter the credit the Console shows as left, with **Set credit…** or `claudock profile set-credit`, and the dashboard and `claudock usage` show what remains after the cost Claude Code reports for each request in the sessions Claudock starts on this Mac. Use of the key elsewhere is not seen, so the Console balance stays authoritative; set it again any time. [Add, replace, and remove keys, and track credit](docs/GUIDE.md#console-api-keys)
