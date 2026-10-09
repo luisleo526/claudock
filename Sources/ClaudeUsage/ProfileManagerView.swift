@@ -186,6 +186,8 @@ struct ProfileManagerView: View {
                 return "Pasted token · account unverified · \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
             }
             return "Pasted token · expiry unknown · account unverified"
+        case .tokenOfAnotherAccount:
+            return "Inference token belongs to a different account than this login · use Re-login with that account, or Set token… to replace it"
         }
     }
     private var credentialStatusProfiles: [Profile] {
@@ -454,6 +456,8 @@ private struct ProfileRow: View, Equatable {
 /// What a row shows about its launch credential.
 private enum CredentialStatus: Equatable {
     case token(MintTokenStatus)
+    /// The saved token was bound to an account other than the profile's current login.
+    case tokenOfAnotherAccount
     case apiKey(saved: Bool)
 }
 
@@ -462,5 +466,6 @@ private func readLaunchCredential(_ profile: Profile, isDemo: Bool) throws -> Cr
     if profile.authKind == .apiKey {
         return .apiKey(saved: isDemo ? DemoData.apiKeySaved(profile: profile) : try APIKeyStore.isSaved(profile: profile))
     }
-    return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile))
+    do { return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile)) }
+    catch MintTokenError.accountMismatch { return .tokenOfAnotherAccount }
 }
