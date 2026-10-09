@@ -118,7 +118,7 @@ Already have an inference token? Open **Manage profiles → Set token…**, past
 
 <img src="docs/screenshots/token-setup.png" width="500" alt="Claudock token setup with Paste token selected, an editable token field, and a Paste button; synthetic profile with no token entered">
 
-From Terminal, `pbpaste | claudock profile set-token work` saves a copied token, and `claudock profile tokens` lists each profile's token status without showing tokens. To create one, run `claudock run work -- setup-token` with your browser signed in to that profile's account. To make sure launches never fall back to a profile's normal login, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`.
+From Terminal, `pbpaste | claudock profile set-token work` saves a copied token, and `claudock profile tokens` lists each profile's token status without showing tokens. To create one, run `claudock profile setup-token work` with your browser signed in to that profile's account (`claudock run work -- setup-token` also works while nothing comes before `setup-token`). To make sure launches never fall back to a profile's normal login, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`.
 
 Need a new token? The same dialog offers **Create in browser**, with a separate authorization-code field. Browser-created tokens use Claude's reported expiry and verified account/organization. Pasted tokens are assigned to the profile you choose; their account identity and expiry cannot be established from the opaque string, so they are labeled accordingly.
 
