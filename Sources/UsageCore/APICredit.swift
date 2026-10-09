@@ -224,14 +224,14 @@ public enum APICreditCapture {
     public static let managedSettingsFiles = ["/Library/Application Support/ClaudeCode/managed-settings.json"]
 
     /// The launch environment with every inherited `OTEL_*` variable and `CLAUDE_CODE_ENABLE_TELEMETRY`
-    /// replaced by log export to the loopback receiver. Metrics and traces get no exporter.
-    public static func environment(_ base: [String: String], port: UInt16) -> [String: String] {
+    /// replaced by log export to the loopback receiver's `path`. Metrics and traces get no exporter.
+    public static func environment(_ base: [String: String], port: UInt16, path: String) -> [String: String] {
         var result = base.filter { !isTelemetryKey($0.key) }
         result["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
         result["OTEL_LOGS_EXPORTER"] = "otlp"
         result["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/json"
         result["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/json"
-        result["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "http://127.0.0.1:\(port)/v1/logs"
+        result["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "http://127.0.0.1:\(port)\(path)"
         result["OTEL_LOGS_EXPORT_INTERVAL"] = String(exportIntervalMilliseconds)
         return result
     }

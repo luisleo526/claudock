@@ -368,10 +368,10 @@ final class APICreditTests: XCTestCase {
         let inherited = ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-api03-synthetic", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "grpc",
                          "OTEL_METRICS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://example.invalid", "OTEL_LOG_USER_PROMPTS": "1",
                          "CLAUDE_CODE_ENABLE_TELEMETRY": "0", "CLAUDE_CONFIG_DIR": "/tmp/account"]
-        XCTAssertEqual(APICreditCapture.environment(inherited, port: 49152), [
+        XCTAssertEqual(APICreditCapture.environment(inherited, port: 49152, path: "/0123abcd/v1/logs"), [
             "PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-ant-api03-synthetic", "CLAUDE_CONFIG_DIR": "/tmp/account",
             "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_LOGS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
-            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:49152/v1/logs",
+            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:49152/0123abcd/v1/logs",
             "OTEL_LOGS_EXPORT_INTERVAL": "1000"])
     }
 
@@ -399,41 +399,72 @@ final class APICreditTests: XCTestCase {
         var bodies: [Data] = []
         let receiver = try APICreditReceiver(maximumBody: 1024) { body in received.lock(); bodies.append(body); received.unlock() }
         defer { receiver.stop() }
-        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(socket, 0)
-        defer { close(socket) }
-        var address = sockaddr_in()
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = receiver.port.bigEndian
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        XCTAssertNotNil(receiver.path.range(of: #"\A/[0-9a-f]{32}/v1/logs\z"#, options: .regularExpression), receiver.path)
+
+        func connection() -> Int32 {
+            let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            var address = sockaddr_in()
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = receiver.port.bigEndian
+            address.sin_addr.s_addr = inet_addr("127.0.0.1")
+            let connected = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            XCTAssertEqual(connected, 0)
+            return socket
         }
-        XCTAssertEqual(connected, 0)
-        func exchange(_ request: Data) -> String {
+        /// Sends a request and reads one response, or what arrives before the connection closes.
+        func exchange(_ socket: Int32, _ request: Data) -> String {
             _ = request.withUnsafeBytes { send(socket, $0.baseAddress, $0.count, 0) }
             var response = Data(), buffer = [UInt8](repeating: 0, count: 4096)
-            while !(String(data: response, encoding: .utf8) ?? "").contains("\r\n\r\n{}") {
+            while true {
+                let text = String(data: response, encoding: .utf8) ?? ""
+                if let end = text.range(of: "\r\n\r\n"), text.contains("Content-Length: 0") || text[end.upperBound...].hasPrefix("{}") { return text }
                 let count = recv(socket, &buffer, buffer.count, 0)
-                if count <= 0 { break }
+                if count <= 0 { return text }
                 response.append(contentsOf: buffer.prefix(count))
             }
-            return String(data: response, encoding: .utf8) ?? ""
         }
-        func post(_ body: Data, chunked: Bool = false) -> Data {
-            var head = "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
-            guard chunked else { return Data((head + "Content-Length: \(body.count)\r\n\r\n").utf8) + body }
+        func post(_ body: Data, path: String? = nil, headers: String = "Content-Type: application/json\r\n", chunks: [String]? = nil) -> Data {
+            var head = "POST \(path ?? receiver.path) HTTP/1.1\r\nHost: 127.0.0.1\r\n" + headers
+            guard let chunks else { return Data((head + "Content-Length: \(body.count)\r\n\r\n").utf8) + body }
             head += "Transfer-Encoding: chunked\r\n\r\n"
-            let half = body.count / 2
-            return Data(head.utf8) + Data(String(half, radix: 16).utf8) + Data("\r\n".utf8) + body.prefix(half) + Data("\r\n".utf8)
-                + Data(String(body.count - half, radix: 16).utf8) + Data("\r\n".utf8) + body.suffix(body.count - half) + Data("\r\n0\r\n\r\n".utf8)
+            return Data((head + chunks.joined()).utf8)
         }
+
         // One keep-alive connection, like the exporter's: a body, an oversized body, garbage, and a chunked body.
-        XCTAssertTrue(exchange(post(Data(#"{"a":1}"#.utf8))).hasPrefix("HTTP/1.1 200 OK"))
-        XCTAssertTrue(exchange(post(Data(repeating: 0x20, count: 4096))).hasPrefix("HTTP/1.1 200 OK"))
-        XCTAssertTrue(exchange(post(Data("garbage".utf8))).hasPrefix("HTTP/1.1 200 OK"))
-        XCTAssertTrue(exchange(post(Data(#"{"b":2}"#.utf8), chunked: true)).hasPrefix("HTTP/1.1 200 OK"))
+        let exporter = connection()
+        defer { close(exporter) }
+        XCTAssertTrue(exchange(exporter, post(Data(#"{"a":1}"#.utf8))).hasPrefix("HTTP/1.1 200 OK"))
+        XCTAssertTrue(exchange(exporter, post(Data(repeating: 0x20, count: 4096))).hasPrefix("HTTP/1.1 200 OK"))
+        XCTAssertTrue(exchange(exporter, post(Data("garbage".utf8))).hasPrefix("HTTP/1.1 200 OK"))
+        XCTAssertTrue(exchange(exporter, post(Data(), chunks: ["3\r\n{\"b\r\n", "4;ext=1\r\n\":2}\r\n", "0\r\n\r\n"])).hasPrefix("HTTP/1.1 200 OK"))
+
+        // Anything else is answered and closed without reaching the ledger.
+        let refused: [(String, Data, String)] = [
+            ("another path", post(Data(#"{"c":3}"#.utf8), path: "/v1/logs"), "404"),
+            ("a browser", post(Data(#"{"c":3}"#.utf8), headers: "Content-Type: application/json\r\nOrigin: https://example.invalid\r\n"), "404"),
+            ("text/plain", post(Data(#"{"c":3}"#.utf8), headers: "Content-Type: text/plain\r\n"), "415"),
+            ("a GET", Data("GET \(receiver.path) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8), "404"),
+            ("an empty chunk size", post(Data(), chunks: ["\r\n", "{}\r\n0\r\n\r\n"]), "413"),
+            ("no request line", Data("\r\n\r\n".utf8), "400")]
+        for (label, request, status) in refused {
+            let socket = connection()
+            XCTAssertTrue(exchange(socket, request).hasPrefix("HTTP/1.1 \(status)"), label)
+            close(socket)
+        }
+        XCTAssertTrue(exchange(exporter, post(Data(#"{"d":4}"#.utf8))).hasPrefix("HTTP/1.1 200 OK"), "the exporter's connection is still served")
+
+        // Connections that never send a valid export cannot keep a new exporter connection out or evict a trusted one.
+        let squatters = (0..<20).map { _ in connection() }
+        defer { squatters.forEach { close($0) } }
+        usleep(1_200_000)
+        let late = connection()
+        defer { close(late) }
+        XCTAssertTrue(exchange(late, post(Data(#"{"e":5}"#.utf8))).hasPrefix("HTTP/1.1 200 OK"), "a new exporter connection is served")
+        XCTAssertTrue(exchange(exporter, post(Data(#"{"f":6}"#.utf8))).hasPrefix("HTTP/1.1 200 OK"), "a trusted connection is never evicted")
         receiver.stop()
-        XCTAssertEqual(bodies, [Data(#"{"a":1}"#.utf8), Data("garbage".utf8), Data(#"{"b":2}"#.utf8)])
+        XCTAssertEqual(bodies, [Data(#"{"a":1}"#.utf8), Data("garbage".utf8), Data(#"{"b":2}"#.utf8), Data(#"{"d":4}"#.utf8),
+                                Data(#"{"e":5}"#.utf8), Data(#"{"f":6}"#.utf8)])
     }
 }
