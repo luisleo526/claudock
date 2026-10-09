@@ -38,5 +38,7 @@ These are solid sRGB calculations against the app's light canvas, not a claim of
 - Use real SwiftUI component renders with labeled synthetic data. Do not publish real account screenshots.
 - Let GitHub supply its native typography and responsive layout; do not add a second CSS framework.
 - Keep the icon and brand, with no badge cloud, fabricated social proof, decorative section numbers, or poetic filler.
-- Put detailed setup, token definitions, CLI reference, and troubleshooting in the user guide.
+- Organize by task: install, add accounts, start Claude, watch limits and credit, then optional tokens and shell integration. Keep a compact command cheat sheet and the few most common troubleshooting fixes in the README. Put detailed setup, token definitions, the full CLI reference, and the full troubleshooting table in the user guide.
+- Put each command a reader should run in a fenced `sh` block and sample output in a `text` block (only shell blocks are run). `Tests/CLIIntegration/check.py` runs the commands, compares the cheat sheet with `claudock help`, and checks relative links; it does not run inline code. Use bold only for labels shown in the app or macOS, and quote messages exactly in code spans.
+- While `main` is ahead of the published download, say which features the download lacks. Remove those notes when the next release ships.
 - Keep endpoint, accounting, continuation, architecture, and notarization limitations explicit.
