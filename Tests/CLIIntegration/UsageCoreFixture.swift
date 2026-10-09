@@ -20,19 +20,32 @@ public enum MonitorError: Error, LocalizedError {
 public enum LaunchCredential {
     case consoleAPIKey, inferenceToken(String), profileLogin
 }
-/// Mirrors the real launch decision over a synthetic token (CLAUDOCK_TEST_MINT) and policy
-/// (CLAUDOCK_TEST_REQUIRE_TOKEN), so the smoke checks cover how the CLI passes sign-in and arguments.
+/// Mirrors the real launch decision over a synthetic token (CLAUDOCK_TEST_MINT), policy
+/// (CLAUDOCK_TEST_REQUIRE_TOKEN), and a saved token that belongs to another account
+/// (CLAUDOCK_TEST_ACCOUNT_MISMATCH=mismatch|changed), so the smoke checks cover how the CLI passes sign-in
+/// and arguments and how it words the account error. Sign-in and setup-token never read the token. As in the
+/// real policy, a token that cannot be read reaches the CLI as its own error only while the requirement is off;
+/// with it on, the launch is refused as having no valid token.
 public enum InferenceTokenPolicy {
     public static func isRequired() -> Bool { ProcessInfo.processInfo.environment["CLAUDOCK_TEST_REQUIRE_TOKEN"] == "1" }
     public static func setRequired(_ required: Bool) throws { markAccess("preferences") }
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
-        markAccess("mint credential")
-        let token = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
-        guard isRequired() else { return token.map(LaunchCredential.inferenceToken) ?? .profileLogin }
         if claudeArguments.first == "setup-token" { return .profileLogin }
-        guard let token else { throw MonitorError.unsupported("Synthetic token requirement: no valid inference token.") }
+        markAccess("mint credential")
+        let unreadable: MintTokenError?
+        switch ProcessInfo.processInfo.environment["CLAUDOCK_TEST_ACCOUNT_MISMATCH"] {
+        case "mismatch": unreadable = .accountMismatch
+        case "changed": unreadable = .accountChanged
+        default: unreadable = nil
+        }
+        let token = ProcessInfo.processInfo.environment["CLAUDOCK_TEST_MINT"] == "1" ? "synthetic-mint-token" : nil
+        guard isRequired() else {
+            if let unreadable { throw unreadable }
+            return token.map(LaunchCredential.inferenceToken) ?? .profileLogin
+        }
+        guard unreadable == nil, let token else { throw MonitorError.unsupported("Synthetic token requirement: no valid inference token.") }
         return .inferenceToken(token)
     }
 }
@@ -73,7 +86,7 @@ public enum APIKeyStore {
 
 // CLI inference-token commands are covered by token_e2e.py against the real Keychain.
 public enum MintTokenError: Error, LocalizedError {
-    case unsupportedProfile, tokenExpired
+    case unsupportedProfile, tokenExpired, accountMismatch, accountChanged
     public var errorDescription: String? { "Synthetic inference token error." }
 }
 public enum MintTokenStatus {

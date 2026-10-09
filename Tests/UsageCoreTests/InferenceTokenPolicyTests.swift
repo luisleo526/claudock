@@ -105,9 +105,12 @@ final class InferenceTokenPolicyTests: XCTestCase {
     }
 
     func testSignInUsesTheProfilesOwnLoginWhateverThePolicy() throws {
+        // `profile setup-token` launches setup-token as a sign-in, so no token state can block it.
         for required in [false, true] {
-            XCTAssertEqual(try decide({ XCTFail("Sign-in must not read an inference token"); return nil }, required: required,
-                                      arguments: ["auth", "login", "--claudeai"], signIn: true), .profileLogin)
+            for arguments in [["auth", "login", "--claudeai"], ["setup-token"]] {
+                XCTAssertEqual(try decide({ XCTFail("Sign-in must not read an inference token"); return nil }, required: required,
+                                          arguments: arguments, signIn: true), .profileLogin)
+            }
         }
     }
 
@@ -150,6 +153,6 @@ final class InferenceTokenPolicyTests: XCTestCase {
 
     func testRequiredMessageNamesHowToCreateAndSaveAToken() {
         XCTAssertEqual(InferenceTokenPolicyError.tokenRequired("work").localizedDescription,
-                       "work has no valid inference token and Claudock requires one. Create one with 'claudock run work -- setup-token', then 'pbpaste | claudock profile set-token work'.")
+                       "work has no valid inference token and Claudock requires one. Create one with 'claudock profile setup-token work', then 'pbpaste | claudock profile set-token work'.")
     }
 }
