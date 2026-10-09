@@ -8,6 +8,7 @@ final class APIKeyTests: XCTestCase {
                                   managed: true, authKind: .apiKey)
     private let key = "sk-ant-api03-" + "fixture_Key-0123456789"
     private let otherKey = "sk-ant-api03-" + "fixture_other-9876543210"
+    private let usrKey = "sk-ant-usr-" + "fixture_User-Key_0123456789"
 
     func testRawKeyAndExactExportAssignmentsAreAccepted() throws {
         for raw in [key, " \n" + key + "\r\n", "\t" + key + " ",
@@ -20,6 +21,66 @@ final class APIKeyTests: XCTestCase {
             let other = "sk-ant-api\(version)-x"
             XCTAssertEqual(try ConsoleAPIKey(parsing: other).value, other)
         }
+    }
+
+    func testEveryKeyTypeThatIsNotAKnownNonKeyCredentialIsAccepted() throws {
+        let accepted = [usrKey, "sk-ant-usr01-" + "fixture_User-Key_0123456789", key,
+                        "sk-ant-svc01-" + "fixture_Service-Key_0123456789", // a type this build has never seen
+                        "sk-ant-api-x", "sk-ant-api3-x", "sk-ant-api003-x", "sk-ant-api0003-x"]
+        for candidate in accepted {
+            for raw in [candidate, " \n" + candidate + "\r\n", "export ANTHROPIC_API_KEY=" + candidate,
+                        "export ANTHROPIC_API_KEY='" + candidate + "'"] {
+                XCTAssertEqual(try ConsoleAPIKey(parsing: raw).value, candidate, raw.debugDescription)
+            }
+        }
+    }
+
+    func testRefusedTypesMatchTheWholeTypeSegmentNotAPrefix() throws {
+        for type in ["oath", "orts", "administrator", "sidecar", "sia", "ccx", "ccs", "ccsrx"] {
+            let candidate = "sk-ant-\(type)01-" + "fixture_body"
+            XCTAssertEqual(try ConsoleAPIKey(parsing: candidate).value, candidate, type)
+        }
+    }
+
+    func testRefreshTokensAreReportedLikeOAuthAccessTokens() {
+        for raw in ["sk-ant-ort01-" + "fixture_refresh", "export ANTHROPIC_API_KEY=sk-ant-ort01-fixture"] {
+            XCTAssertThrowsError(try ConsoleAPIKey(parsing: raw)) { error in
+                XCTAssertEqual(error as? APIKeyError, .oauthToken)
+                XCTAssertTrue(error.localizedDescription.contains("subscription OAuth token, not a Console API key"))
+                XCTAssertFalse(error.localizedDescription.contains("fixture"))
+            }
+        }
+    }
+
+    func testSessionCredentialsAreNotConsoleAPIKeys() {
+        for prefix in ["sk-ant-sid01-", "sk-ant-si-", "sk-ant-cc-", "sk-ant-ccsr-", "sk-ant-ccsr01-"] {
+            for raw in [prefix + "fixture_session", "export ANTHROPIC_API_KEY='" + prefix + "fixture_session'"] {
+                XCTAssertThrowsError(try ConsoleAPIKey(parsing: raw), raw.debugDescription) { error in
+                    XCTAssertEqual(error as? APIKeyError, .notAnAPIKey)
+                    XCTAssertTrue(error.localizedDescription.contains("Claude session credential, not a Console API key"))
+                    XCTAssertFalse(error.localizedDescription.contains("fixture"))
+                }
+            }
+        }
+    }
+
+    func testARefusedTypeKeepsItsMessageWhateverFollowsThePrefix() {
+        let cases: [(String, APIKeyError)] = [
+            ("sk-ant-oat01-", .oauthToken), ("sk-ant-oat01-" + String(repeating: "a", count: 600), .oauthToken),
+            ("sk-ant-ort01-abc def", .oauthToken), ("sk-ant-admin01-abc.def", .adminKey),
+            ("sk-ant-sid01-", .notAnAPIKey), ("sk-ant-cc-" + String(repeating: "a", count: 600), .notAnAPIKey)]
+        for (raw, expected) in cases {
+            XCTAssertThrowsError(try ConsoleAPIKey(parsing: raw), String(raw.prefix(24))) {
+                XCTAssertEqual($0 as? APIKeyError, expected, String(raw.prefix(24)))
+            }
+        }
+    }
+
+    func testInvalidKeyMessageNamesTheAcceptedKeyShapes() {
+        let message = APIKeyError.invalidKey.localizedDescription
+        XCTAssertTrue(message.contains("sk-ant-api03-"))
+        XCTAssertTrue(message.contains("sk-ant-usr-"))
+        XCTAssertTrue(message.contains("export ANTHROPIC_API_KEY"))
     }
 
     func testOAuthTokensAndAdminKeysGetSpecificMessages() {
@@ -38,7 +99,10 @@ final class APIKeyTests: XCTestCase {
     }
 
     func testMalformedInputIsRejectedWithoutEchoingIt() {
-        let invalid = ["", "   \n", "hello", "sk-ant-api03-", "sk-ant-api3-abc", "sk-ant-api003-abc", "sk-ant-apiab-abc",
+        let invalid = ["", "   \n", "hello", "sk-ant-api03-", "sk-ant-", "sk-ant-usr", "sk-ant-usr-", "sk-ant--abc", "sk-ant-01-abc",
+                       "sk-ant-USR-abc", "sk-ant-usr_abc", "sk-ant-usr01abc", "sk-ant-usr12345-abc",
+                       "sk-ant-usr-abc def", "sk-ant-usr-abc\ndef", "sk-ant-usr-abc\tdef",
+                       usrKey + ";touch never-run", usrKey + "$(touch never-run)", usrKey + "漢字", usrKey + "\n" + otherKey,
                        "sk-ant-api03_abc", "sk-ant-api03-abc def", "sk-ant-api03-abc\ndef", "sk-ant-api03-abc\tdef",
                        key + ";touch never-run", key + "$(touch never-run)", key + "`whoami`", key + ".x", key + "/x",
                        key + "漢字", key + "\0", "Bearer " + key, "ANTHROPIC_API_KEY=" + key,
@@ -59,6 +123,9 @@ final class APIKeyTests: XCTestCase {
         let longest = "sk-ant-api03-" + String(repeating: "a", count: 512 - 13)
         XCTAssertEqual(try ConsoleAPIKey(parsing: longest).value.utf8.count, 512)
         XCTAssertThrowsError(try ConsoleAPIKey(parsing: longest + "a")) { XCTAssertEqual($0 as? APIKeyError, .invalidKey) }
+        let longestUsr = "sk-ant-usr-" + String(repeating: "a", count: 512 - 11)
+        XCTAssertEqual(try ConsoleAPIKey(parsing: longestUsr).value.utf8.count, 512)
+        XCTAssertThrowsError(try ConsoleAPIKey(parsing: longestUsr + "a")) { XCTAssertEqual($0 as? APIKeyError, .invalidKey) }
         XCTAssertThrowsError(try ConsoleAPIKey(parsing: key + String(repeating: " ", count: 4096))) {
             XCTAssertEqual($0 as? APIKeyError, .invalidKey)
         }
@@ -146,6 +213,26 @@ final class APIKeyTests: XCTestCase {
                 XCTAssertEqual($0 as? APIKeyError, .invalidStoredKey)
             }
         }
+    }
+
+    func testSavedKeysOfAcceptedTypesReadBackAndRefusedTypesNever() throws {
+        for stored in [usrKey, "sk-ant-usr01-" + "fixture_x", key, "sk-ant-svc01-" + "fixture_service"] {
+            XCTAssertEqual(try APIKeyStore.read(profile: profile, securityRead: { _ in (Data((stored + "\n").utf8), 0) })?.value, stored)
+        }
+        for stored in ["sk-ant-oat01-" + "fixture_token", "sk-ant-ort01-" + "fixture_refresh", "sk-ant-admin01-" + "fixture_admin",
+                       "sk-ant-sid01-" + "fixture_session", "sk-ant-cc-" + "fixture_internal", "sk-ant-usr-", "sk-ant-USR-abc"] {
+            XCTAssertThrowsError(try APIKeyStore.read(profile: profile, securityRead: { _ in (Data((stored + "\n").utf8), 0) }), stored) {
+                XCTAssertEqual($0 as? APIKeyError, .invalidStoredKey)
+            }
+        }
+    }
+
+    func testUsrKeyPassesTheSaveReadbackVerification() throws {
+        var writes: [Data] = []
+        try APIKeyStore.save(ConsoleAPIKey(parsing: usrKey), profile: profile, securityWrite: { writes.append($0) },
+                             securityRead: { _ in (Data((self.usrKey + "\n").utf8), 0) })
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertFalse(String(decoding: try XCTUnwrap(writes.first), as: UTF8.self).contains(usrKey))
     }
 
     func testSavedStatusLooksUpAttributesWithoutReadingTheKey() throws {

@@ -2,14 +2,15 @@ import Foundation
 import CryptoKit
 
 public enum APIKeyError: Error, LocalizedError, Equatable {
-    case invalidKey, oauthToken, adminKey
+    case invalidKey, oauthToken, adminKey, notAnAPIKey
     case unsupportedProfile, invalidStoredKey, keychainUnavailable, keychainWriteFailed
 
     public var errorDescription: String? {
         switch self {
-        case .invalidKey: return "Enter a Console API key that starts with sk-ant-api, or one complete export ANTHROPIC_API_KEY assignment. Do not include other commands."
+        case .invalidKey: return "Enter a Console API key that starts with sk-ant- (for example sk-ant-api03-… or sk-ant-usr-…), or one complete export ANTHROPIC_API_KEY assignment. Do not include other commands."
         case .oauthToken: return "This is a subscription OAuth token, not a Console API key. Create a standard key in the Claude Console."
         case .adminKey: return "Admin API keys cannot run Claude Code; create a standard key in the Console."
+        case .notAnAPIKey: return "This is a Claude session credential, not a Console API key. Create an API key in the Claude Console."
         case .unsupportedProfile: return "Only profiles added with a Console API key can store one."
         case .invalidStoredKey: return "The saved Console API key is unreadable. Replace it with a new key."
         case .keychainUnavailable: return "The Console API key's Keychain item is unavailable. Unlock your Mac and try again."
@@ -22,8 +23,9 @@ public enum APIKeyError: Error, LocalizedError, Equatable {
 public struct ConsoleAPIKey: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     let value: String
 
-    /// Parses pasted or piped text as data: a raw `sk-ant-apiNN-…` key, or one complete
-    /// `export ANTHROPIC_API_KEY=…` assignment, optionally quoted. Nothing is executed.
+    /// Parses pasted or piped text as data: a raw `sk-ant-<type>-…` key (`api03`, `usr`, or any other type
+    /// that is not a known non-key credential), or one complete `export ANTHROPIC_API_KEY=…` assignment,
+    /// optionally quoted. Nothing is executed.
     public init(parsing raw: String) throws {
         guard raw.utf8.count <= 4096 else { throw APIKeyError.invalidKey }
         var key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -34,18 +36,28 @@ public struct ConsoleAPIKey: Equatable, Sendable, CustomStringConvertible, Custo
                 key = String(key.dropFirst().dropLast())
             }
         }
-        if key.hasPrefix("sk-ant-oat") { throw APIKeyError.oauthToken }
-        if key.hasPrefix("sk-ant-admin") { throw APIKeyError.adminKey }
-        guard Self.isValid(key) else { throw APIKeyError.invalidKey }
+        if let error = Self.rejection(of: key) { throw error }
         value = key
     }
 
     private init(validated value: String) { self.value = value }
 
-    static func stored(_ value: String) -> ConsoleAPIKey? { isValid(value) ? ConsoleAPIKey(validated: value) : nil }
+    static func stored(_ value: String) -> ConsoleAPIKey? { rejection(of: value) == nil ? ConsoleAPIKey(validated: value) : nil }
 
-    private static func isValid(_ key: String) -> Bool {
-        key.utf8.count <= 512 && key.range(of: #"\Ask-ant-api[0-9]{2}-[A-Za-z0-9_-]+\z"#, options: .regularExpression) != nil
+    /// Credentials that share the `sk-ant-` prefix but cannot be Console API keys, by the type segment of
+    /// `sk-ant-<type><version>-…`. They are matched by the whole segment and before the shape rules, so a long
+    /// or oddly pasted OAuth token still gets its own explanation instead of a generic one.
+    private static let refused: [(pattern: String, error: APIKeyError)] = [
+        (#"\Ask-ant-(oat|ort)[0-9]{0,4}-"#, .oauthToken),
+        (#"\Ask-ant-admin[0-9]{0,4}-"#, .adminKey),
+        (#"\Ask-ant-(sid|si|cc|ccsr)[0-9]{0,4}-"#, .notAnAPIKey)]
+
+    /// Why Claude Code could not use `key` as ANTHROPIC_API_KEY, or nil. Every type that is not refused is
+    /// accepted, so a new key generation works without a Claudock update.
+    private static func rejection(of key: String) -> APIKeyError? {
+        if let match = refused.first(where: { key.range(of: $0.pattern, options: .regularExpression) != nil }) { return match.error }
+        let shaped = key.utf8.count <= 512 && key.range(of: #"\Ask-ant-[a-z]+[0-9]{0,4}-[A-Za-z0-9_-]+\z"#, options: .regularExpression) != nil
+        return shaped ? nil : .invalidKey
     }
 
     public var description: String { "Console API key" }
