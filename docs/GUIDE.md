@@ -179,6 +179,8 @@ Paste the raw key (`sk-ant-api03-…`, `sk-ant-usr-…`, or any other `sk-ant-` 
 
 The first interactive launch asks whether to use the API key; choose **Yes**. Claude Code saves the answer in the profile's own config folder, so later launches do not ask again. Non-interactive `-p` runs use the key directly.
 
+**Interactive sessions may be refused.** Observed on 2026-10-09 with Claude Code 2.1.295 (not documented by Anthropic): on Console organizations whose credit is a recent grant, headless `-p` runs are accepted while interactive sessions, including **Continue as…**, are refused with `Credit balance too low · Add funds`, though the Console shows credit. Pasted keys and Console sign-ins behave the same. Check the credit's terms in the Console (**Settings → Billing**) or ask Anthropic, and use a subscription profile for interactive work. See [Interactive sessions on Console credit](../README.md#interactive-sessions-on-console-credit) in the README.
+
 **Replace it** with **Replace API key…** in **Manage profiles**, or `claudock profile set-key console`. **Re-login** is not offered for these profiles, and `claudock profile login` refuses them unless you [switch to a Console sign-in](#sign-in-to-a-console-account-instead) with `--console`. The dashboard shows an **API** badge and, once a credit is set, a **Credit** meter instead of limit bars; **Highest usage first** lists these profiles after subscription accounts.
 
 ### Sign in to a Console account instead
