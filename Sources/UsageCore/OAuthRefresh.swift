@@ -158,7 +158,7 @@ public actor CredentialRefresher {
             let until: Date
             switch safeError {
             case .loginRequired: until = .distantFuture
-            case .rateLimited(let date): until = date
+            case .rateLimited(let date): until = date ?? dependencies.now().addingTimeInterval(300)
             case .refreshBusy, .credentialChanged, .credentialWriteFailed: until = dependencies.now().addingTimeInterval(60)
             default: until = dependencies.now().addingTimeInterval(300)
             }

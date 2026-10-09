@@ -231,6 +231,35 @@ final class OAuthRefreshTests: XCTestCase {
         }
     }
 
+    /// A 401 was a request, so the retry with the renewed token keeps the usual half second from it.
+    func testTheRetryAfterARejectedTokenIsSpacedLikeAnyRequest() async throws {
+        let previous = try Credentials.parse(credentialData())
+        let renewed = try Credentials.parse(credentialData(access: "fixture-renewed-access", refresh: "fixture-renewed-refresh"))
+        var times: [Date] = []
+        _ = try await UsageClient.fetchRenewing(credentials: previous, request: { _ in
+            times.append(Date())
+            if times.count == 1 { throw MonitorError.unauthorized }
+            return UsageSnapshot(windows: [UsageWindow(id: "five_hour", title: "Session", percent: 1, resetsAt: nil)], fetchedAt: Self.instant)
+        }, renew: { _ in renewed })
+        XCTAssertEqual(times.count, 2)
+        XCTAssertGreaterThanOrEqual(times[1].timeIntervalSince(times[0]), 0.5)
+    }
+
+    /// A 429 from the token endpoint says nothing about the usage endpoint, so it must not become a usage cooldown;
+    /// the refresher keeps its own cooldown for the renewal.
+    func testARateLimitedRenewalIsARenewalFailureNotAUsageRateLimit() async throws {
+        let previous = try Credentials.parse(credentialData())
+        for limited in [MonitorError.rateLimited(Self.instant.addingTimeInterval(600)), .rateLimited(nil)] {
+            var requests = 0
+            await assertAsyncError(.refreshFailed) {
+                _ = try await UsageClient.fetchRenewing(credentials: previous, request: { _ in
+                    requests += 1; throw MonitorError.expired
+                }, renew: { _ in throw limited })
+            }
+            XCTAssertEqual(requests, 1)
+        }
+    }
+
     func testUsageNeverRenewsForPermissionRateLimitNetworkOrServerErrors() async throws {
         let previous = try Credentials.parse(credentialData())
         for expected in [MonitorError.permissionDenied, .rateLimited(Self.instant), .network, .server(500), .server(503), .invalidResponse, .keychainLocked] {

@@ -136,9 +136,10 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
 import CoreFoundation
 
 public enum MonitorError: Error, LocalizedError, Equatable, Sendable {
-    case noCredentials, keychainLocked, expired, unauthorized, rateLimited(Date), network, invalidResponse, server(Int), unsupported(String)
+    /// `rateLimited` carries when Retry-After says to ask again, or nil without a usable header.
+    case noCredentials, keychainLocked, expired, unauthorized, rateLimited(Date?), network, invalidResponse, server(Int), unsupported(String)
     case loginRequired, permissionDenied, refreshBusy, credentialChanged, credentialWriteFailed, refreshFailed
-    case refreshUncertain
+    case refreshUncertain, usageBusy
     public var errorDescription: String? {
         switch self {
         case .noCredentials: return "Sign in to this Claude profile to see usage."
@@ -153,6 +154,7 @@ public enum MonitorError: Error, LocalizedError, Equatable, Sendable {
         case .refreshFailed: return "Could not renew the access token. Claudock will retry after a cooldown."
         case .refreshUncertain: return "The last renewal could not be confirmed. Open this profile in Claude Code or re-login."
         case .rateLimited: return "Claude is limiting requests. Refresh will retry after a cooldown."
+        case .usageBusy: return "Another Claudock process is reading usage. Try again in a moment."
         case .network: return "Cannot reach Claude. Keeping the last reading."
         case .invalidResponse: return "Claude returned an unrecognized usage response."
         case .server(let code): return "Claude usage is unavailable (HTTP \(code))."
