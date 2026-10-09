@@ -80,6 +80,31 @@ public enum ProfileStore {
         }
     }
 
+    /// A profile that signs in to an Anthropic Console account through Claude Code (`claude auth login --console`).
+    /// Claude Code keeps the resulting API key, so nothing is saved before the entry is published.
+    public static func addConsoleLoginProfile(name: String, configDirectory: String? = nil, home: String = NSHomeDirectory()) throws -> Profile {
+        try add(name: name, configDirectory: configDirectory, authKind: .consoleLogin, home: home, beforePublishing: { _ in })
+    }
+
+    /// Switches a managed Console profile between a pasted API key and Claude Code's own Console sign-in, keeping
+    /// its registry identity, name, and config folder. Subscription profiles never change kind. `beforePublishing`
+    /// gets the switched profile before the registry is written (a new key is saved there); if it throws, nothing
+    /// changes. A profile that changed meanwhile is refused.
+    @discardableResult
+    public static func setAuthKind(_ kind: ProfileAuthKind, for profile: Profile, home: String = NSHomeDirectory(),
+                                   beforePublishing: (Profile) throws -> Void = { _ in }) throws -> Profile {
+        guard kind.isConsole, profile.authKind.isConsole, profile.managed else { throw Failure.unsupportedKindChange }
+        return try withState(home: home, beforePublishing: beforePublishing) { state in
+            let index = try currentIndex(profile, in: state)
+            let current = state.profiles[index]
+            let switched = Profile(command: current.command, configDirectory: current.configDirectory, isVertex: current.isVertex,
+                                   discoveryNote: current.discoveryNote, registryID: current.registryID, managed: current.managed,
+                                   authKind: kind)
+            state.profiles[index] = switched
+            return switched
+        }
+    }
+
     static func add(name: String, configDirectory: String?, authKind: ProfileAuthKind, home: String,
                     beforePublishing: (Profile) throws -> Void) throws -> Profile {
         let command = try validatedCommand(name)
@@ -279,9 +304,9 @@ public enum ProfileStore {
 
     /// Validates the final state and returns the bytes a write would store.
     private static func serialized(_ state: inout State) throws -> Data {
-        // Older builds accept only version 1 and would drop an API-key profile's kind when
+        // Older builds accept only version 1 and would drop a Console profile's kind when
         // rewriting the file; a registry holding one is version 2, so they refuse it instead.
-        state.version = state.profiles.contains { $0.authKind == .apiKey } ? 2 : 1
+        state.version = state.profiles.contains { $0.authKind.isConsole } ? 2 : 1
         try validate(state)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

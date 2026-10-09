@@ -4,6 +4,8 @@ import Foundation
 public enum LaunchCredential: Equatable, Sendable {
     /// A Console API-key profile's key, read from Keychain at launch.
     case consoleAPIKey
+    /// Claude Code's own Console sign-in: nothing is passed, and Claude Code uses the key it keeps.
+    case consoleLogin
     /// A subscription profile's inference token, passed as `CLAUDE_CODE_OAUTH_TOKEN`.
     case inferenceToken(String)
     /// No token: Claude Code uses the profile's own login.
@@ -63,6 +65,7 @@ public enum InferenceTokenPolicy {
                                  mint: (Profile) throws -> MintToken?, now: Date = Date()) throws -> LaunchCredential {
         if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
+        if profile.authKind == .consoleLogin { return .consoleLogin }
         // setup-token creates the replacement token, so a missing or expired one must never block it.
         if claudeArguments.first == "setup-token" { return .profileLogin }
         guard requireToken else {

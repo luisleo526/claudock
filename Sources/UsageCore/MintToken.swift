@@ -422,7 +422,7 @@ public enum MintTokenStore {
         guard CredentialStore.runSecurityCommand(command) else { throw MintTokenError.keychainWriteFailed }
     }
 
-    /// Inference tokens belong to subscription profiles; Console API-key profiles never use one.
+    /// Inference tokens belong to subscription profiles; Console API-key and Console-login profiles never use one.
     static func validateProfile(_ profile: Profile) throws {
         guard profile.authKind == .subscription, !profile.isVertex, profile.discoveryNote == nil, profile.configDirectory.hasPrefix("/"),
               !profile.configDirectory.contains("\0") else { throw MintTokenError.unsupportedProfile }

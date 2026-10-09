@@ -96,6 +96,15 @@ def api_key_service(profile):
     return "Claudock-apikey-" + hashlib.sha256(credential_service(profile).encode()).hexdigest()
 
 
+def managed_key_service(profile):
+    """Where Claude Code 2.1.295 keeps the API key that `auth login --console` creates: "Claude Code" plus the
+    config folder's hash, as for its credentials. The default profile's unhashed item is real; never use it."""
+    if profile["command"] == "claude":
+        raise ValueError("the checks never use the default profile's Console sign-in item")
+    path = unicodedata.normalize("NFC", profile["configDirectory"])
+    return "Claude Code-" + hashlib.sha256(path.encode()).hexdigest()[:8]
+
+
 def inference_service(profile):
     return "Claudock-inference-" + hashlib.sha256(credential_service(profile).encode()).hexdigest()
 
@@ -232,6 +241,9 @@ class Sandbox:
         return next(profile["registryID"] for profile in profiles if profile["command"] == "claude-" + name)
 
     def track(self, service):
+        # The unhashed services hold the real default profile's login; teardown must never delete them.
+        if service in ("Claude Code", "Claude Code-credentials"):
+            raise ValueError(f"refusing to track the default profile's Keychain item {service!r}")
         self.services.add(service)
 
     def close(self):

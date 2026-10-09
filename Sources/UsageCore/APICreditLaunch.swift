@@ -9,8 +9,8 @@ public enum APICreditLaunchError: Error, Equatable {
     case launchFailed(Int32)
 }
 
-/// Runs Claude Code for a Console API-key profile as a child process that reports the cost of every request
-/// to a loopback receiver, which appends it to the credit ledger as it arrives.
+/// Runs Claude Code for a Console profile (an API key or a Console sign-in) as a child process that reports the
+/// cost of every request to a loopback receiver, which appends it to the credit ledger as it arrives.
 ///
 /// The child shares this process's group, terminal, working directory, and file descriptors, and gets the
 /// prepared environment plus `APICreditCapture.environment`. It starts with no signal blocked, as from a shell:
@@ -52,7 +52,7 @@ public enum APICreditLaunch {
         }
         ChildSignal.pid.pointee = pid
         if ChildSignal.pending.pointee != 0 { kill(pid, ChildSignal.pending.pointee) }
-        let status = wait(for: pid, jobControl: original.isDefault(SIGTSTP), capture: capture)
+        let status = wait(for: pid, jobControl: original.isDefault(SIGTSTP), whileIdle: capture.whileIdle)
         let exited = Date()
         ChildSignal.pid.pointee = 0
         // Finishing takes a moment; a late interrupt or termination must not lose what was received.
@@ -70,6 +70,27 @@ public enum APICreditLaunch {
             warn("\(result.unsaved) usage event\(result.unsaved == 1 ? "" : "s") from this run could not be saved to the Console credit ledger"
                  + (result.failure.map { ": \($0.localizedDescription)" } ?? ".") + " Set the credit again from the Console balance.")
         }
+        return status
+    }
+
+    /// Runs a child exactly as `run` does, with the same terminal, signals, and job control, but without usage
+    /// capture: for Claude Code's Console sign-in, whose outcome the caller checks once it exits. Returns the
+    /// child's exit status, or 128 + the signal that ended it.
+    public static func supervise(executable: String, arguments: [String], environment: [String: String]) throws -> Int32 {
+        let original = Dispositions()
+        let reset = original.takeOver(ignoring: jobControlSignals, forwarding: forwardedSignals)
+        let pid: pid_t
+        do { pid = try spawn(executable: executable, arguments: arguments, environment: environment, defaults: reset) }
+        catch {
+            original.restore()
+            throw error
+        }
+        ChildSignal.pid.pointee = pid
+        if ChildSignal.pending.pointee != 0 { kill(pid, ChildSignal.pending.pointee) }
+        let status = wait(for: pid, jobControl: original.isDefault(SIGTSTP), whileIdle: { $0() })
+        ChildSignal.pid.pointee = 0
+        // The caller finishes the work (a Keychain check and a registry write); a late termination must not cut it short.
+        original.ignoreForwarded(forwardedSignals)
         return status
     }
 
@@ -104,7 +125,8 @@ public enum APICreditLaunch {
         return pid
     }
 
-    private static func wait(for pid: pid_t, jobControl: Bool, capture: CaptureSession) -> Int32 {
+    /// `whileIdle` runs its body when no ledger write is in progress.
+    private static func wait(for pid: pid_t, jobControl: Bool, whileIdle: (() -> Void) -> Void) -> Int32 {
         while true {
             var status: Int32 = 0
             if waitpid(pid, &status, WUNTRACED) < 0 {
@@ -117,7 +139,7 @@ public enum APICreditLaunch {
                 // write is in progress meanwhile, so the ledger lock is never held while the job is suspended.
                 guard jobControl else { continue }
                 var stopped = false
-                capture.whileIdle { stopped = stopAlongside(pid, signal: (status >> 8) & 0xFF) }
+                whileIdle { stopped = stopAlongside(pid, signal: (status >> 8) & 0xFF) }
                 // Continued, possibly by a signal to this process alone: the job continues as a whole.
                 if stopped { kill(pid, SIGCONT) }
                 continue

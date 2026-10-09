@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// The Console credit ledger, `~/Library/Application Support/Claudock/api-credit.json`: per API-key profile
+/// The Console credit ledger, `~/Library/Application Support/Claudock/api-credit.json`: per Console profile
 /// (by registry ID) the balance the user set, when (`asOf`), and the requests and adjustments counted since.
 /// Every change takes `.api-credit-lock` exclusively and replaces the file atomically (0600, fsync'd), so
 /// parallel launches append safely; reads share the lock. Entries from before `asOf` are pruned on every
@@ -37,8 +37,14 @@ public enum APICreditStore {
     /// Records `amount` as the profile's remaining credit now; spend from before now no longer counts.
     @discardableResult
     public static func setBalance(_ amount: Decimal, profile: Profile, now: Date = Date()) throws -> APICreditStatus {
-        guard profile.authKind == .apiKey else { throw APICreditError.subscriptionProfile(profile.name) }
-        return try setBalance(amount, profileID: profile.id, home: NSHomeDirectory(), now: now)
+        try setBalance(amount, profile: profile, home: NSHomeDirectory(), now: now)
+    }
+
+    /// Console API-key and Console-login profiles have a credit; subscription profiles do not.
+    @discardableResult
+    static func setBalance(_ amount: Decimal, profile: Profile, home: String, now: Date) throws -> APICreditStatus {
+        guard profile.authKind.isConsole else { throw APICreditError.subscriptionProfile(profile.name) }
+        return try setBalance(amount, profileID: profile.id, home: home, now: now)
     }
 
     static func status(profileID: String, home: String) throws -> APICreditStatus? {

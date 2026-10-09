@@ -18,7 +18,7 @@ public enum MonitorError: Error, LocalizedError {
 }
 
 public enum LaunchCredential {
-    case consoleAPIKey, inferenceToken(String), profileLogin
+    case consoleAPIKey, consoleLogin, inferenceToken(String), profileLogin
 }
 /// Mirrors the real launch decision over a synthetic token (CLAUDOCK_TEST_MINT), policy
 /// (CLAUDOCK_TEST_REQUIRE_TOKEN), and a saved token that belongs to another account
@@ -32,6 +32,7 @@ public enum InferenceTokenPolicy {
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         if signIn { return .profileLogin }
         if profile.authKind == .apiKey { return .consoleAPIKey }
+        if profile.authKind == .consoleLogin { return .consoleLogin }
         if claudeArguments.first == "setup-token" { return .profileLogin }
         markAccess("mint credential")
         let unreadable: MintTokenError?
@@ -60,12 +61,19 @@ public enum ProfileStore {
             Profile(command: "claude-default", configDirectory: "/synthetic/legacy", managed: true),
             Profile(command: "claude-測試", configDirectory: "/synthetic/unicode"),
             Profile(command: "claude-vertex", configDirectory: "/synthetic/vertex", isVertex: true),
+            Profile(command: "claude-team", configDirectory: "/synthetic/console team", registryID: "fixture-console", managed: true,
+                    authKind: .consoleLogin),
         ]
     }
 
     public static func importShellProfiles() throws -> [Profile] { try load() }
     public static func add(name: String, configDirectory: String?) throws -> Profile { try load()[1] }
     public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String?) throws -> Profile { try load()[1] }
+    public static func addConsoleLoginProfile(name: String, configDirectory: String?) throws -> Profile { try load()[6] }
+    public static func setAuthKind(_ kind: ProfileAuthKind, for profile: Profile, beforePublishing: (Profile) throws -> Void = { _ in }) throws -> Profile {
+        markAccess("kind change")
+        throw MonitorError.unsupported("The synthetic fixture changes no profile kind.")
+    }
     public static func rename(profile: Profile, to: String) throws -> Profile { profile }
     public static func remove(profile: Profile) throws {}
 }
@@ -100,6 +108,21 @@ public enum APICreditLaunch {
         markAccess("credit launch")
         throw APICreditLaunchError.receiverUnavailable
     }
+    public static func supervise(executable: String, arguments: [String], environment: [String: String]) throws -> Int32 {
+        markAccess("supervised sign-in")
+        throw APICreditLaunchError.launchFailed(ENOEXEC)
+    }
+}
+
+// Console sign-in status is covered by console_login_e2e.py against the real Keychain; here it is
+// CLAUDOCK_TEST_CONSOLE_SIGNED_IN=1, so the smoke checks cover how the CLI launches and words a missing sign-in.
+public enum ConsoleLogin {
+    public static func keychainService(for profile: Profile) -> String { "Claude Code-c0ffee00" }
+    public static func isSignedIn(profile: Profile) throws -> Bool {
+        markAccess("console sign-in")
+        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_CONSOLE_SIGNED_IN"] == "1"
+    }
+    public static func organizationName(profile: Profile) -> String? { "Fixture Org" }
 }
 
 // CLI inference-token commands are covered by token_e2e.py against the real Keychain.
@@ -140,7 +163,13 @@ public struct Credentials {
     public var subscriptionPlan: SubscriptionPlan { .max20x }
 }
 public enum CredentialStore {
-    public static func serviceName(for profile: Profile) -> String { profile.registryID == "fixture-stable" ? "Claude Code-credentials-aabbccdd" : "Claude Code-credentials" }
+    public static func serviceName(for profile: Profile) -> String {
+        switch profile.registryID {
+        case "fixture-stable": return "Claude Code-credentials-aabbccdd"
+        case "fixture-console": return "Claude Code-credentials-c0ffee00"
+        default: return "Claude Code-credentials"
+        }
+    }
     public static func read(profile: Profile) throws -> Credentials {
         markAccess("OAuth credential")
         if ProcessInfo.processInfo.environment["CLAUDOCK_TEST_FAIL_USAGE"] == "1" {

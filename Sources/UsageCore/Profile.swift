@@ -1,10 +1,16 @@
 import Foundation
 
-/// How a profile authenticates Claude Code. Only managed profiles created through
-/// Claudock can use a Console API key; every other profile is a subscription.
+/// How a profile authenticates Claude Code. Only managed profiles created through Claudock can
+/// bill an Anthropic Console organization; every other profile is a subscription.
 public enum ProfileAuthKind: String, Codable, Hashable, Sendable {
     case subscription
+    /// A Console API key pasted into Claudock, which keeps it in Keychain and injects it at launch.
     case apiKey
+    /// Claude Code's own Console sign-in (`claude auth login --console`), which keeps its API key itself.
+    case consoleLogin
+
+    /// Billed per token by a Console organization, through a pasted key or a Console sign-in.
+    public var isConsole: Bool { self != .subscription }
 }
 
 public struct Profile: Identifiable, Codable, Hashable, Sendable {
@@ -48,7 +54,7 @@ public struct Profile: Identifiable, Codable, Hashable, Sendable {
         authKind = try values.decodeIfPresent(ProfileAuthKind.self, forKey: .authKind) ?? .subscription
     }
 
-    /// Subscription records omit the kind, so registries without API-key profiles keep their bytes.
+    /// Subscription records omit the kind, so registries without Console profiles keep their bytes.
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(command, forKey: .command)
