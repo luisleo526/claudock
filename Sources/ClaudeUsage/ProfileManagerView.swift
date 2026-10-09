@@ -10,6 +10,7 @@ struct ProfileManagerView: View {
     @State private var deleting: Profile?
     @State private var minting: Profile?
     @State private var replacingKey: Profile?
+    @State private var settingCredit: Profile?
     @State private var lastCredentialProfile: Profile?
     @State private var credentialStatuses: [String: CredentialStatus] = [:]
     @State private var credentialStatusRequests: [String: UUID] = [:]
@@ -125,7 +126,8 @@ struct ProfileManagerView: View {
                                    credentialButton: credentialButtonTitle(account.profile), actionsUnavailable: actionsUnavailable,
                                    login: { login(account.profile) }, rename: { beginRename(account.profile) },
                                    remove: { requestRemoval(account.profile) }, copy: { copyCommand(account.profile) },
-                                   setCredential: { beginCredentialChange(account.profile) })
+                                   setCredential: { beginCredentialChange(account.profile) },
+                                   setCredit: { if !actionsUnavailable { settingCredit = account.profile } })
                             .equatable()
                         Divider()
                     }
@@ -143,6 +145,7 @@ struct ProfileManagerView: View {
             .sheet(item: $replacingKey, onDismiss: {
                 if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
             }) { profile in APIKeyView(profile: profile) }
+            .sheet(item: $settingCredit) { profile in CreditView(store: store, profile: profile) }
             .alert("Profile action needs attention", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
                 Button("OK") { failure = nil }
             } message: { Text(failure ?? "") }
@@ -176,7 +179,10 @@ struct ProfileManagerView: View {
         if unavailableCredentialStatuses.contains(profile.id) { return apiKey ? "API key status unavailable" : "Inference token status unavailable" }
         guard let status = credentialStatuses[profile.id] else { return apiKey ? "Checking API key…" : "Checking inference token…" }
         switch status {
-        case .apiKey(let saved): return saved ? "Console API key" : "API key missing"
+        case .apiKey(let saved):
+            guard saved else { return "API key missing" }
+            guard let credit = store.accounts.first(where: { $0.profile == profile })?.credit else { return "Console API key · no credit set" }
+            return "Console API key · \(credit.leftText) left of \(credit.balanceText) credit"
         case .token(.notConfigured): return "No inference token"
         case .token(.active(let expiry)):
             return "Inference token \(expiry > store.now ? "expires" : "expired") \(expiry.formatted(date: .abbreviated, time: .shortened))"
@@ -389,6 +395,7 @@ private struct ProfileRow: View, Equatable {
     let remove: () -> Void
     let copy: () -> Void
     let setCredential: () -> Void
+    let setCredit: () -> Void
 
     static func == (lhs: ProfileRow, rhs: ProfileRow) -> Bool {
         lhs.profile == rhs.profile && lhs.credentialStatus == rhs.credentialStatus && lhs.credentialButton == rhs.credentialButton
@@ -434,6 +441,12 @@ private struct ProfileRow: View, Equatable {
                     .accessibilityLabel(credentialStatus)
                 Spacer(minLength: 8)
                 if profile.authKind == .apiKey {
+                    Button("Set credit…", action: setCredit)
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(actionsUnavailable)
+                        .accessibilityIdentifier("setCredit-\(profile.id)")
+                        .accessibilityLabel("Set Console credit for \(profile.name)")
+                        .help("Enter the remaining credit shown in the Claude Console")
                     Button(credentialButton, action: setCredential)
                         .buttonStyle(.bordered).controlSize(.small)
                         .disabled(actionsUnavailable)

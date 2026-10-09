@@ -56,7 +56,8 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
             } else {
                 let result = await Task.detached { await readAccount(profile) }.value
                 let windows = result.snapshot?.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
-                let fallback = profile.authKind == .apiKey ? "Console API key; billed per token, no subscription limits" : "Unavailable"
+                let fallback = profile.authKind != .apiKey ? "Unavailable"
+                    : result.credit.map { "Console API key; \($0.usageWindow)" } ?? result.creditError ?? "Console API key; billed per token, no credit set"
                 print("\(profile.command): \(windows ?? result.error?.localizedDescription ?? fallback)")
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }

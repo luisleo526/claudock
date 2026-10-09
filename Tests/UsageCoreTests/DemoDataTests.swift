@@ -48,4 +48,12 @@ final class DemoDataTests: XCTestCase {
         XCTAssertFalse(DemoData.profiles(count: 200).contains { $0.command == profile.command })
         XCTAssertTrue(DemoData.apiKeySaved(profile: profile))
     }
+
+    func testPreviewShowsASyntheticCreditOnTheAPIKeyProfile() {
+        let now = Date(timeIntervalSince1970: 1_789_000_000)
+        let credit = DemoData.apiKeyCredit(now: now)
+        XCTAssertEqual(credit.usageWindow, "Credit · $187.42 of $200.00 left")
+        XCTAssertEqual(credit.asOf, now.addingTimeInterval(-3 * 86_400))
+        XCTAssertFalse(credit.isLow)
+    }
 }
