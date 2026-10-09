@@ -272,8 +272,8 @@ private struct AccountRow: View, Equatable {
             HStack(alignment: .center) {
                 Text(account.profile.name).font(.system(size: 15, weight: .semibold))
                     .lineLimit(1).truncationMode(.middle).help(account.profile.command)
-                if account.profile.authKind == .apiKey {
-                    badge("API", help: "Claude Console API key, billed per token", accessibilityLabel: "Console API key")
+                if let console = account.consoleLabel {
+                    badge("API", help: "\(console), billed per token", accessibilityLabel: console)
                 } else if let plan = account.plan {
                     badge(plan.displayName, help: plan.explanation, accessibilityLabel: "Subscription: \(plan.displayName)")
                 }
@@ -317,7 +317,7 @@ private struct AccountRow: View, Equatable {
             if showEmails, let email = account.email {
                 Text(email).font(.system(size: 11)).foregroundStyle(muted).textSelection(.enabled).padding(.top, -9)
             }
-            if account.profile.authKind == .apiKey {
+            if account.profile.authKind.isConsole {
                 credit.help(CreditView.estimateNote)
             }
             if let snapshot = account.snapshot {
@@ -374,15 +374,17 @@ private struct AccountRow: View, Equatable {
                 .accessibilityLabel("Console credit, \(credit.leftText) left of \(credit.balanceText), \(credit.usedPercentText) percent spent, "
                                     + "since \(credit.asOf.formatted(date: .long, time: .omitted)).\(credit.isLow ? " Low credit." : "") Estimate.")
                 HStack(spacing: 6) {
-                    Text("since \(credit.asOf.formatted(date: .abbreviated, time: .omitted)) · billed per token")
-                        .lineLimit(1)
+                    // The organization is untrusted text from .claude.json: shown verbatim, never as Markdown.
+                    Text(verbatim: "since \(credit.asOf.formatted(date: .abbreviated, time: .omitted)) · "
+                         + (account.profile.authKind == .consoleLogin ? account.consoleLabel ?? "Console login" : "billed per token"))
+                        .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 4)
                     setCreditButton
                 }.font(.system(size: 10)).foregroundStyle(muted)
             }
         } else {
             HStack(spacing: 6) {
-                Text(account.creditError ?? "Console API key · billed per token · set its credit to see what is left")
+                Text(verbatim: account.creditError ?? "\(account.consoleLabel ?? "Console") · billed per token · set its credit to see what is left")
                     .foregroundStyle(account.creditError == nil ? muted : accent).lineLimit(2)
                 Spacer(minLength: 4)
                 setCreditButton

@@ -6,6 +6,10 @@ public enum DemoData {
     /// One Console API-key profile, kept out of `profiles` so the subscription previews keep their names.
     public static let apiKeyProfile = Profile(command: "claude-console", configDirectory: "/Users/demo/.claude-console",
                                               managed: true, authKind: .apiKey)
+    /// One Console-login profile, signed in to a synthetic Console organization.
+    public static let consoleLoginProfile = Profile(command: "claude-team", configDirectory: "/Users/demo/.claude-team",
+                                                    managed: true, authKind: .consoleLogin)
+    public static let consoleOrganization = "Demo Labs LLC"
 
     /// The first four previews keep their documented names; larger previews add numbered profiles.
     public static func profiles(count: Int) -> [Profile] {
@@ -55,6 +59,8 @@ public enum DemoData {
     }
     /// Stands in for an API-key Keychain lookup in previews: the synthetic key is always saved.
     public static func apiKeySaved(profile: Profile) -> Bool { profile.authKind == .apiKey }
+    /// Stands in for the Console sign-in Keychain check in previews: the synthetic profile is signed in.
+    public static func consoleSignedIn(profile: Profile) -> Bool { profile.authKind == .consoleLogin }
     /// The demo API-key profile's Console credit, set three days ago, without reading the ledger.
     public static func apiKeyCredit(now: Date = Date()) -> APICreditStatus {
         APICreditStatus(balance: 200, spent: Decimal(string: "12.58")!, asOf: now.addingTimeInterval(-3 * 86_400))

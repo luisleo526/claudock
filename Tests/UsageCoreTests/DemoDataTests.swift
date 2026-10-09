@@ -49,6 +49,18 @@ final class DemoDataTests: XCTestCase {
         XCTAssertTrue(DemoData.apiKeySaved(profile: profile))
     }
 
+    func testPreviewIncludesOneSyntheticConsoleLoginProfileOutsideTheSubscriptionList() {
+        let profile = DemoData.consoleLoginProfile
+        XCTAssertEqual(profile.authKind, .consoleLogin)
+        XCTAssertTrue(profile.managed)
+        XCTAssertTrue(profile.configDirectory.hasPrefix("/Users/demo/"))
+        XCTAssertFalse(DemoData.profiles(count: 200).contains { $0.command == profile.command })
+        XCTAssertNotEqual(profile.command, DemoData.apiKeyProfile.command)
+        XCTAssertTrue(DemoData.consoleSignedIn(profile: profile))
+        XCTAssertFalse(DemoData.consoleSignedIn(profile: DemoData.apiKeyProfile))
+        XCTAssertEqual(DemoData.consoleOrganization, "Demo Labs LLC")
+    }
+
     func testPreviewShowsASyntheticCreditOnTheAPIKeyProfile() {
         let now = Date(timeIntervalSince1970: 1_789_000_000)
         let credit = DemoData.apiKeyCredit(now: now)
