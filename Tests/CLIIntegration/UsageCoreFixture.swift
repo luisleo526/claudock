@@ -226,6 +226,27 @@ public struct UsageSnapshot {
     public let windows: [UsageWindow]
     public var fetchedAt = Date()
 }
+/// The tightest window, standing in for the 5-hour, Weekly, and Fable selection the real headroom makes.
+public struct UsageHeadroom {
+    public let percentLeft: Double
+    public let window: UsageWindow
+    public let availableAgain: Date?
+}
+extension UsageSnapshot {
+    public func headroom(at now: Date) -> UsageHeadroom? {
+        windows.max { $0.percent < $1.percent }.map { UsageHeadroom(percentLeft: max(0, 100 - $0.percent), window: $0, availableAgain: $0.resetsAt) }
+    }
+}
+public enum AccountAvailability {
+    case available, nearLimit, full, attention, untracked
+    public var hasRoom: Bool { self == .available || self == .nearLimit }
+    public static func classify(profile: Profile, snapshot: UsageSnapshot?, error: MonitorError?,
+                                credit: APICreditStatus?, creditFailed: Bool = false, now: Date) -> AccountAvailability {
+        if profile.authKind.isConsole { return credit.map { $0.left > 0 ? .available : .full } ?? .untracked }
+        guard let headroom = snapshot?.headroom(at: now) else { return .attention }
+        return headroom.percentLeft > 0 ? .available : .full
+    }
+}
 public enum UsageClient {
     public static func fetch(credentials: Credentials) async throws -> UsageSnapshot {
         UsageSnapshot(windows: [UsageWindow(title: "Weekly", percent: 25.0, resetsAt: nil)])

@@ -31,9 +31,21 @@ var accent: Color {
 // Deeper fills keep white native control labels legible in both appearances.
 var controlAccent: Color { Color(nsColor: rgb(accentPair.light)) }
 
+let availableGreen = Color(red: 0.57, green: 0.70, blue: 0.51)
+
 private func usageColor(_ percent: Double) -> Color {
     percent >= 90 ? adaptiveColor(light: 0xAF4E3F, dark: 0xF06B57)
         : percent >= 70 ? adaptiveColor(light: 0x876735, dark: 0xE8B05C) : accent
+}
+
+private func statusColor(_ status: AccountAvailability) -> Color {
+    switch status {
+    case .available: return availableGreen
+    case .nearLimit: return usageColor(70)
+    case .full: return usageColor(100)
+    case .attention: return accent
+    case .untracked: return muted
+    }
 }
 
 struct MonitorView: View {
@@ -47,6 +59,9 @@ struct MonitorView: View {
     @State private var creditProfile: Profile?
     @State private var tab = "Accounts"
     @State private var search = ""
+    @State private var statusFilter: AccountAvailability?
+    @State private var kindFilter = AccountKindFilter.all
+    @FocusState private var searchFocused: Bool
     @State private var showManager = false
     @State private var showWelcome = !CommandLine.arguments.contains("--demo") && !UserDefaults.standard.bool(forKey: "onboardingComplete")
 
@@ -65,37 +80,15 @@ struct MonitorView: View {
                     .font(.system(size: 11)).foregroundStyle(accent).padding(.horizontal, 24).padding(.bottom, 12)
             }
             HStack(spacing: 6) {
-                Circle().fill(store.refreshing ? accent : Color(red: 0.57, green: 0.70, blue: 0.51)).frame(width: 6, height: 6)
+                Circle().fill(store.refreshing ? accent : availableGreen).frame(width: 6, height: 6)
                 Text(store.refreshing ? "Checking accounts…" : "\(store.availableCount) of \(store.subscriptionCount) profiles updated")
                 Spacer()
                 Text("Allowance used").font(.system(size: 11, weight: .medium))
             }
-            .font(.system(size: 11)).foregroundStyle(muted).padding(.horizontal, 24).padding(.bottom, 16)
+            .font(.system(size: 11)).foregroundStyle(muted).padding(.horizontal, 24).padding(.bottom, showsFilters ? 10 : 16)
+            if showsFilters { filterBar }
             Rectangle().fill(ink.opacity(0.1)).frame(height: 1)
-            if store.accounts.isEmpty {
-                VStack(spacing: 12) {
-                    if store.profileError == nil { ProgressView().controlSize(.small) }
-                    Text(store.profileError == nil ? "Loading your profiles…" : "Profile settings need attention. Open Manage profiles for details.").foregroundStyle(muted)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                // Sort once per update; each row used to re-sort to find the last one.
-                let accounts = store.sortedAccounts
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(accounts) { account in
-                            AccountRow(account: account, resetLabels: resetLabels(for: account), accentName: store.accentName,
-                                       isDemo: store.isDemo, compact: store.compact, showEmails: store.showEmails,
-                                       opening: openingProfile == account.id, openingAny: openingProfile != nil,
-                                       opened: openedProfile == account.id, copied: copied == account.id,
-                                       actionError: profileActionError?.id == account.id ? profileActionError?.message ?? "" : nil,
-                                       open: { openProfile(account.profile) }, copy: { copyCommand(account) },
-                                       setCredit: { creditProfile = account.profile })
-                                .equatable()
-                            if account.id != accounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
-                        }
-                    }
-                }
-            }
+            accountList
             } else if tab == "Overview" {
                 OverviewView(store: store)
             } else {
@@ -132,7 +125,12 @@ struct MonitorView: View {
                     Button("Manage profiles…") { showManager = true }
                     Divider()
                     Toggle("Show account emails", isOn: $store.showEmails)
-                    Toggle("Highest usage first", isOn: $store.sortByUsage)
+                    Picker("Sort accounts", selection: $store.accountSort) {
+                        ForEach(AccountSort.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("Group accounts by", selection: $store.accountGrouping) {
+                        ForEach(AccountGrouping.allCases) { Text($0.title).tag($0) }
+                    }
                     Toggle("Compact account rows", isOn: $store.compact)
                     Button("Open dashboard window") { store.openDashboard?() }
                     Picker("Refresh interval", selection: $store.refreshMinutes) {
@@ -167,6 +165,173 @@ struct MonitorView: View {
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help("Settings")
             }.buttonStyle(.plain).font(.system(size: 14)).foregroundStyle(muted).padding(.top, 9)
         }.padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 14)
+    }
+    @ViewBuilder private var accountList: some View {
+        if store.accounts.isEmpty {
+            VStack(spacing: 12) {
+                if store.profileError == nil { ProgressView().controlSize(.small) }
+                Text(store.profileError == nil ? "Loading your profiles…" : "Profile settings need attention. Open Manage profiles for details.").foregroundStyle(muted)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            // Sort and filter once per update; each row used to re-sort to find the last one.
+            let accounts = visibleAccounts
+            if accounts.isEmpty {
+                VStack(spacing: 10) {
+                    Text("No profiles match these filters.").foregroundStyle(muted)
+                    Button("Show all profiles", action: clearFilters).buttonStyle(.bordered).controlSize(.small)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                let groups = store.groups(accounts)
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: store.accountGrouping == .ungrouped ? PinnedScrollableViews() : .sectionHeaders) {
+                        ForEach(groups) { group in
+                            // A search shows its matches even in a collapsed section.
+                            let collapsed = store.accountGrouping != .ungrouped && search.isEmpty && store.isCollapsed(group)
+                            Section {
+                                if !collapsed {
+                                    ForEach(group.accounts) { account in
+                                        row(account)
+                                        if account.id != group.accounts.last?.id { Rectangle().fill(ink.opacity(0.075)).frame(height: 1).padding(.horizontal, 24) }
+                                    }
+                                }
+                            } header: {
+                                if store.accountGrouping != .ungrouped { groupHeader(group, collapsed: collapsed) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /// Filters appear once the list is long enough to need them, or while one is in use.
+    private var showsFilters: Bool {
+        store.accounts.count > 4 || filtering
+    }
+    private var filtering: Bool { !search.isEmpty || statusFilter != nil || kindFilter != .all }
+    private var visibleAccounts: [AccountState] {
+        let now = store.now
+        let query = search.trimmingCharacters(in: .whitespaces)
+        return store.sortedAccounts.filter { account in
+            guard kindFilter.includes(account.profile) else { return false }
+            if let statusFilter, account.availability(at: now) != statusFilter { return false }
+            guard !query.isEmpty else { return true }
+            // Emails are searched only while they are shown.
+            let fields = [account.profile.name, account.plan?.displayName, account.consoleLabel, store.showEmails ? account.email : nil]
+            return fields.contains { $0?.localizedCaseInsensitiveContains(query) == true }
+        }
+    }
+    private func clearFilters() { search = ""; statusFilter = nil; kindFilter = .all }
+
+    private var filterBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(muted)
+                    TextField("Find a profile, plan, or organization", text: $search)
+                        .textFieldStyle(.plain).focused($searchFocused)
+                        .accessibilityIdentifier("accountSearch")
+                    if !search.isEmpty {
+                        Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(muted).accessibilityLabel("Clear search")
+                    }
+                }
+                .font(.system(size: 12)).padding(.horizontal, 8).frame(height: 26)
+                .background(RoundedRectangle(cornerRadius: 6).fill(ink.opacity(0.05)))
+                // ⌘F focuses the search field.
+                .background(Button("") { searchFocused = true }.keyboardShortcut("f").opacity(0).accessibilityHidden(true))
+                Menu {
+                    Picker("Account type", selection: $kindFilter) {
+                        ForEach(AccountKindFilter.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.inline)
+                    Picker("Group by", selection: $store.accountGrouping) {
+                        ForEach(AccountGrouping.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.inline)
+                    Picker("Sort", selection: $store.accountSort) {
+                        ForEach(AccountSort.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.inline)
+                } label: {
+                    Label(kindFilter == .all ? "View" : kindFilter.title, systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 11))
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .foregroundStyle(kindFilter == .all ? muted : accent)
+                .help("Filter by account type, group, and sort")
+                .accessibilityIdentifier("accountViewMenu")
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    let counts = store.availabilityCounts
+                    statusChip(nil, title: "All", count: store.accounts.count)
+                    ForEach(AccountAvailability.allCases.filter { (counts[$0] ?? 0) > 0 }, id: \.self) { status in
+                        statusChip(status, title: status.title, count: counts[status] ?? 0)
+                    }
+                    if filtering {
+                        Text("\(visibleAccounts.count) shown").font(.system(size: 10)).foregroundStyle(muted).padding(.leading, 4)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 24).padding(.bottom, 12)
+    }
+    private func statusChip(_ status: AccountAvailability?, title: String, count: Int) -> some View {
+        let selected = statusFilter == status
+        return Button { statusFilter = selected ? nil : status } label: {
+            HStack(spacing: 5) {
+                if let status { Circle().fill(statusColor(status)).frame(width: 6, height: 6) }
+                Text(title)
+                Text("\(count)").monospacedDigit().foregroundStyle(selected ? ink : muted)
+            }
+            .font(.system(size: 11, weight: selected ? .semibold : .regular))
+            .padding(.horizontal, 8).frame(height: 22)
+            .background(Capsule().fill(selected ? accent.opacity(0.18) : ink.opacity(0.05)))
+            .overlay(Capsule().stroke(selected ? accent.opacity(0.6) : Color.clear, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(status.map { statusHelp($0) } ?? "Show every profile")
+        .accessibilityLabel("\(title), \(count) profiles")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("statusFilter-\(status?.rawValue ?? "all")")
+    }
+    private func statusHelp(_ status: AccountAvailability) -> String {
+        switch status {
+        case .available: return "Room left in the 5-hour, Weekly, and Fable limits, or Console credit that is not low"
+        case .nearLimit: return "Less than 10% left in a limit, or low Console credit"
+        case .full: return "A limit is used up until it resets, or no Console credit is left"
+        case .attention: return "Needs a sign-in, or the last reading failed"
+        case .untracked: return "Vertex, a profile to import, a Console profile without a credit set, or not read yet"
+        }
+    }
+    private func groupHeader(_ group: AccountGroup, collapsed: Bool) -> some View {
+        Button { withAnimation(.easeOut(duration: 0.15)) { store.toggleCollapsed(group) } } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                if store.accountGrouping == .availability, let status = AccountAvailability(rawValue: group.id) {
+                    Circle().fill(statusColor(status)).frame(width: 6, height: 6)
+                }
+                Text(group.title.uppercased()).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(0.8)
+                Text("\(group.accounts.count)").font(.system(size: 10)).monospacedDigit()
+                Spacer()
+            }
+            .foregroundStyle(muted).padding(.horizontal, 24).padding(.vertical, 7)
+            .frame(maxWidth: .infinity).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(canvas)
+        .overlay(alignment: .bottom) { Rectangle().fill(ink.opacity(0.06)).frame(height: 1) }
+        .accessibilityLabel("\(group.title), \(group.accounts.count) profiles, \(collapsed ? "collapsed" : "expanded")")
+        .accessibilityHint(collapsed ? "Shows the profiles in this group" : "Hides the profiles in this group")
+    }
+    private func row(_ account: AccountState) -> some View {
+        AccountRow(account: account, resetLabels: resetLabels(for: account), accentName: store.accentName,
+                   isDemo: store.isDemo, compact: store.compact, showEmails: store.showEmails,
+                   opening: openingProfile == account.id, openingAny: openingProfile != nil,
+                   opened: openedProfile == account.id, copied: copied == account.id,
+                   actionError: profileActionError?.id == account.id ? profileActionError?.message ?? "" : nil,
+                   open: { openProfile(account.profile) }, copy: { copyCommand(account) },
+                   setCredit: { creditProfile = account.profile })
+            .equatable()
     }
     private func openProfile(_ profile: Profile) {
         guard !store.isDemo, openingProfile == nil else { return }

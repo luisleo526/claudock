@@ -211,6 +211,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["usage", "--max-age", "1.5"], 2), (["usage", "--max-age", "+5"], 2), (["usage", "--max-age", ""], 2),
              (["usage", "--max-age", "99999999999999999999999"], 2), (["usage", "--fresh", "--max-age", "5"], 2),
              (["usage", "--fresh", "extra"], 2), (["usage", "--fresh", "--fresh"], 2), (["usage", "--max-age", "1", "--max-age", "2"], 2),
+             (["available", "extra"], 2), (["available", "--names", "--names"], 2), (["available", "--max-age", "--names", "5"], 2),
+             (["available", "--max-age", "86401"], 2), (["available", "--fresh", "--max-age", "5"], 2),
              (["profile", "setup-token"], 2), (["profile", "setup-token", "smoke", "extra"], 2),
              (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2),
              (["profile", "clear-token"], 2), (["profile", "clear-token", "smoke", "extra"], 2),
@@ -484,6 +486,23 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     result = run(["usage"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})
     assert result.returncode == 1 and "Synthetic quota error" in result.stderr and "25.00" not in result.stdout
     passed.append("quota error returns failure without fabricated readings")
+
+    result = run(["available"])
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0] == "PROFILE\tKIND\tPLAN\tLEFT\tTIGHTEST_LIMIT\tRESETS_UTC", lines
+    assert "smoke\tsubscription\tMax 20×\t75.00%\tWeekly\tunknown" in lines, lines
+    assert not any(line.startswith(("vertex\t", "team\t")) for line in lines), lines
+    assert "claudock: team: not listed; set its Console credit to track it: claudock profile set-credit team AMOUNT\n" in result.stderr, result.stderr
+    names = run(["available", "--names", "--fresh"])
+    assert names.returncode == 0 and names.stdout.splitlines() == [line.split("\t")[0] for line in lines[1:]], names.stdout
+    assert run(["available", "--max-age", "60", "--names"]).stdout == names.stdout
+    passed.append("available lists subscription headroom, skips untracked profiles, and prints bare names with --names")
+
+    result = run(["available"], {"CLAUDOCK_TEST_FAIL_USAGE": "1"})
+    assert result.returncode == 1 and result.stdout.splitlines() == ["PROFILE\tKIND\tPLAN\tLEFT\tTIGHTEST_LIMIT\tRESETS_UTC"]
+    assert "Synthetic quota error" in result.stderr and "No profile has usage left." in result.stderr, result.stderr
+    passed.append("available exits 1 when no profile has usage left")
 
     # README.md must keep telling the truth about the CLI. The commands a reader runs are in its shell code blocks: each
     # `claudock` command runs against these synthetic boundaries, with an empty standard input, and the parser must
