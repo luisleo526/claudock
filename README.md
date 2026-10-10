@@ -279,7 +279,7 @@ claudock run deepseek -- -p "Summarize what this folder contains"
 - The key is stored only in Keychain, never in `profiles.json`, arguments, or output. An Anthropic key (`sk-ant-…`) is refused, so it never reaches a third party.
 - The model is pinned. Claude Code gets it in every model slot: the main model, the Opus, Sonnet, Haiku, and Fable defaults, the small fast model, and subagents. `claudock run` refuses a `--model`, `--fallback-model`, or `--advisor` that names another model, before Claude starts.
 - Interactive choice is pinned too. Each launch passes Claude Code one `--settings` object whose `availableModels` lists only the pinned model, so `/model` refuses another model and the model picker hides the rest. Claudock writes no settings file for this. A `--settings` of your own is merged into that object; one that sets the model, the endpoint, or a credential is refused.
-- The key reaches Claude Code as `ANTHROPIC_AUTH_TOKEN`, a bearer token, and the URL as `ANTHROPIC_BASE_URL`. Claude Code's nonessential traffic and model calls are turned off, and inherited `OTEL_…` settings are dropped.
+- The key reaches Claude Code as `ANTHROPIC_AUTH_TOKEN`, a bearer token, and the URL as `ANTHROPIC_BASE_URL`. Claude Code's nonessential traffic is turned off, and inherited `OTEL_…` settings and other model-choosing variables are dropped.
 - No Claude sign-in, inference token, or Console credit applies. The dashboard row shows `Third-party endpoint · HOST · MODEL` and "billed per token by the provider", with no meters. `claudock usage` and `claudock available` print a note instead of a row.
 
 Change the endpoint or the model, or replace the key. The profile keeps its name, folder, and shared history:

@@ -125,7 +125,9 @@ public struct EndpointAPIKey: Equatable, Sendable, CustomStringConvertible, Cust
     public init(parsing raw: String) throws {
         guard raw.utf8.count <= 4096 else { throw EndpointKeyError.invalidKey }
         var key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let assignment = key.range(of: #"\A(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) {
+        // Without `export`, text whose value would start with "=" is a raw key with base64 padding, not an assignment.
+        if let assignment = key.range(of: #"\A(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression),
+           key.range(of: #"\Aexport[ \t]"#, options: .regularExpression) != nil || !key[assignment.upperBound...].hasPrefix("=") {
             key = String(key[assignment.upperBound...])
             if let quote = key.first, quote == "'" || quote == "\"" {
                 guard key.count >= 2, key.last == quote else { throw EndpointKeyError.invalidKey }
@@ -188,24 +190,34 @@ public enum EndpointLaunch {
     /// Inherited telemetry settings go too: a third-party session is not reported to anyone.
     public static func environment(_ isolated: [String: String], configuration: EndpointConfiguration, key: String) -> [String: String] {
         var result = isolated.filter { !APICreditCapture.isTelemetryKey($0.key) }
-        for (name, value) in settingsEnvironment(configuration) where !value.isEmpty { result[name] = value }
-        if configuration.isOneMillionTokens { result.removeValue(forKey: oneMillionSwitch) }
+        for (name, value) in settingsEnvironment(configuration) {
+            if value.isEmpty { result.removeValue(forKey: name) } else { result[name] = value }
+        }
         result["ANTHROPIC_AUTH_TOKEN"] = key
         return result
     }
 
     static let oneMillionSwitch = "CLAUDE_CODE_DISABLE_1M_CONTEXT"
 
+    /// Variables with which Claude Code 2.1.296 chooses a model for a role, offers another one in the picker, or picks a
+    /// provider, beyond those `LaunchCommand` clears. Left empty, each role falls back to the pinned defaults.
+    static let otherModelVariables = ["ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL", "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
+                                      "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL", "ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+                                      "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+                                      "CLAUDE_CODE_USE_GATEWAY"]
+
     /// The variables `--settings` repeats in its `env`. Claude Code copies each settings file's `env` over its process
     /// environment, lowest first, and `--settings` ranks above user, project, and local settings, so no settings file
     /// below managed settings can point the session elsewhere or choose another model. A blank `ANTHROPIC_API_KEY` and
     /// `ANTHROPIC_CUSTOM_HEADERS` keep a settings file's Anthropic key or headers from travelling to the endpoint with the
-    /// endpoint key. The key itself is never here: arguments are visible to other processes.
+    /// endpoint key. Empty model and provider variables leave every other role on the pinned defaults. The key itself is
+    /// never here: arguments are visible to other processes.
     static func settingsEnvironment(_ configuration: EndpointConfiguration) -> [String: String] {
         var result = ["ANTHROPIC_BASE_URL": configuration.baseURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                       // Claude Code 2.1.296 reads no such variable; it is set for versions that do.
                       "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
                       oneMillionSwitch: configuration.isOneMillionTokens ? "" : "1", "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": ""]
+        for name in otherModelVariables { result[name] = "" }
         for name in modelVariables { result[name] = configuration.model }
         return result
     }
@@ -245,6 +257,8 @@ public enum EndpointLaunch {
         var environment = object["env"] as? [String: Any] ?? [:]
         for (name, value) in settingsEnvironment(configuration) { environment[name] = value }
         object["env"] = environment
+        // A project's key helper would otherwise send its own key to the endpoint, as x-api-key beside the bearer token.
+        object["apiKeyHelper"] = ""
         object["availableModels"] = [configuration.baseModel]
         if let behavesAs = configuration.behavesAs {
             object["modelPicker"] = ["replaceBuiltInOptions": true,
