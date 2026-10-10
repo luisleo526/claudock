@@ -238,9 +238,9 @@ class Sandbox:
         environment.update(extra or {})
         return environment
 
-    def run(self, *arguments, stdin="", extra=None, timeout=60):
+    def run(self, *arguments, stdin="", extra=None, timeout=60, cwd=None):
         self.record_path.unlink(missing_ok=True)
-        return subprocess.run([str(self.cli), *arguments], cwd=self.base, env=self.environment(extra), input=stdin,
+        return subprocess.run([str(self.cli), *arguments], cwd=cwd or self.base, env=self.environment(extra), input=stdin,
                               capture_output=True, text=True, timeout=timeout)
 
     def spawn(self, *arguments, extra=None):

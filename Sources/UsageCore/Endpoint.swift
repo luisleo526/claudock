@@ -191,7 +191,8 @@ public enum EndpointLaunch {
     /// interactive Claude Code ask to approve it), the pinned model in every slot, and no nonessential traffic.
     /// Claude Code's default model is the Opus one with `[1m]`, so a model pinned without `[1m]` turns the
     /// one-million-token context off and keeps that default the pinned id; one pinned with `[1m]` keeps it on.
-    /// Inherited telemetry settings go too: a third-party session is not reported to anyone.
+    /// Inherited telemetry settings go too, so no collector the launching environment names hears of the session; Claude
+    /// Code's settings files can still turn telemetry on.
     public static func environment(_ isolated: [String: String], configuration: EndpointConfiguration, key: String) -> [String: String] {
         var result = isolated.filter { !APICreditCapture.isTelemetryKey($0.key) }
         for (name, value) in settingsEnvironment(configuration, configDirectory: isolated["CLAUDE_CONFIG_DIR"] ?? "") {
@@ -240,7 +241,16 @@ public enum EndpointLaunch {
     }
 
     /// Options that point Claude Code at settings `overridingSettings` does not read, or add settings that outrank Claudock's.
-    static let unsupportedOptions = ["--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64"]
+    /// `-w`/`--worktree` starts the session in a worktree Claude Code has yet to create.
+    static let unsupportedOptions = ["--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64",
+                                     "-w", "--worktree"]
+
+    /// The managed preferences an MDM profile installs, which Claude Code 2.1.296 reads as managed settings: the user's and the
+    /// device's.
+    public static var managedPreferencesFiles: [String] {
+        let name = "com.anthropic.claudecode.plist", user = NSUserName()
+        return (user.isEmpty ? [] : ["/Library/Managed Preferences/\(user)/" + name]) + ["/Library/Managed Preferences/" + name]
+    }
 
     /// The key `overridingSettings` reports for a settings file it cannot read whole as a JSON object.
     public static let unreadableSettings = "unreadable"
@@ -258,26 +268,31 @@ public enum EndpointLaunch {
         return object["modelOverrides"] == nil ? nil : "modelOverrides"
     }
 
-    /// Settings files Claude Code would apply against the pins, each with the first setting that would. In the working
-    /// directory's project settings: `ANTHROPIC_AUTH_TOKEN`, which would replace the key and which `--settings` cannot pin,
-    /// and an `availableModels`, `fallbackModel`, or `modelOverrides` naming another model, which Claude Code joins with
-    /// Claudock's. In managed settings (`managed-settings.json` and the `.json` files of `managed-settings.d`), which
-    /// outrank `--settings`: anything a user's `--settings` may not set either. The profile's own settings are refused for
-    /// the key already (`SubscriptionConfiguration`). An existing file that is not a JSON object of at most 4 MiB counts
-    /// as `unreadableSettings`, and so does nothing else: Claudock cannot tell what Claude Code would read in it. So does a
-    /// file that is not strict JSON (`StrictJSON`): Foundation reads trailing commas, which other parsers refuse, and
-    /// parsers disagree on which value of a name given twice wins.
+    /// Settings files Claude Code would apply against the pins, each with the first setting that would. In project
+    /// settings, the working folder's `.claude/settings.json` and every `.claude/settings.local.json` Claude Code may read
+    /// (`localSettingsFolders`): `ANTHROPIC_AUTH_TOKEN`, which would replace the key and which `--settings` cannot pin, and
+    /// an `availableModels`, `fallbackModel`, or `modelOverrides` naming another model, which Claude Code joins with
+    /// Claudock's. In managed settings (`managed-settings.json`, the `.json` files of `managed-settings.d`, and an MDM
+    /// profile's managed preferences), which outrank `--settings`: anything a user's `--settings` may not set either. The
+    /// profile's own settings are refused for the key already (`SubscriptionConfiguration`). An existing file Claudock cannot
+    /// read as Claude Code would counts as `unreadableSettings`, and so does nothing else: one over 4 MiB, one that is not
+    /// strict JSON (`StrictJSON`: Foundation reads trailing commas, which other parsers refuse, and parsers disagree on which
+    /// value of a name given twice wins), one that holds no object, and preferences with a date or data value.
     public static func overridingSettings(configuration: EndpointConfiguration, configDirectory: String, workingDirectory: String,
                                           managedSettings: [String] = APICreditCapture.managedSettingsFiles,
-                                          managedDirectory: String = managedSettingsDirectory) -> [APICreditCapture.Override] {
+                                          managedDirectory: String = managedSettingsDirectory,
+                                          managedPreferences: [String] = managedPreferencesFiles,
+                                          home: String = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()) -> [APICreditCapture.Override] {
         let dropIns = ((try? FileManager.default.contentsOfDirectory(atPath: managedDirectory)) ?? []).filter { $0.hasSuffix(".json") }
             .sorted().map { managedDirectory + "/" + $0 }
-        let project = [workingDirectory + "/.claude/settings.json", workingDirectory + "/.claude/settings.local.json"].map { ($0, false) }
-        return (project + (managedSettings + dropIns).map { ($0, true) }).compactMap { file, outranks in
+        let folders = localSettingsFolders(workingDirectory, home: home)
+        let project = ([folders[0] + "/.claude/settings.json"] + folders.map { $0 + "/.claude/settings.local.json" }).map { ($0, false, false) }
+        let managed = (managedSettings + dropIns).map { ($0, true, false) } + managedPreferences.map { ($0, true, true) }
+        return (project + managed).compactMap { file, outranks, propertyList in
             var status = stat()
             guard stat(file, &status) == 0, status.st_mode & S_IFMT == S_IFREG else { return nil }
-            guard let data = BoundedFile.read(file, limit: 4_194_304), StrictJSON.isValid(data),
-                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            guard let contents = BoundedFile.read(file, limit: 4_194_304), let data = propertyList ? preferencesJSON(contents) : contents,
+                  let object = settingsObject(data) else {
                 return APICreditCapture.Override(file: file, key: unreadableSettings)
             }
             var conflict: String?
@@ -290,6 +305,83 @@ public enum EndpointLaunch {
             }
             return conflict.map { APICreditCapture.Override(file: file, key: $0) }
         }
+    }
+
+    /// The object Claude Code reads from a settings file's `data`, or nil when Claudock cannot tell what it would read. Blank
+    /// text is an empty object, as Claude Code takes it; anything else must be strict JSON (`StrictJSON`) holding one object.
+    private static func settingsObject(_ data: Data) -> [String: Any]? {
+        if String(decoding: data, as: UTF8.self).trimmingCharacters(in: blank).isEmpty { return [:] }
+        guard StrictJSON.isValid(data) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    private static let blank = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}"))
+
+    /// Managed preferences as JSON, as Claude Code converts them with `plutil -convert json`: a property list dictionary
+    /// without dates or data, which JSON cannot hold.
+    private static func preferencesJSON(_ data: Data) -> Data? {
+        guard let object = try? PropertyListSerialization.propertyList(from: data, format: nil), object is [String: Any],
+              JSONSerialization.isValidJSONObject(object) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// The folders whose `.claude/settings.local.json` Claude Code 2.1.296 may read when started in `workingDirectory`: that
+    /// folder, the root of the git repository holding it, and that root's main checkout when the root is a linked worktree.
+    /// Claude Code reads the main checkout's file (the root's when the worktree does not resolve, the working folder's when
+    /// the checkout is the home folder or another user's) and the working folder's beside it; checking every candidate
+    /// covers whichever it picks.
+    static func localSettingsFolders(_ workingDirectory: String, home: String) -> [String] {
+        let start = resolve(workingDirectory, from: "/")
+        guard let root = gitRoot(start) else { return [start] }
+        let homeFolder = realPath(home)
+        return [root, mainCheckout(root)].compactMap { $0 }.reduce(into: [start]) { folders, folder in
+            if realPath(folder) != homeFolder, !folders.contains(folder) { folders.append(folder) }
+        }
+    }
+
+    /// The nearest folder at or above `folder` holding a `.git` folder or file, as Claude Code finds a repository.
+    private static func gitRoot(_ folder: String) -> String? {
+        var current = folder
+        while true {
+            var status = stat()
+            let entry = (current == "/" ? "" : current) + "/.git"
+            if lstat(entry, &status) == 0, status.st_mode & S_IFMT != S_IFLNK || stat(entry, &status) == 0,
+               status.st_mode & S_IFMT == S_IFDIR || status.st_mode & S_IFMT == S_IFREG {
+                return current
+            }
+            let parent = (current as NSString).deletingLastPathComponent
+            if parent == current || parent.isEmpty { return nil }
+            current = parent
+        }
+    }
+
+    /// The main checkout of a linked worktree whose root is `root`: its `.git` file names the worktree's git folder, whose
+    /// `commondir` names the repository's.
+    private static func mainCheckout(_ root: String) -> String? {
+        func text(_ file: String) -> String? {
+            var status = stat()
+            guard stat(file, &status) == 0, status.st_mode & S_IFMT == S_IFREG, let data = BoundedFile.read(file, limit: 65_536) else { return nil }
+            return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let pointer = text(root + "/.git"), pointer.hasPrefix("gitdir:") else { return nil }
+        let gitFolder = resolve(pointer.dropFirst(7).trimmingCharacters(in: .whitespaces), from: root)
+        guard let common = text(gitFolder + "/commondir").map({ resolve($0, from: gitFolder) }) else { return nil }
+        return (common as NSString).lastPathComponent == ".git" ? (common as NSString).deletingLastPathComponent : common
+    }
+
+    /// `path` from `base`, with `.` and `..` resolved by name as Node's `path.resolve` does.
+    private static func resolve(_ path: String, from base: String) -> String {
+        var parts: [Substring] = []
+        for part in ((path.hasPrefix("/") ? "" : base + "/") + path).split(separator: "/") where part != "." {
+            if part == ".." { _ = parts.popLast() } else { parts.append(part) }
+        }
+        return "/" + parts.joined(separator: "/")
+    }
+
+    private static func realPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// `arguments` with Claudock's `--settings` first: the user's own `--settings`, if Claude Code would read one, merged
@@ -402,8 +494,10 @@ public enum EndpointLaunch {
 }
 
 /// RFC 8259 JSON, a leading byte order mark aside, with no name given twice in any object once its escapes are decoded.
-/// Settings files are checked against it before Foundation reads them, so Claudock judges a file only when every JSON
-/// parser reads it the same way.
+/// Names are compared as Swift compares strings, so canonically equivalent names (`K` and the Kelvin sign) count as one:
+/// that catches every repeat JavaScript sees, and leaves Foundation's object, bridged to Swift, nothing to merge. Settings
+/// files are checked against it before Foundation reads them, so Claudock judges a file only when every JSON parser reads
+/// it the same way.
 enum StrictJSON {
     /// Deeper nesting is refused rather than followed.
     static let maximumDepth = 256
@@ -459,11 +553,13 @@ enum StrictJSON {
             guard depth <= StrictJSON.maximumDepth else { return false }
             index += 1
             if take(closing) { return true }
-            var names = Set<[UInt16]>()
+            var names = Set<String>()
             repeat {
                 if named {
                     skipWhitespace()
-                    guard let name = string(), names.insert(name).inserted, take(UInt8(ascii: ":")) else { return false }
+                    guard let name = string(), names.insert(String(decoding: name, as: UTF16.self)).inserted, take(UInt8(ascii: ":")) else {
+                        return false
+                    }
                 }
                 guard value() else { return false }
             } while take(UInt8(ascii: ","))
