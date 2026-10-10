@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`claudock usage` through the shared usage cache, persisted cooldowns, request pacing, and the fetch lock.
+"""`claudock usage` and `claudock available` through the shared usage cache, persisted cooldowns, request pacing, and the fetch lock.
 
 Builds a test CLI with SwiftPM and `-D CLAUDOCK_TEST_USAGE_ENDPOINT` in its own scratch directory. Only a build
 with that flag reads the CLAUDOCK_TEST_USAGE_ENDPOINT variable, and only for an http URL on 127.0.0.1 (without
@@ -563,6 +563,37 @@ def arguments(cli, checks, sandboxes):
     checks.done("help documents the usage cache, --max-age, --fresh, and cooldowns")
 
 
+def available(cli, checks, sandboxes):
+    """`claudock available` over the same cache and stub: who has room, in what order, and the exit when nobody does."""
+    sandbox = UsageSandbox(cli, "e2e-usage-available", ["alpha", "bravo", "charlie"])
+    sandboxes.append(sandbox)
+    header = "PROFILE\tKIND\tPLAN\tLEFT\tTIGHTEST_LIMIT\tRESETS_UTC\n"
+    sandbox.stub.set("alpha", session=30.0, weekly=20.0)
+    sandbox.stub.set("bravo", session=100.0, weekly=40.0)
+    sandbox.stub.set("charlie", session=92.0, weekly=10.0)
+    result = sandbox.run("available", "--fresh")
+    sandbox.expect_no_tokens(checks, result.stdout + result.stderr, "available output")
+    expected = (header + f"alpha\tsubscription\t{PLANS['alpha'][2]}\t70.00%\t5-hour session\t{SESSION_RESET}\n"
+                + f"charlie\tsubscription\t{PLANS['charlie'][2]}\t8.00%\t5-hour session\t{SESSION_RESET}\n")
+    checks.expect(result.returncode == 0 and result.stdout == expected,
+                  "available must list alpha, then charlie near its limit, and leave out full bravo", result)
+    checks.expect(sandbox.stub.count() == 3, f"available --fresh must ask once per profile, asked {sandbox.stub.count()}")
+    checks.done("available lists profiles with room, most left first, and leaves out a full one")
+
+    result = sandbox.run("available", "--names")
+    checks.expect(result.returncode == 0 and result.stdout == "alpha\ncharlie\n", "available --names must print bare names", result)
+    checks.expect(sandbox.stub.count() == 3, "available without --fresh must reuse the cached readings")
+    checks.done("available --names prints bare names from the shared cache")
+
+    sandbox.stub.set("alpha", session=100.0, weekly=20.0)
+    sandbox.stub.set("charlie", session=100.0, weekly=10.0)
+    result = sandbox.run("available", "--fresh")
+    checks.expect(result.returncode == 1 and result.stdout == header, "available must exit 1 with only the header when every profile is full", result)
+    checks.expect("No profile has usage left." in result.stderr and f"is next free, at {SESSION_RESET}." in result.stderr,
+                  "available must name the next profile to free up", result)
+    checks.done("available exits 1 and names the next profile to free up when every profile is full")
+
+
 def main():
     clean_up_on_termination()
     preflight()
@@ -570,7 +601,7 @@ def main():
     checks = Checks()
     sandboxes, failures = [], []
     try:
-        for scenario in (arguments, caching, cooldown, concurrency, corrupt, busy):
+        for scenario in (arguments, caching, cooldown, concurrency, corrupt, busy, available):
             try:
                 scenario(cli, checks, sandboxes)
             except Exception as error:  # Each scenario has its own home and stub; report every one that fails.
