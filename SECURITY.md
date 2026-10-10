@@ -49,4 +49,6 @@ The token dialog defaults to direct paste. Clipboard reads occur only after the 
 
 The CLI's `profile set-token` accepts the same input from standard input only, with echo off at a terminal; a token is never taken from command arguments, and `profile tokens` reports status and expiry without token material.
 
+`profile clear-token` and the token dialog's Delete token remove only the `Claudock-inference-…` item, through an argument vector for `security` that accepts no other service, so Claude Code's own login and key cannot be named. They never read the token. `profile remove` lists a removed profile's remaining Keychain items from attribute-only lookups and prints the commands that delete them without running them; deleting an item does not revoke its key or token at Anthropic.
+
 Pasted tokens have manual provenance. Their account identity and expiry cannot be established from an opaque string; unknown expiry is represented explicitly. A cached profile identity, when available at import, is only a local binding and not proof that the token belongs to that account. Browser-created tokens retain their strict account/organization checks. The user assigns an imported token to a profile; use its matching quota login when relying on account-specific limits.
