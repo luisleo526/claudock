@@ -153,7 +153,7 @@ struct ProfileManagerView: View {
             .interactiveDismissDisabled(busy)
             .sheet(item: $minting, onDismiss: {
                 if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
-            }) { profile in MintTokenView(profile: profile) }
+            }) { profile in MintTokenView(profile: profile, tokenSaved: hasSavedToken(profile)) }
             .sheet(item: $replacingKey, onDismiss: {
                 if let profile = lastCredentialProfile { Task { await readCredentialStatus(profile) } }
             }) { profile in APIKeyView(profile: profile) }
@@ -165,7 +165,7 @@ struct ProfileManagerView: View {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Remove profile", role: .destructive) { remove(profile) }.disabled(actionsUnavailable)
             } message: { profile in
-                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and \(profile.authKind == .apiKey ? "its Console API key in Keychain" : profile.authKind == .consoleLogin ? "its Console sign-in" : "saved login"), and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
+                Text("Remove \(profile.name) from Claudock? Shared conversations and settings, this account's config folder and its credentials in Keychain (a login, key, or token), and your own shell commands will be kept. Only shortcuts still owned by Claudock are removed when a loaded integration next synchronizes.")
             }
     }
     private var canSave: Bool {
@@ -177,6 +177,15 @@ struct ProfileManagerView: View {
         switch credentialStatuses[profile.id] {
         case .token(.active)?, .token(.expired)?, .token(.imported)?: return "Manage token…"
         default: return "Set token…"
+        }
+    }
+    /// Whether an inference token item may exist for the row: its last status read found one, one that belongs to another
+    /// login included, or could not be read at all, as with a token that no longer decodes, which is the one to delete.
+    private func hasSavedToken(_ profile: Profile) -> Bool {
+        switch credentialStatuses[profile.id] {
+        case .token(.active)?, .token(.expired)?, .token(.imported)?, .tokenOfAnotherAccount?: return true
+        case .token(.notConfigured)?, .apiKey?, .consoleLogin?: return false
+        case nil: return unavailableCredentialStatuses.contains(profile.id)
         }
     }
     private func beginCredentialChange(_ profile: Profile) {
@@ -345,19 +354,31 @@ struct ProfileManagerView: View {
         Task {
             defer { busy = false }
             do {
-                try await Task.detached { try ProfileManager.remove(profile: profile) }.value
+                let left = try await Task.detached {
+                    try ProfileManager.remove(profile: profile)
+                    return ProfileKeychainItems.lookup(for: profile)
+                }.value
                 if editing?.id == profile.id { resetEditor() }
-                switch profile.authKind {
-                case .apiKey:
-                    notice = "Removed \(profile.name). Shared history and settings were kept, and its Console API key stays in Keychain under service \(APIKeyStore.serviceName(for: profile)). Your own shell commands are unchanged."
-                case .consoleLogin:
-                    notice = "Removed \(profile.name). Shared history and settings were kept, and Claude Code's Console sign-in stays in Keychain under service \(ConsoleLogin.keychainService(for: profile)). Your own shell commands are unchanged."
-                case .subscription:
-                    notice = "Removed \(profile.name). Shared history, settings, and the saved login were kept. Your own shell commands are unchanged."
-                }
+                notice = removalNotice(profile, left)
                 store.refresh()
             } catch { failure = error.localizedDescription }
         }
+    }
+    /// Removal keeps every credential, and the list forgets where they are: name each Keychain item that is left with
+    /// the command that deletes it, and the config folder. Deleting an item does not revoke its key.
+    private func removalNotice(_ profile: Profile, _ left: ProfileKeychainLookup) -> String {
+        var lines = ["Removed \(profile.name). Shared history, settings, and credentials were kept. Your own shell commands are unchanged."]
+        if !left.existing.isEmpty || !left.unchecked.isEmpty {
+            lines.append("Credentials left in Keychain. To delete one, run its command in Terminal:")
+            lines += left.existing.map { "\($0.title): \($0.deleteCommand)" }
+            lines += left.unchecked.map { "\($0.title) (Keychain could not be checked; it may not exist): \($0.deleteCommand)" }
+        }
+        if !profile.configDirectory.isEmpty {
+            // Quoted for the shell, as the CLI prints it, so it can go into `rm -r` as it is.
+            lines.append("Config folder: \(LaunchCommand.quote(profile.configDirectory))")
+        }
+        lines.append("Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.")
+        return lines.joined(separator: "\n")
     }
     private func login(_ profile: Profile) {
         guard !actionsUnavailable else { return }
