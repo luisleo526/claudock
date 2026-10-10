@@ -5,6 +5,7 @@ import XCTest
 final class EndpointSettingsTests: XCTestCase {
     private let flash = try! EndpointConfiguration(baseURL: "https://api.deepseek.com/anthropic", model: "deepseek-flash")
     private let folder = FileManager.default.temporaryDirectory.appendingPathComponent("claudock-endpoint-settings-\(UUID().uuidString)")
+    private let profileFolder = "/synthetic/claudock-endpoint-profile"
 
     override func setUpWithError() throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -15,7 +16,8 @@ final class EndpointSettingsTests: XCTestCase {
     }
 
     private func launch(_ arguments: [String], _ configuration: EndpointConfiguration? = nil) throws -> (settings: [String: Any], rest: [String]) {
-        let result = try EndpointLaunch.arguments(arguments, configuration: configuration ?? flash, workingDirectory: folder.path)
+        let result = try EndpointLaunch.arguments(arguments, configuration: configuration ?? flash, configDirectory: profileFolder,
+                                                  workingDirectory: folder.path)
         XCTAssertEqual(result.first, "--settings")
         XCTAssertEqual(ClaudeCommandLine.options(in: result).filter { $0.name == "--settings" }.count, 1, "Claude Code reads exactly one --settings")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result[1].utf8)) as? [String: Any])
@@ -24,10 +26,10 @@ final class EndpointSettingsTests: XCTestCase {
 
     private func pinnedEnvironment(_ model: String, disable1M: String = "1") -> [String: String] {
         // Every credential, provider, and model variable a launch clears is blank here too, so no settings file sets one;
-        // the folder and nested-session variables are Claude Code's own and stay, and the key cannot be in arguments.
+        // the profile's folder is repeated, the nested-session marker is Claude Code's own, and the key cannot be in arguments.
         var blanks: [String: String] = [:]
-        for name in LaunchCommand.clearedEnvironment where !["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE",
-                                                             "ANTHROPIC_AUTH_TOKEN"].contains(name) { blanks[name] = "" }
+        for name in LaunchCommand.clearedEnvironment where !["CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"].contains(name) { blanks[name] = "" }
+        blanks["CLAUDE_CONFIG_DIR"] = profileFolder
         return blanks.merging(pinnedValues(model, disable1M: disable1M)) { $1 }
     }
 
@@ -78,7 +80,7 @@ final class EndpointSettingsTests: XCTestCase {
     func testTheProcessEnvironmentFollowsTheOneMillionTokenChoice() throws {
         let plain = EndpointLaunch.environment(["CLAUDE_CODE_DISABLE_1M_CONTEXT": "0", "CLAUDE_CONFIG_DIR": "/synthetic/profile"],
                                                configuration: flash, key: "k")
-        XCTAssertEqual(plain["CLAUDE_CONFIG_DIR"], "/synthetic/profile", "the profile's folder is LaunchCommand's to set")
+        XCTAssertEqual(plain["CLAUDE_CONFIG_DIR"], "/synthetic/profile", "the profile's folder stays the one LaunchCommand set")
         XCTAssertEqual(plain["CLAUDE_CODE_DISABLE_1M_CONTEXT"], "1")
         let wide = try EndpointConfiguration(baseURL: flash.baseURL, model: "deepseek-flash[1m]")
         XCTAssertNil(EndpointLaunch.environment(["CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"], configuration: wide, key: "k")["CLAUDE_CODE_DISABLE_1M_CONTEXT"])
@@ -120,7 +122,8 @@ final class EndpointSettingsTests: XCTestCase {
             (#"{"env":{"ANTHROPIC_CUSTOM_MODEL_OPTION":"claude-opus-4-8"}}"#, "env.ANTHROPIC_CUSTOM_MODEL_OPTION"),
             (#"{"env":{"CLAUDE_CODE_USE_GATEWAY":"1"}}"#, "env.CLAUDE_CODE_USE_GATEWAY")]
         for (json, key) in refused {
-            XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", json], configuration: flash, workingDirectory: folder.path), json) { error in
+            XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", json], configuration: flash, configDirectory: profileFolder,
+                                                              workingDirectory: folder.path), json) { error in
                 XCTAssertEqual(error as? EndpointLaunchError, .settingsConflict(key), json)
                 XCTAssertFalse(error.localizedDescription.contains("fixture"))
                 XCTAssertFalse(error.localizedDescription.contains("v4-pro"))
@@ -130,29 +133,65 @@ final class EndpointSettingsTests: XCTestCase {
         XCTAssertNoThrow(try launch(["--settings", #"{"env":{"ANTHROPIC_API_KEY":"","ANTHROPIC_SMALL_FAST_MODEL":"deepseek-flash"},"fallbackModel":"deepseek-flash"}"#]))
     }
 
-    func testSettingsFilesThatWouldReplaceTheKeyAreFound() throws {
-        let project = folder.appendingPathComponent(".claude")
+    private func overrides(managed: URL, dropIns: URL) -> [APICreditCapture.Override] {
+        EndpointLaunch.overridingSettings(configuration: flash, configDirectory: profileFolder, workingDirectory: folder.path,
+                                          managedSettings: [managed.path], managedDirectory: dropIns.path)
+    }
+
+    func testSettingsFilesThatOutrankOrReplaceThePinsAreFound() throws {
+        let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("managed-settings.d")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dropIns, withIntermediateDirectories: true)
         let managed = folder.appendingPathComponent("managed-settings.json")
-        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]), [])
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"","OTHER":"x"}}"#.utf8).write(to: project.appendingPathComponent("settings.json"))
-        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]), [])
+        XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [])
+        // --settings outranks a project's other variables; only the key, which it cannot carry, matters there.
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_BASE_URL":"https://elsewhere.example","OTHER":"x"}}"#.utf8)
+            .write(to: project.appendingPathComponent("settings.json"))
+        // Managed settings outrank --settings: the pinned values themselves and blanks are fine there.
+        try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANTHROPIC_API_KEY":"","OTHER":"x"}}"#.utf8).write(to: managed)
+        XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [])
         try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"}}"#.utf8).write(to: project.appendingPathComponent("settings.local.json"))
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-managed"}}"#.utf8).write(to: managed)
-        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]),
-                       [APICreditCapture.Override(file: project.appendingPathComponent("settings.local.json").path, key: "ANTHROPIC_AUTH_TOKEN"),
-                        APICreditCapture.Override(file: managed.path, key: "ANTHROPIC_AUTH_TOKEN")])
+        try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://elsewhere.example","ANTHROPIC_MODEL":"deepseek-flash"}}"#.utf8).write(to: managed)
+        try Data(#"{"env":{"CLAUDE_CONFIG_DIR":"/synthetic/other-profile"}}"#.utf8).write(to: dropIns.appendingPathComponent("10-team.json"))
+        XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [
+            APICreditCapture.Override(file: project.appendingPathComponent("settings.local.json").path, key: "ANTHROPIC_AUTH_TOKEN"),
+            APICreditCapture.Override(file: managed.path, key: "ANTHROPIC_BASE_URL"),
+            APICreditCapture.Override(file: dropIns.appendingPathComponent("10-team.json").path, key: "CLAUDE_CONFIG_DIR")])
+    }
+
+    func testASettingsFileThatCannotBeParsedIsSearchedAsText() throws {
+        let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("none.d")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let local = project.appendingPathComponent("settings.local.json")
+        // Not JSON this parser reads, but a looser one might find the key in it: it counts.
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}} // trailing comma"#.utf8).write(to: local)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
+                       [APICreditCapture.Override(file: local.path, key: "ANTHROPIC_AUTH_TOKEN")])
+        try Data(("{\"padding\":\"" + String(repeating: "x", count: 1_100_000) + "\",\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"fixture\"}}").utf8).write(to: local)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns).map(\.key), ["ANTHROPIC_AUTH_TOKEN"],
+                       "a file too large to parse is searched too")
+        try Data(#"{"broken": "#.utf8).write(to: local)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns), [])
+    }
+
+    func testAProjectConfigurationRootIsRefusedBecauseItsSettingsCannotBeChecked() {
+        XCTAssertThrowsError(try EndpointLaunch.arguments(["--project-config-root", "/synthetic/elsewhere", "-p", "x"], configuration: flash,
+                                                          configDirectory: profileFolder, workingDirectory: folder.path)) {
+            XCTAssertEqual($0 as? EndpointLaunchError, .unsupportedOption("--project-config-root"))
+        }
     }
 
     func testUnreadableOrRepeatedSettingsAreRefused() throws {
         let fifo = folder.appendingPathComponent("fifo.json").path
         XCTAssertEqual(mkfifo(fifo, 0o600), 0)
         for value in ["{not json}", "[]", "{", "missing.json", fifo, folder.path] {
-            XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", value], configuration: flash, workingDirectory: folder.path), value) {
+            XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", value], configuration: flash, configDirectory: profileFolder,
+                                                              workingDirectory: folder.path), value) {
                 XCTAssertEqual($0 as? EndpointLaunchError, .settingsUnreadable, value)
             }
         }
-        XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", "{}", "--settings={}"], configuration: flash, workingDirectory: folder.path)) {
+        XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", "{}", "--settings={}"], configuration: flash, configDirectory: profileFolder,
+                                                          workingDirectory: folder.path)) {
             XCTAssertEqual($0 as? EndpointLaunchError, .settingsRepeated)
         }
     }

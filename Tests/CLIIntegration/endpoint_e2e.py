@@ -73,12 +73,13 @@ def endpoint_environment(sandbox, extra, profile, key, url=URL, model=MODEL):
     return expected
 
 
-def pinned_settings(url=URL, model=MODEL, behaves_as=None, host=HOST, extra=None):
-    """The --settings object a launch must pass: the allowlist, the endpoint's variables, and a picker row for behaves-as."""
-    # Every variable a launch clears is blank, except the folder, the nested-session marker, and the key.
-    environment = {name: "" for name in (CLEARED | set(OTHER_MODEL_VARIABLES))
-                   - {"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"}}
-    environment.update({"ANTHROPIC_BASE_URL": url, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+def pinned_settings(profile, url=URL, model=MODEL, behaves_as=None, host=HOST, extra=None):
+    """The --settings object a launch of `profile` must pass: the allowlist, the endpoint's variables, and a picker row
+    for behaves-as."""
+    # Every variable a launch clears is blank, except the profile's folder, the nested-session marker, and the key.
+    environment = {name: "" for name in (CLEARED | set(OTHER_MODEL_VARIABLES)) - {"CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"}}
+    environment.update({"CLAUDE_CONFIG_DIR": profile["configDirectory"], "ANTHROPIC_BASE_URL": url,
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
                         "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1"})
     for name in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
@@ -179,7 +180,7 @@ def launches(sandbox, checks, profile, key):
     checks.expect(record["cwd"] == str(sandbox.base), "run must keep the working directory")
     checks.expect(key not in everything_printed(result), "a launch must not print the key")
     checks.done("run sets exactly the endpoint environment over a hostile parent, keeps unrelated variables and literal arguments")
-    checks.expect(recorded_settings(record) == pinned_settings(),
+    checks.expect(recorded_settings(record) == pinned_settings(profile),
                   f"run must pass exactly one --settings that pins the model, got {record['argv'][:2]!r}")
     checks.done("run passes one --settings with availableModels and the endpoint's variables, never the key")
 
@@ -215,7 +216,7 @@ def launches(sandbox, checks, profile, key):
     checks.done("require-token on does not block endpoint profiles")
 
 
-def user_settings(sandbox, checks):
+def user_settings(sandbox, checks, profile):
     """A --settings of the user's own is merged into Claudock's one; one that would change the model, the endpoint, or a
     credential, or that Claude Code would not read whole, is refused before launch."""
     inline = {"permissions": {"allow": ["Bash(ls)"]}, "env": {"E2E_SETTING": "kept"}}
@@ -223,12 +224,12 @@ def user_settings(sandbox, checks):
     record = sandbox.record()
     checks.expect(result.returncode == 0 and record is not None, "a launch with the user's own --settings must start", result)
     checks.expect(claude_arguments(record) == ["-p", "x"], f"the user's --settings must be taken out, got {record['argv']!r}")
-    checks.expect(recorded_settings(record) == pinned_settings(extra=inline), "the user's settings must be merged into the one --settings")
+    checks.expect(recorded_settings(record) == pinned_settings(profile, extra=inline), "the user's settings must be merged into the one --settings")
     (sandbox.base / "e2e-settings.json").write_text(json.dumps({"outputStyle": "Explanatory", "model": MODEL}))
     result = sandbox.run("run", "deepseek", "--", "--settings=e2e-settings.json", "-p", "x")
     record = sandbox.record()
     checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == ["-p", "x"]
-                  and recorded_settings(record) == pinned_settings(extra={"outputStyle": "Explanatory", "model": MODEL}),
+                  and recorded_settings(record) == pinned_settings(profile, extra={"outputStyle": "Explanatory", "model": MODEL}),
                   "a settings file named relative to the working directory must be merged too", result)
     checks.done("a user's own --settings, inline or a file, is merged into the one Claudock passes")
 
@@ -240,7 +241,8 @@ def user_settings(sandbox, checks):
         result = sandbox.run("run", "deepseek", "--", "--settings", value, "-p", "x")
         checks.expect(result.returncode == 2 and sandbox.record() is None and key in result.stderr, f"--settings setting {key} must be refused", result)
         checks.expect("v4-pro" not in result.stderr and "sk-ant" not in result.stderr, "the refusal must not echo the setting's value", result)
-    for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}")):
+    for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}"),
+                      ("--project-config-root", str(sandbox.base))):
         result = sandbox.run("run", "deepseek", "--", *arguments)
         checks.expect(result.returncode == 2 and sandbox.record() is None, f"--settings {' '.join(arguments[1:])} must be refused", result)
     checks.done("a user's --settings that changes the model, endpoint, or key, or that cannot be read once, is refused before launch")
@@ -260,7 +262,7 @@ def user_settings(sandbox, checks):
     checks.done("a project's settings that would replace the endpoint key stop the launch")
 
 
-def behaves_as(sandbox, checks, key):
+def behaves_as(sandbox, checks, key, profile):
     result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", "claude-sonnet-4-6")
     checks.expect(result.returncode == 0, "set-endpoint --behaves-as must accept a catalog id", result)
     listed = sandbox.listed()["deepseek"]["endpoint"]
@@ -269,7 +271,7 @@ def behaves_as(sandbox, checks, key):
     checks.expect(stored["endpoint"] == {"baseURL": URL, "model": MODEL, "behavesAs": "claude-sonnet-4-6"}, f"the registry must keep it, got {stored!r}")
     result = sandbox.run("run", "deepseek", "--", "-p", "x")
     record = sandbox.record()
-    checks.expect(result.returncode == 0 and record is not None and recorded_settings(record) == pinned_settings(behaves_as="claude-sonnet-4-6")
+    checks.expect(result.returncode == 0 and record is not None and recorded_settings(record) == pinned_settings(profile, behaves_as="claude-sonnet-4-6")
                   and record["env"].get("ANTHROPIC_AUTH_TOKEN") == key, "the launch must add the one picker row that maps the model", result)
     for value in ("sonnet", "claude-sonnet-4-6[1m]", ""):
         result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", value)
@@ -277,7 +279,7 @@ def behaves_as(sandbox, checks, key):
     result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", "none")
     record = sandbox.run("run", "deepseek") and sandbox.record()
     checks.expect(result.returncode == 0 and sandbox.listed()["deepseek"]["endpoint"] == f"{HOST} · {MODEL}"
-                  and record is not None and recorded_settings(record) == pinned_settings(), "--behaves-as none must remove the mapping", result)
+                  and record is not None and recorded_settings(record) == pinned_settings(profile), "--behaves-as none must remove the mapping", result)
     mapped_key = synthetic_key()
     result = sandbox.run("profile", "add", "mapped", "--endpoint", URL, "--model", MODEL, "--behaves-as", "claude-opus-4-8", stdin=mapped_key)
     checks.expect(result.returncode == 0, "profile add must accept --behaves-as", result)
@@ -515,8 +517,8 @@ def main():
             launches(sandbox, checks, profile, key)
         finally:
             checks.expect(restore_policy_preference(cli, original_policy), "the inference-token requirement must be restored")
-        user_settings(sandbox, checks)
-        behaves_as(sandbox, checks, key)
+        user_settings(sandbox, checks, profile)
+        behaves_as(sandbox, checks, key, profile)
         resume_guard(sandbox, checks, profile)
         rejected_input(sandbox, checks)
         key = change_endpoint(sandbox, checks, profile, key)
