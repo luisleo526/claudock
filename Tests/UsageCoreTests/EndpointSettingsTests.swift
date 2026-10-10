@@ -135,9 +135,76 @@ final class EndpointSettingsTests: XCTestCase {
         XCTAssertNoThrow(try launch(["--settings", #"{"env":{"ANTHROPIC_API_KEY":"","ANTHROPIC_SMALL_FAST_MODEL":"deepseek-flash"},"fallbackModel":"deepseek-flash"}"#]))
     }
 
-    private func overrides(managed: URL, dropIns: URL) -> [APICreditCapture.Override] {
-        EndpointLaunch.overridingSettings(configuration: flash, configDirectory: profileFolder, workingDirectory: folder.path,
-                                          managedSettings: [managed.path], managedDirectory: dropIns.path)
+    private func overrides(managed: URL, dropIns: URL, preferences: [URL] = [], in directory: URL? = nil,
+                           home: URL? = nil) -> [APICreditCapture.Override] {
+        EndpointLaunch.overridingSettings(configuration: flash, configDirectory: profileFolder, workingDirectory: (directory ?? folder).path,
+                                          managedSettings: [managed.path], managedDirectory: dropIns.path,
+                                          managedPreferences: preferences.map(\.path), home: (home ?? folder.appendingPathComponent("home")).path)
+    }
+
+    private func write(_ text: String, to file: URL) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: file)
+    }
+
+    func testLocalSettingsOfTheGitRootAndTheMainCheckoutAreFound() throws {
+        // Claude Code reads .claude/settings.local.json at the repository's root, the main checkout's for a linked worktree,
+        // and the working folder's beside it; .claude/settings.json only in the working folder.
+        let main = folder.appendingPathComponent("main"), worktree = folder.appendingPathComponent("wt")
+        let none = folder.appendingPathComponent("none.json"), dropIns = folder.appendingPathComponent("none.d")
+        let gitDirectory = main.appendingPathComponent(".git/worktrees/wt")
+        try FileManager.default.createDirectory(at: gitDirectory, withIntermediateDirectories: true)
+        try write("../..\n", to: gitDirectory.appendingPathComponent("commondir"))
+        try write(worktree.path + "/.git\n", to: gitDirectory.appendingPathComponent("gitdir"))
+        try write("gitdir: " + gitDirectory.path + "\n", to: worktree.appendingPathComponent(".git"))
+        let mainLocal = main.appendingPathComponent(".claude/settings.local.json")
+        try write(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"}}"#, to: mainLocal)
+        try write(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"}}"#, to: main.appendingPathComponent(".claude/settings.json"))
+        let subfolder = main.appendingPathComponent("src/deep"), worktreeSubfolder = worktree.appendingPathComponent("src")
+        for directory in [subfolder, worktreeSubfolder] { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let token = APICreditCapture.Override(file: mainLocal.path, key: "env.ANTHROPIC_AUTH_TOKEN")
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, in: subfolder), [token])
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, in: worktreeSubfolder), [token])
+        let worktreeLocal = worktree.appendingPathComponent(".claude/settings.local.json")
+        let ownLocal = worktreeSubfolder.appendingPathComponent(".claude/settings.local.json")
+        try write(#"{"fallbackModel":"deepseek-v4-pro"}"#, to: worktreeLocal)
+        try write(#"{"availableModels":["deepseek-v4-pro"]}"#, to: ownLocal)
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, in: worktreeSubfolder), [
+            APICreditCapture.Override(file: ownLocal.path, key: "availableModels"),
+            APICreditCapture.Override(file: worktreeLocal.path, key: "fallbackModel"), token])
+        // A repository at the home folder is not where Claude Code keeps local settings.
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, in: subfolder, home: main), [])
+    }
+
+    func testManagedPreferencesAreManagedSettings() throws {
+        let none = folder.appendingPathComponent("none.json"), dropIns = folder.appendingPathComponent("none.d")
+        let device = folder.appendingPathComponent("com.anthropic.claudecode.plist"), user = folder.appendingPathComponent("user.plist")
+        func plist(_ object: Any, to file: URL) throws {
+            try PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0).write(to: file)
+        }
+        try plist(["env": ["ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"], "model": "deepseek-flash"], to: device)
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, preferences: [user, device]), [])
+        try plist(["env": ["ANTHROPIC_BASE_URL": "https://elsewhere.example"]], to: user)
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, preferences: [user, device]),
+                       [APICreditCapture.Override(file: user.path, key: "env.ANTHROPIC_BASE_URL")])
+        // Claude Code cannot read a date or data value as JSON, nor a file that is no property list.
+        for object in [["outputStyle": Date()] as [String: Any], ["blob": Data([1, 2])]] {
+            try plist(object, to: user)
+            XCTAssertEqual(overrides(managed: none, dropIns: dropIns, preferences: [user]),
+                           [APICreditCapture.Override(file: user.path, key: EndpointLaunch.unreadableSettings)])
+        }
+        try write("<plist><dict><key>env</key>", to: user)
+        XCTAssertEqual(overrides(managed: none, dropIns: dropIns, preferences: [user]),
+                       [APICreditCapture.Override(file: user.path, key: EndpointLaunch.unreadableSettings)])
+    }
+
+    func testAnEmptySettingsFileIsAnEmptyObject() throws {
+        let local = folder.appendingPathComponent(".claude/settings.local.json")
+        for content in ["", " \n\t", "\u{FEFF}", "\u{FEFF}\n"] {
+            try write(content, to: local)
+            XCTAssertEqual(overrides(managed: folder.appendingPathComponent("none.json"), dropIns: folder.appendingPathComponent("none.d")),
+                           [], content.debugDescription)
+        }
     }
 
     func testSettingsFilesThatOutrankOrReplaceThePinsAreFound() throws {
@@ -190,7 +257,11 @@ final class EndpointSettingsTests: XCTestCase {
         for content in [#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token","ANTHROPIC_AUTH_TOKEN":""}}"#,
                         #"{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_AUTH_TOKE\u004e":"fixture-token"}}"#,
                         #"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"},"\u0065nv":{}}"#,
-                        #"{"statusLine":{"type":"command","command":"a","command":"b"}}"#, #"{"caf\u00e9":1,"café":2}"#] {
+                        #"{"statusLine":{"type":"command","command":"a","command":"b"}}"#, #"{"caf\u00e9":1,"café":2}"#,
+                        // Names Swift takes for one, so the object Claudock reads would hold only one of them.
+                        #"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token","ANTHROPIC_AUTH_TO\u212AEN":""}}"#,
+                        "{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"fixture-token\",\"ANTHROPIC_AUTH_TO\u{212A}EN\":\"\"}}",
+                        #"{"caf\u00e9":1,"cafe\u0301":2}"#] {
             try Data(content.utf8).write(to: file)
             XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
                            [APICreditCapture.Override(file: file.path, key: EndpointLaunch.unreadableSettings)], content)
@@ -198,6 +269,9 @@ final class EndpointSettingsTests: XCTestCase {
         // The same name in two objects, escapes, and every kind of value are plain JSON.
         try Data(("\u{FEFF}" + #"{"env":{"ANTHROPIC_AUTH_TOKEN":""},"statusLine":{"type":"command","command":"printf \"\u00e9\\n\""},"#
                   + #""list":[1,-0.5e3,2E+2,true,false,null,{"type":"a"},{"type":"b"},[]],"empty":{}}"#).utf8).write(to: file)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns), [])
+        // 256 levels, the object included, is as deep as Claudock follows.
+        try Data(("{\"deep\":" + String(repeating: "[", count: 255) + String(repeating: "]", count: 255) + "}").utf8).write(to: file)
         XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns), [])
     }
 
@@ -209,6 +283,8 @@ final class EndpointSettingsTests: XCTestCase {
         for content in [#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"} /* note */}"#, #"{"broken": "#, "[]",
                         #"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}}"#, #"{"list":[1,]}"#, #"{"n":01}"#, #"{"s":"\x"}"#,
                         "{\"s\":\"a\tb\"}", "{\"deep\":" + String(repeating: "[", count: 300) + String(repeating: "]", count: 300) + "}",
+                        "{\"deep\":" + String(repeating: "[", count: 256) + String(repeating: "]", count: 256) + "}",
+                        #"{"s":"\u+041"}"#, #"{"s":"\u-041"}"#,
                         "{\"padding\":\"" + String(repeating: "x", count: 4_200_000) + "\"}"] {
             try Data(content.utf8).write(to: local)
             XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
@@ -217,7 +293,7 @@ final class EndpointSettingsTests: XCTestCase {
     }
 
     func testOptionsThatAddOrMoveSettingsAreRefused() {
-        for option in ["--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64"] {
+        for option in ["--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64", "-w", "--worktree"] {
             XCTAssertThrowsError(try EndpointLaunch.arguments([option, "x", "-p", "y"], configuration: flash, configDirectory: profileFolder,
                                                               workingDirectory: folder.path), option) {
                 XCTAssertEqual($0 as? EndpointLaunchError, .unsupportedOption(option))

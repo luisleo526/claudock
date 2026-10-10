@@ -244,7 +244,7 @@ def user_settings(sandbox, checks, profile):
     for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}")):
         result = sandbox.run("run", "deepseek", "--", *arguments)
         checks.expect(result.returncode == 2 and sandbox.record() is None, f"--settings {' '.join(arguments[1:])} must be refused", result)
-    for option in ("--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64"):
+    for option in ("--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64", "-w", "--worktree"):
         for arguments in ((option, str(sandbox.base), "-p", "x"), (f"{option}={sandbox.base}", "-p", "x")):
             result = sandbox.run("run", "deepseek", "--", *arguments)
             checks.expect(result.returncode == 2 and sandbox.record() is None and option in result.stderr,
@@ -288,6 +288,25 @@ def user_settings(sandbox, checks, profile):
     finally:
         local.unlink()
     checks.done("a project's settings that would replace the endpoint key, add another model, or cannot be read stop the launch")
+
+    # Claude Code reads .claude/settings.local.json at the repository's root, and at the main checkout from a linked worktree.
+    repo, worktree = sandbox.base / "e2e-repo", sandbox.base / "e2e-worktree"
+    (repo / "src").mkdir(parents=True)
+    git_environment = {"HOME": str(sandbox.home), "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1"}
+    for arguments in (("init", "-q"), ("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-q", "--allow-empty", "-m", "e2e"),
+                      ("worktree", "add", "-q", str(worktree))):
+        subprocess.run(["git", "-C", str(repo), *arguments], env=git_environment, capture_output=True, text=True, timeout=60, check=True)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-e2e-synthetic"}}))
+    for folder in (repo / "src", worktree):
+        result = sandbox.run("run", "deepseek", "--", "-p", "x", cwd=folder)
+        checks.expect(result.returncode == 2 and sandbox.record() is None and "e2e-repo/.claude/settings.local.json" in result.stderr
+                      and "ANTHROPIC_AUTH_TOKEN" in result.stderr and "sk-ant" not in result.stderr,
+                      f"the repository's local settings must stop a launch from {folder.name}", result)
+    (repo / ".claude" / "settings.local.json").unlink()
+    result = sandbox.run("run", "deepseek", "--", "-p", "x", cwd=worktree)
+    checks.expect(result.returncode == 0 and sandbox.record() is not None, "the worktree must launch once the main checkout's local settings are gone", result)
+    checks.done("local settings at the repository's root and its main checkout stop launches from a subfolder or a linked worktree")
 
 
 def behaves_as(sandbox, checks, key, profile):
