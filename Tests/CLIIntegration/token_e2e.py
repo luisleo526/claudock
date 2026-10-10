@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import secrets
 import sys
+import types
 
 from claudock_e2e import (DEFAULT_PROFILE_SERVICES, Checks, Sandbox, TerminalRun, api_key_service, build_cli, check_removal,
                           clean_up_on_termination, credential_service, delete_keychain_item, inference_service,
@@ -488,18 +489,20 @@ def removal(sandbox, checks):
     checks.done("remove prints the config folder quoted for the shell, an apostrophe in its name included")
 
 
-def default_profile_items_are_refused(sandbox, checks):
+def default_profile_items_are_refused(checks):
     """The helpers must never create, track for deletion, or delete the real default profile's Keychain items. Only
-    the guard and `track` are exercised: a missing guard would make these calls touch the real items."""
+    the guard and `track` are exercised, and `track` on a scratch object, not a live sandbox: a missing guard would
+    otherwise put a real item on the teardown list."""
     checks.expect(len(set(DEFAULT_PROFILE_SERVICES)) == 4, "the default profile has four distinct Keychain items")
+    scratch = types.SimpleNamespace(services=set())
     for service in DEFAULT_PROFILE_SERVICES:
-        for refuse in (refuse_default_profile_item, sandbox.track):
+        for refuse in (refuse_default_profile_item, lambda item: Sandbox.track(scratch, item)):
             try:
                 refuse(service)
             except ValueError:
                 continue
             raise AssertionError(f"the harness must refuse the default profile's Keychain item {service!r}")
-    checks.expect(sandbox.services == set(), "no default item may be tracked for deletion")
+    checks.expect(scratch.services == set(), "no default item may be tracked for deletion")
     checks.done("the harness refuses the default profile's Keychain items")
 
 
@@ -526,7 +529,7 @@ def main():
     try:
         sandbox = Sandbox(cli, "e2e-tokens")
         sandboxes.append(sandbox)
-        default_profile_items_are_refused(sandbox, checks)
+        default_profile_items_are_refused(checks)
         result = sandbox.run("profile", "add", "work")
         checks.expect(result.returncode == 0, "the token sandbox needs a subscription profile", result)
         sandbox.track(inference_service(sandbox.listed()["work"]))

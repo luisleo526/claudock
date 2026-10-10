@@ -18,7 +18,7 @@ public struct ProfileKeychainItem: Equatable, Sendable {
 
     public var title: String {
         switch kind {
-        case .login: return "Claude Code login (shared with anything else that uses this config folder)"
+        case .login: return "Claude Code login, shared with anything else that uses this config folder"
         case .consoleKey: return "Console API key from Claude Code's sign-in"
         case .inferenceToken: return "Claudock inference token"
         case .apiKey: return "Claudock Console API key"
