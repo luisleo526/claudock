@@ -4,16 +4,16 @@
 
 A macOS menu bar app and `claudock` command for people with more than one Claude account. See every account's limits and Console credit side by side, then start Claude Code under the one you pick.
 
-[Download v1.6.0](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md) · [Release notes](https://github.com/luisleo526/claudock/releases/tag/v1.6.0)
+[Download v1.7.0](https://github.com/luisleo526/claudock/releases/download/v1.7.0/Claudock-1.7.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md) · [Release notes](https://github.com/luisleo526/claudock/releases/tag/v1.7.0)
 
-> The published download is v1.6.0, for Apple Silicon and macOS 14 or newer. It is ad-hoc signed and not Apple-notarized. Several features landed after it and are on `main` only: Console accounts (API key and sign-in) with credit tracking, the `claudock profile set-token`, `tokens`, `setup-token`, and `clear-token` commands, the Keychain items `claudock profile remove` lists, `claudock require-token`, and the shared usage cache (`claudock usage --fresh` and `--max-age`). Build from source to use them until the next release. A build from `main` still reports version 1.6.0. Sections that need such a build say so.
+> This is v1.7.0, a preview for Apple Silicon and macOS 14 or newer. It is ad-hoc signed and not Apple-notarized. No Xcode is needed to run the app.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
   <img src="docs/screenshots/accounts-light.png" width="620" alt="Claudock dashboard in demo mode. personal is a Max 20× subscription with 5-hour, Weekly, and Fable bars at 82%, 41%, and 67% used. console is a Console API key with a credit meter reading $187.42 left of $200.00. team is a Console sign-in profile with no credit set. studio is a Team Premium subscription at its 5-hour limit, marked Full.">
 </picture>
 
-*Synthetic demo profiles. Percentages show allowance used. The console and team rows are Console profiles, which need a build from `main`.*
+*Synthetic demo profiles. Percentages show allowance used. The console and team rows are Console profiles.*
 
 ## Install
 
@@ -27,7 +27,7 @@ Click elsewhere to close the popover. The window icon in its header opens the sa
 
 Terminal commands in this README start with `claudock`. That command exists in new Terminal tabs once you turn on [shell integration](#shell-integration-optional). Until then, type the app's path in its place: `'/Applications/Claudock.app/Contents/MacOS/claudock'`.
 
-Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-SHA256SUMS.txt).
+Also available: [ZIP archive](https://github.com/luisleo526/claudock/releases/download/v1.7.0/Claudock-1.7.0-macOS-arm64.zip) and [SHA256 checksums](https://github.com/luisleo526/claudock/releases/download/v1.7.0/Claudock-1.7.0-SHA256SUMS.txt).
 
 <details>
 <summary>Build from source</summary>
@@ -56,9 +56,7 @@ Claudock has three kinds of profile. Pick the one that matches how the account i
 | Console account, signed in with a browser | The Anthropic Console organization you sign in to, per token | Console credit, once you set it |
 | Console API key | The Console organization that owns the key, per token | Console credit, once you set it |
 
-*The two Console kinds need a build from `main`; not in v1.6.0.*
-
-In the app, open **Manage profiles**: the button at the bottom of the dashboard, or **Manage profiles…** in the … menu. Under **Add an account**, choose the account type, type a name, and choose **Add profile**. (v1.6.0 has no account type to choose and adds subscription profiles.)
+In the app, open **Manage profiles**: the button at the bottom of the dashboard, or **Manage profiles…** in the … menu. Under **Add an account**, choose the account type, type a name, and choose **Add profile**.
 
 A name has 1 to 40 letters, numbers, hyphens, or underscores, and starts with a letter or number. The names `default` and `auto` are reserved. A new profile keeps its own login and shares session history, settings, plugins, and skills with your default `~/.claude` setup.
 
@@ -67,13 +65,13 @@ A name has 1 to 40 letters, numbers, hyphens, or underscores, and starts with a 
   <img src="docs/screenshots/profiles-light.png" width="620" alt="Claudock Manage profiles in demo mode. Add an account offers Claude subscription, Console API key, and Console account (sign in), with a name field, Import folder, a sign-in checkbox, and Add profile. Below are the optional zsh integration switch and the profile list: personal is a subscription with Re-login and Set token, console is a Console API key with $187.42 left of $200.00 credit, Set credit, and Replace API key.">
 </picture>
 
-*Synthetic demo profiles. The Console account types and credit need a build from `main`.*
+*Synthetic demo profiles.*
 
 ### Which account for what
 
 A Claude subscription suits interactive daily coding. The dashboard shows its 5-hour, Weekly, and Fable limits.
 
-A Console profile, signed in or with an API key, suits headless work: scripts, agents, and other runs that take one prompt, print the answer, and exit. It is billed per token, and Claudock tracks the credit you set. Console profiles need a build from `main`. See [Headless runs and automation](#headless-runs-and-automation).
+A Console profile, signed in or with an API key, suits headless work: scripts, agents, and other runs that take one prompt, print the answer, and exit. It is billed per token, and Claudock tracks the credit you set. See [Headless runs and automation](#headless-runs-and-automation).
 
 Check that your Console credit covers interactive use before you rely on it. See [Interactive sessions on Console credit](#interactive-sessions-on-console-credit).
 
@@ -90,8 +88,6 @@ To sign in again, choose **Re-login** on the profile's row in **Manage profiles*
 
 ### Console account (sign in)
 
-*Needs a build from `main`; not in v1.6.0.*
-
 Claude Code signs in to your Anthropic Console account in the browser, creates an API key for it, and keeps the key itself. You paste nothing. Usage is billed per token to that Console organization.
 
 In the app, choose **Console account (sign in)**. **Open Console sign-in after adding** is on by default. In Terminal, this adds the profile and starts the sign-in:
@@ -103,8 +99,6 @@ claudock profile add team --console
 If you cancel the sign-in, the profile stays. Sign in again with **Sign in…** on its row in **Manage profiles**, or run `claudock profile login team`. Claudock checked this sign-in with Claude Code 2.1.295.
 
 ### Console API key
-
-*Needs a build from `main`; not in v1.6.0.*
 
 Use a key when someone gave you one, when the profile must use one particular key, or when you cannot sign in on this Mac. Otherwise a Console sign-in is simpler. Usage is billed per token to the key's Console organization.
 
@@ -120,8 +114,6 @@ Replace the key with **Replace API key…** on the row in **Manage profiles**, o
 
 ### Switch between a key and a sign-in
 
-*Needs a build from `main`; not in v1.6.0.*
-
 A Console profile can change from one to the other and keep its name, folder, and shared history:
 
 ```sh
@@ -132,8 +124,6 @@ claudock profile set-key team              # sign-in profile: use a pasted key i
 The credential you stop using stays in Keychain, unused. The command prints its service name and how to delete it. A subscription profile cannot change kind. Add a separate profile for the Console account.
 
 ### Interactive sessions on Console credit
-
-*Needs a build from `main`; not in v1.6.0.*
 
 Console credit may cover headless runs but not interactive sessions. This is observed behavior, not documented by Anthropic.
 
@@ -159,8 +149,6 @@ claudock profile remove office
 ```
 
 ### Remove a profile completely
-
-*The credential list and `clear-token` need a build from `main`; not in v1.6.0.*
 
 Removing a profile keeps its folder, its conversations, and its credentials. To delete the credentials and the folder as well, follow these steps in order. Steps 2 to 4 cannot be undone.
 
@@ -215,11 +203,11 @@ claudock run work -- --resume
 
 With [shell integration](#shell-integration-optional), `claude-work` does the same as `claudock run work`.
 
-If a profile uses a pasted API key (a Console API key profile, which needs a build from `main`), Claude asks the first time whether to use it. Answer Yes. Claude Code remembers the answer for that profile. A headless `-p` run uses the key without asking.
+If a profile uses a pasted API key (a Console API key profile), Claude asks the first time whether to use it. Answer Yes. Claude Code remembers the answer for that profile. A headless `-p` run uses the key without asking.
 
 ### Move a conversation to another profile
 
-Reached a weekly limit? Continue the same conversation on another profile, for example a Console profile (which needs a build from `main`). New profiles share session history with your default `~/.claude` setup, so any of them can pick it up. Anthropic may refuse interactive sessions on a Console profile: read [Interactive sessions on Console credit](#interactive-sessions-on-console-credit) first. If it does, continue headless, as shown below.
+Reached a weekly limit? Continue the same conversation on another profile, for example a Console profile. New profiles share session history with your default `~/.claude` setup, so any of them can pick it up. Anthropic may refuse interactive sessions on a Console profile: read [Interactive sessions on Console credit](#interactive-sessions-on-console-credit) first. If it does, continue headless, as shown below.
 
 In the app, open the **Sessions** tab, choose **Continue as…** beside a conversation, pick a profile under **Continue using**, and choose **Continue in Terminal**. A fork of the conversation opens in a new Terminal window in its project folder. Your original session keeps running.
 
@@ -262,8 +250,8 @@ claudock run console -- -p --output-format json "Summarize what this folder cont
 
 - `--output-format json` prints one JSON object. The answer is in `result`, and `session_id` names the conversation for a later `--resume`. `jq -r .result` prints only the answer.
 - Claudock writes its own messages to stderr and passes Claude's exit status on, so a script can read stdout and test `$?`.
-- Several runs can go at once, under different profiles or the same one. If another Claudock process is changing the profile registry, for example adding a profile, a run waits up to 5 seconds for it, then stops with `Another profile update is in progress. Wait a moment and try again.` The wait needs a build from `main`. In v1.6.0, runs that start at the same moment can stop with that message at once.
-- A Console profile (which needs a build from `main`) started this way counts toward its credit like any other launch from Claudock, parallel runs included. [How the credit is counted](docs/GUIDE.md#track-the-console-credit).
+- Several runs can go at once, under different profiles or the same one. If another Claudock process is changing the profile registry, for example adding a profile, a run waits up to 5 seconds for it, then stops with `Another profile update is in progress. Wait a moment and try again.`
+- A Console profile started this way counts toward its credit like any other launch from Claudock, parallel runs included. [How the credit is counted](docs/GUIDE.md#track-the-console-credit).
 - A `-p` run shows no folder trust prompt, so a project's hooks and MCP servers run even in a folder you never trusted: run it only in folders you trust. It cannot ask you to approve a tool, so anything that would ask is denied unless a flag such as `--allowedTools` allows it. Claude Code's [headless guide](https://code.claude.com/docs/en/headless) covers these flags.
 
 A wrapper of your own that runs `claude` directly, instead of `claudock run`, gets none of what Claudock adds: no saved key or inference token, no Console credit tracking, and no clearing of inherited authentication variables. Call `claudock run NAME -- …` from the wrapper instead.
@@ -280,7 +268,7 @@ A subscription row has three bars: 5-hour, Weekly, and Fable. A bar that Claude 
 - **Full** marks an allowance at 100% or more. **Not reported** means Claude reports no Fable allowance for that account.
 - **STALE** means the last refresh failed. The bars turn grey and keep the last good reading, with its time.
 
-*Console rows need a build from `main`; not in v1.6.0.* A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization.
+A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization.
 
 The **Overview** tab shows the tokens recorded in your local session logs over the last 7 or 30 days. They are not billing or allowance. [How they are counted](docs/GUIDE.md#local-token-activity). Appearance, launch at login, and other settings are in the … menu: [Make it yours](docs/GUIDE.md#make-it-yours).
 
@@ -302,11 +290,9 @@ console  Console API  Credit · $187.42 of $200.00 left  6.29          -
 - `USED_PERCENT` is the share of that allowance already used, usually 0 to 100. It reaches 100 when the allowance, or the credit you set, is used up, and can go past it. It is not what is left. For a Console profile it is the share of the credit you set that has been spent.
 - `RESETS_UTC` is when the allowance resets, in UTC. It is `unknown` when Claude gives no time, and `-` for credit, which does not reset.
 
-The `console` row needs a build from `main`; v1.6.0 prints subscription rows only. A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. The exit status is 0 unless a profile has no reading at all.
+A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. The exit status is 0 unless a profile has no reading at all.
 
 ### Cached readings and rate limits
-
-*Needs a build from `main`; not in v1.6.0.*
 
 The app and `claudock usage` share their readings, so the dashboard shows the last readings as soon as it opens, and frequent `claudock usage` calls do not each ask Claude. A reading younger than 3 minutes is printed without a request.
 
@@ -324,8 +310,6 @@ claudock: work: rate limited until 14:05; showing reading from 3 min ago.
 ```
 
 ### Console credit
-
-*Needs a build from `main`; not in v1.6.0.*
 
 Anthropic offers no API for the credit left on a Console organization, so you enter it yourself. Look it up in the Claude Console, then set it:
 
@@ -353,7 +337,7 @@ An inference token is a long-lived Claude Code token (`sk-ant-oat01-…`) for a 
 
 In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one. When a token is saved, or its status cannot be read, **Delete token** removes it from Keychain after you confirm.
 
-*The commands and the setting below need a build from `main`; not in v1.6.0.* In Terminal:
+In Terminal:
 
 ```sh
 claudock profile setup-token work
@@ -405,7 +389,7 @@ You can also turn integration on from Terminal with the app's own command, which
 
 ## Command cheat sheet
 
-`claudock help` prints this list with more notes. The Console, `set-key`, `set-credit`, token, `login --console`, `usage` option, and `require-token` lines need a build from `main`; not in v1.6.0.
+`claudock help` prints this list with more notes.
 
 ```sh
 claudock profile list                                       # List profiles, selectors, and kinds
@@ -434,12 +418,10 @@ claudock help                                               # Print this list an
 
 ## Troubleshooting
 
-*Rows about Console profiles, the `claudock` token commands, and cached readings need a build from `main`.*
-
 | Symptom | What to do |
 | --- | --- |
 | `Claude is limiting requests. Refresh will retry after a cooldown.` | Claude rate-limited that account. Wait. Claudock asks again when the cooldown ends, and `--fresh` does not skip it. The last good reading stays on screen, and `claudock usage` prints it with a `rate limited until` note. |
-| `The account information does not match this profile. Use the matching account or replace its token.` or `NAME's saved inference token belongs to a different account than its current Claude login.` | The token and the profile's login are for different accounts. Sign the browser in to the right claude.ai account, then run `claudock profile login NAME` to fix the login, or make a token for the current login: choose **Create in browser** in **Set token…**, or run `claudock profile setup-token NAME` (needs a build from `main`) and save it as shown under Inference tokens. |
+| `The account information does not match this profile. Use the matching account or replace its token.` or `NAME's saved inference token belongs to a different account than its current Claude login.` | The token and the profile's login are for different accounts. Sign the browser in to the right claude.ai account, then run `claudock profile login NAME` to fix the login, or make a token for the current login: choose **Create in browser** in **Set token…**, or run `claudock profile setup-token NAME` and save it as shown under Inference tokens. |
 | `Sign in to this Claude profile to see usage.` | The profile has no usable login. Choose **Re-login** in **Manage profiles**, or run `claudock profile login NAME`. |
 | `NAME is not signed in to a Console account. Sign in with: claudock profile login NAME` | The Console sign-in was cancelled, failed, or removed. Run that command, or choose **Sign in…** on the profile's row in **Manage profiles**. |
 | `Credit balance too low · Add funds` in an interactive session on a Console profile | Check the balance in the Console first, and add funds there if the credit is used up. If the Console shows credit and headless `-p` runs work, Anthropic may refuse interactive use of that credit. See [Interactive sessions on Console credit](#interactive-sessions-on-console-credit). |
