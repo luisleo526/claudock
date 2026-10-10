@@ -271,12 +271,15 @@ def user_settings(sandbox, checks, profile):
             checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
                           and setting in result.stderr and "v4-pro" not in result.stderr,
                           f"a project's settings that set {setting} to another model must stop the launch", result)
-        # A file Claudock cannot parse whole might set anything Claude Code reads, so the launch stops too.
-        local.write_text('{"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-e2e-synthetic"} /* note */}')
-        result = sandbox.run("run", "deepseek", "--", "-p", "x")
-        checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
-                      and "cannot check" in result.stderr and "sk-ant" not in result.stderr,
-                      "a project settings file that is not a JSON object must stop the launch", result)
+        # A file that parsers could read differently might set anything Claude Code reads, so the launch stops too: comments,
+        # and a name given twice, here spelled with an escape.
+        for text in ('{"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-e2e-synthetic"} /* note */}',
+                     '{"env": {"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_AUTH_TOKE\\u004e": "sk-ant-oat01-e2e-synthetic"}}'):
+            local.write_text(text)
+            result = sandbox.run("run", "deepseek", "--", "-p", "x")
+            checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
+                          and "cannot check" in result.stderr and "sk-ant" not in result.stderr,
+                          f"a project settings file that is not strict JSON must stop the launch: {text[:40]}", result)
         local.write_text(json.dumps({"availableModels": [MODEL], "model": "opus", "outputStyle": "Explanatory"}))
         result = sandbox.run("run", "deepseek", "--", "-p", "x")
         record = sandbox.record()

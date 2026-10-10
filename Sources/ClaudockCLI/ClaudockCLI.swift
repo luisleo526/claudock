@@ -48,7 +48,8 @@ private enum CLIError: LocalizedError {
             return "\(name): \(detail) Claudock passes its own --settings to pin the endpoint's model; keep other settings in yours."
         case .endpointSettingsOverride(let name, let file, let setting, let host):
             if setting == EndpointLaunch.unreadableSettings {
-                return "\(name): \(file) is not a JSON object Claudock can read, so it cannot check what the file sets for Claude Code. Fix or remove it."
+                return "\(name): Claudock cannot check \(file): it must be one JSON object of at most 4 MiB, without comments, trailing commas, "
+                    + "or a name given twice. Fix or remove it."
             }
             return "\(name): \(file) sets \(setting), which "
                 + (setting.hasSuffix("ANTHROPIC_AUTH_TOKEN") ? "Claude Code would send to \(host) instead of the endpoint key."
