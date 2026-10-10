@@ -174,6 +174,21 @@ final class EndpointProfileStoreTests: XCTestCase {
         }
     }
 
+    func testSetEndpointSetsAndClearsBehavesAs() throws {
+        try withHome { home in
+            let original = try addEndpoint("deepseek", home: home)
+            let mapped = try EndpointConfiguration(baseURL: deepseek.baseURL, model: deepseek.model, behavesAs: "claude-sonnet-4-6")
+            let changed = try ProfileStore.setEndpoint(mapped, for: original, home: home.path)
+            let stored = try XCTUnwrap(try registryObject(home)["profiles"] as? [[String: Any]]).first { $0["command"] as? String == "claude-deepseek" }
+            XCTAssertEqual(stored?["endpoint"] as? NSDictionary, ["baseURL": deepseek.baseURL, "model": "deepseek-flash",
+                                                                 "behavesAs": "claude-sonnet-4-6"] as NSDictionary)
+            XCTAssertEqual(try ProfileStore.load(home: home.path).first { $0.command == "claude-deepseek" }?.endpoint?.behavesAs, "claude-sonnet-4-6")
+            let cleared = try ProfileStore.setEndpoint(deepseek, for: changed, home: home.path)
+            XCTAssertNil(cleared.endpoint?.behavesAs)
+            XCTAssertFalse(try String(contentsOf: registry(home), encoding: .utf8).contains("behavesAs"))
+        }
+    }
+
     func testRenameKeepsTheEndpointAndKeychainService() throws {
         try withHome { home in
             let original = try addEndpoint("deepseek", home: home)

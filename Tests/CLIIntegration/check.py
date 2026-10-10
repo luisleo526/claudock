@@ -29,10 +29,10 @@ README = PROJECT / "README.md"
 # placeholders. Any other README command runs exactly as written.
 PLACEHOLDERS = {"NAME": "smoke", "NEWNAME": "renamed", "ABS_PATH": "/synthetic/readme-check", "AMOUNT": "187.42",
                 "ISO8601_DATE": "2031-01-01", "SECONDS": "60", "CLAUDE_ARGS...": "--resume", "URL": "https://api.example.test/anthropic",
-                "MODEL": "example-flash"}
+                "MODEL": "example-flash", "CATALOG_MODEL": "claude-sonnet-4-6"}
 # What an endpoint launch adds beyond the variables a launch clears; the fake claude reports them too.
 ENDPOINT_EXTRA_KEYS = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
-                       "OTEL_LOGS_EXPORTER", "CLAUDE_CODE_ENABLE_TELEMETRY"]
+                       "CLAUDE_CODE_DISABLE_1M_CONTEXT", "OTEL_LOGS_EXPORTER", "CLAUDE_CODE_ENABLE_TELEMETRY"]
 SHELL_LANGUAGES = {"sh", "bash", "zsh", "shell", "console"}
 SHELL_OPERATORS = {"|", "||", "&", "&&", ";", "<", ">", ">>"}
 
@@ -162,7 +162,8 @@ def check(base):
             raise RuntimeError(result.stderr)
 
     sources = [PROJECT / "Sources/ClaudockCLI/ClaudockCLI.swift", PROJECT / "Sources/UsageCore/Profile.swift", PROJECT / "Sources/UsageCore/LaunchCommand.swift",
-               PROJECT / "Sources/UsageCore/SubscriptionPlan.swift", PROJECT / "Sources/UsageCore/Endpoint.swift"]
+               PROJECT / "Sources/UsageCore/SubscriptionPlan.swift", PROJECT / "Sources/UsageCore/Endpoint.swift",
+               PROJECT / "Sources/UsageCore/EndpointSession.swift"]
     compile_swift(["-emit-library", "-emit-module", "-module-name", "UsageCore", "-o", str(base / "libUsageCore.dylib"),
                    str(FIXTURES / "UsageCoreFixture.swift"), *[str(source) for source in sources[1:]],
                    str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift"), str(PROJECT / "Sources/UsageCore/APICredit.swift")])
@@ -247,7 +248,11 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "set-endpoint", "deep", "--model", "two models"], 2), (["profile", "set-endpoint", "deep", "extra"], 2),
              (["profile", "set-endpoint", "deep", "--model", "m", "--model", "m"], 2), (["profile", "set-endpoint", "sk-ant-api03-x"], 2),
              (["run", "smoke", "--allow-cross-provider-resume", "x"], 2), (["run", "smoke", "x", "--allow-cross-provider-resume"], 2),
-             (["run", "smoke", "--allow-cross-provider-resume", "--allow-cross-provider-resume"], 2)]
+             (["run", "smoke", "--allow-cross-provider-resume", "--allow-cross-provider-resume"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "--behaves-as", "sonnet"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "--behaves-as"], 2),
+             (["profile", "add", "x", "--behaves-as", "claude-sonnet-4-6"], 2), (["profile", "set-endpoint", "deep", "--behaves-as", "sonnet"], 2),
+             (["profile", "set-endpoint", "deep", "--behaves-as"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
@@ -455,7 +460,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
                             "ANTHROPIC_DEFAULT_OPUS_MODEL": "example-flash", "ANTHROPIC_DEFAULT_SONNET_MODEL": "example-flash",
                             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "example-flash", "ANTHROPIC_DEFAULT_FABLE_MODEL": "example-flash",
                             "ANTHROPIC_SMALL_FAST_MODEL": "example-flash", "CLAUDE_CODE_SUBAGENT_MODEL": "example-flash",
-                            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "TEST_KEEP": "preserved"}
+                            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+                            "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1", "TEST_KEEP": "preserved"}
     hostile = {**conflicts, "TEST_KEEP": "preserved", "OTEL_LOGS_EXPORTER": "otlp", "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                "CLAUDE_CODE_SUBAGENT_MODEL": "opus", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"}
     for arguments in (["run", "deep", "--", "-p", "a b"], ["run", "claude-deep", "--", "-p", "a b"],
@@ -465,7 +471,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
             result = run(arguments, {**hostile, **extra, "CLAUDOCK_TEST_ENDPOINT_KEY": "synthetic-endpoint-key", "CLAUDOCK_TEST_EXIT": "5"})
             assert result.returncode == 5 and result.stderr == "", (arguments, extra, result.stderr)
             value = json.loads(result.stdout)
-            assert value["argv"][-2:] == ["-p", "a b"] and value["env"] == endpoint_environment, (arguments, extra, value)
+            assert value["argv"][0] == "--settings" and value["argv"][2:] == ["-p", "a b"] and value["env"] == endpoint_environment, (arguments, extra, value)
+            settings = json.loads(value["argv"][1])
+            assert settings["availableModels"] == ["example-flash"] and settings["env"]["ANTHROPIC_MODEL"] == "example-flash", settings
+            assert settings["env"]["ANTHROPIC_API_KEY"] == "" and "synthetic-endpoint-key" not in value["argv"][1], settings
             assert marker.read_text() == "endpoint key", (arguments, "an endpoint launch reads only its key after the registry")
     passed.append("endpoint launches set exactly the endpoint environment, whatever the token policy, and keep the exit status")
     for arguments in (["run", "deep", "--", "--model", "other-model"], ["run", "deep", "--", "--model=other-model"],
@@ -494,6 +503,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert result.returncode == 0 and "https://api.example.test/anthropic" in result.stdout and "example-flash" in result.stdout, result.stdout
     result = run(["profile", "set-endpoint", "deep", "--model", "example-flash[1m]", "--endpoint", "https://other.example.test/v1/"])
     assert result.returncode == 0 and "https://other.example.test/v1 with the model example-flash[1m]" in result.stdout, result.stdout
+    result = run(["profile", "set-endpoint", "deep", "--behaves-as", "claude-sonnet-4-6"])
+    assert result.returncode == 0 and "which behaves as claude-sonnet-4-6" in result.stdout, result.stdout
+    result = run(["profile", "set-endpoint", "deep", "--behaves-as", "none"])
+    assert result.returncode == 0 and "behaves" not in result.stdout, result.stdout
     result = run(["profile", "set-endpoint", "smoke", "--model", "example-flash"])
     assert result.returncode == 1 and "not a third-party endpoint profile" in result.stderr, result.stderr
     passed.append("set-endpoint shows or changes an endpoint profile's endpoint and refuses other kinds")

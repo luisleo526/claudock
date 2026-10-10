@@ -277,7 +277,8 @@ claudock run deepseek -- -p "Summarize what this folder contains"
 
 - The URL must be `https`, with a host and no user name, password, query, or fragment.
 - The key is stored only in Keychain, never in `profiles.json`, arguments, or output. An Anthropic key (`sk-ant-…`) is refused, so it never reaches a third party.
-- The model is pinned. Claude Code gets it in every model slot: the main model, the Opus, Sonnet, Haiku, and Fable defaults, the small fast model, and subagents. `claudock run` refuses a `--model` or `--fallback-model` that names another model, before Claude starts.
+- The model is pinned. Claude Code gets it in every model slot: the main model, the Opus, Sonnet, Haiku, and Fable defaults, the small fast model, and subagents. `claudock run` refuses a `--model`, `--fallback-model`, or `--advisor` that names another model, before Claude starts.
+- Interactive choice is pinned too. Each launch passes Claude Code one `--settings` object whose `availableModels` lists only the pinned model, so `/model` refuses another model and the model picker hides the rest. Claudock writes no settings file for this. A `--settings` of your own is merged into that object; one that sets the model, the endpoint, or a credential is refused.
 - The key reaches Claude Code as `ANTHROPIC_AUTH_TOKEN`, a bearer token, and the URL as `ANTHROPIC_BASE_URL`. Claude Code's nonessential traffic and model calls are turned off, and inherited `OTEL_…` settings are dropped.
 - No Claude sign-in, inference token, or Console credit applies. The dashboard row shows `Third-party endpoint · HOST · MODEL` and "billed per token by the provider", with no meters. `claudock usage` and `claudock available` print a note instead of a row.
 
@@ -291,6 +292,31 @@ claudock profile set-key deepseek < ~/.config/keys/deepseek.zsh
 ```
 
 Without options, `set-endpoint` shows the current URL and model.
+
+Claude Code 2.1.296 does not know `deepseek-flash`. It warns that the model isn't in its catalog and compacts the conversation before it reaches 200k tokens. Two ways to tell it more:
+
+- `--behaves-as claude-sonnet-4-6` on `profile add` or `profile set-endpoint` makes Claude Code treat the model like that one: its prompt, output limit, and context window (200k for `claude-sonnet-4-6`, 1M for `claude-opus-4-8`). Use a full model id; aliases such as `sonnet` do not work. `--behaves-as none` removes it.
+- Pin `deepseek-flash[1m]` instead. Claude Code then assumes a 1M context, sends DeepSeek the plain `deepseek-flash` with Anthropic's 1M context header, and compacts only when the endpoint refuses a request.
+
+On 2026-10-10 DeepSeek answered both `deepseek-flash` and `deepseek-flash[1m]`, and accepted a request of 350,181 input tokens.
+
+```sh
+claudock profile set-endpoint deepseek --behaves-as claude-sonnet-4-6
+claudock profile set-endpoint deepseek --model 'deepseek-flash[1m]' --behaves-as none
+```
+
+`/model` saves a choice made with Enter in the settings all profiles share. In an endpoint session, press `s` in `/model` to keep a choice for that session only, or leave `/model` alone: the session already uses the pinned model. If a Claude session then asks Anthropic for the endpoint's model, remove `"model"` from `~/.claude/settings.json`.
+
+### Resume a conversation on an endpoint
+
+Every profile shares session history, so `claudock run deepseek -- --continue` can pick up a conversation that Claude had. A long one can then fail on the endpoint: DeepSeek refused to compact one with `API Error: 422 … unknown variant tool_definition`. So before Claude starts, `claudock run` refuses to resume a session in which another model replied, and names those models. Start a new session, or resume it anyway:
+
+```sh
+claudock run deepseek -- --continue
+claudock run deepseek --allow-cross-provider-resume -- --resume SESSION_ID
+```
+
+The check covers `--continue` and `--resume` with a session ID, a title, or a `.jsonl` path, found the way Claude Code 2.1.296 finds them, and the session's subagent transcripts. It reads only which model wrote each reply. The session picker, `--resume` without a value, cannot be checked first, so it starts with a warning.
 
 The first interactive launch in a new profile folder shows Claude Code's first-run screens. Trust the folder if it is yours. If Claude Code asks **Make auto mode your default permission mode?**, choose **No, keep …**: your answer would be saved in the settings every profile shares.
 
@@ -460,29 +486,29 @@ You can also turn integration on from Terminal with the app's own command, which
 `claudock help` prints this list with more notes.
 
 ```sh
-claudock profile list                                                  # List profiles, selectors, kinds, and endpoints
-claudock profile add NAME [--directory ABS_PATH]                       # Add a subscription profile, or import a folder
-claudock profile add NAME --api-key [--directory ABS_PATH]             # Add a Console API-key profile (key from stdin)
-claudock profile add NAME --console [--directory ABS_PATH]             # Add a Console profile and sign in in the browser
-claudock profile add NAME --endpoint URL --model MODEL                 # Add a third-party endpoint profile (key from stdin)
-claudock profile set-key NAME                                          # Save a Console API key or endpoint key (from stdin)
-claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL]    # Show or change an endpoint profile's URL and model
-claudock profile set-credit NAME AMOUNT                                # Record the Console credit left, in US dollars
-claudock profile set-token NAME [--expires ISO8601_DATE]               # Save an inference token (token from stdin)
-claudock profile setup-token NAME                                      # Create an inference token through Claude Code
-claudock profile tokens                                                # Show each profile's token status
-claudock profile clear-token NAME                                      # Delete a profile's saved inference token
-claudock profile rename NAME NEWNAME                                   # Rename a profile; its data and login stay
-claudock profile remove NAME                                           # Remove a profile; Claude data and credentials stay
-claudock profile login NAME [--console]                                # Sign in again; --console uses a Console account
-claudock profile import-shell                                          # Import claude-NAME functions from your zsh files
-claudock run NAME [--allow-cross-provider-resume] [-- CLAUDE_ARGS...]  # Start Claude Code under a profile
-claudock usage [--max-age SECONDS | --fresh]                           # Print limits and Console credit
-claudock available [--names] [--max-age SECONDS | --fresh]             # List profiles with usage left, most first
-claudock require-token on|off|status                                   # Require an inference token to launch
-claudock shell enable|disable|status                                   # Turn zsh integration on or off, or check it
-claudock version                                                       # Print the version
-claudock help                                                          # Print this list and notes
+claudock profile list                                                                             # List profiles, selectors, kinds, and endpoints
+claudock profile add NAME [--directory ABS_PATH]                                                  # Add a subscription profile, or import a folder
+claudock profile add NAME --api-key [--directory ABS_PATH]                                        # Add a Console API-key profile (key from stdin)
+claudock profile add NAME --console [--directory ABS_PATH]                                        # Add a Console profile and sign in in the browser
+claudock profile add NAME --endpoint URL --model MODEL [--behaves-as CATALOG_MODEL]               # Add a third-party endpoint profile (key from stdin)
+claudock profile set-key NAME                                                                     # Save a Console API key or endpoint key (from stdin)
+claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL] [--behaves-as CATALOG_MODEL]  # Show or change an endpoint profile's URL and model
+claudock profile set-credit NAME AMOUNT                                                           # Record the Console credit left, in US dollars
+claudock profile set-token NAME [--expires ISO8601_DATE]                                          # Save an inference token (token from stdin)
+claudock profile setup-token NAME                                                                 # Create an inference token through Claude Code
+claudock profile tokens                                                                           # Show each profile's token status
+claudock profile clear-token NAME                                                                 # Delete a profile's saved inference token
+claudock profile rename NAME NEWNAME                                                              # Rename a profile; its data and login stay
+claudock profile remove NAME                                                                      # Remove a profile; Claude data and credentials stay
+claudock profile login NAME [--console]                                                           # Sign in again; --console uses a Console account
+claudock profile import-shell                                                                     # Import claude-NAME functions from your zsh files
+claudock run NAME [--allow-cross-provider-resume] [-- CLAUDE_ARGS...]                             # Start Claude Code under a profile
+claudock usage [--max-age SECONDS | --fresh]                                                      # Print limits and Console credit
+claudock available [--names] [--max-age SECONDS | --fresh]                                        # List profiles with usage left, most first
+claudock require-token on|off|status                                                              # Require an inference token to launch
+claudock shell enable|disable|status                                                              # Turn zsh integration on or off, or check it
+claudock version                                                                                  # Print the version
+claudock help                                                                                     # Print this list and notes
 ```
 
 `claudock auto` was removed in 1.6.0. It prints a notice on stderr and exits with status 2. Use `claudock run NAME`.
@@ -499,6 +525,8 @@ claudock help                                                          # Print t
 | The browser is signed in to the wrong account during a sign-in or `setup-token` | Use a private browsing window, one per account, or sign the browser out first. |
 | `NAME is pinned to the model MODEL; --model can name only that model.` | The endpoint profile serves one model. Leave `--model` out, or pin another one with `claudock profile set-endpoint NAME --model MODEL`. |
 | `No endpoint key is saved for 'NAME'.` | Save the provider's key with `claudock profile set-key NAME`, from a key file or the clipboard as when you added it. |
+| `NAME runs on HOST, but the session … has replies from …` | That conversation was made with other models and may fail on the endpoint. Start a new session, or add `--allow-cross-provider-resume` before `--` to resume it anyway. |
+| `"deepseek-flash" isn't described by this version's model catalog` | Claude Code does not know the model. Map it with `claudock profile set-endpoint NAME --behaves-as claude-sonnet-4-6`, or pin `deepseek-flash[1m]`. See [Use a third-party endpoint](#use-a-third-party-endpoint-eg-deepseek). |
 
 More messages and fixes are in the [guide's troubleshooting table](docs/GUIDE.md#troubleshooting).
 

@@ -61,6 +61,17 @@ final class DemoDataTests: XCTestCase {
         XCTAssertEqual(DemoData.consoleOrganization, "Demo Labs LLC")
     }
 
+    func testPreviewIncludesOneSyntheticEndpointProfileOutsideTheSubscriptionList() throws {
+        let profile = DemoData.endpointProfile
+        XCTAssertEqual(profile.authKind, .endpoint)
+        XCTAssertTrue(profile.managed)
+        XCTAssertTrue(profile.configDirectory.hasPrefix("/Users/demo/"))
+        XCTAssertEqual(profile.endpoint?.host, "api.deepseek.com")
+        XCTAssertEqual(profile.endpoint?.model, "deepseek-flash")
+        XCTAssertFalse(DemoData.profiles(count: 200).contains { $0.command == profile.command })
+        XCTAssertFalse([DemoData.apiKeyProfile.command, DemoData.consoleLoginProfile.command].contains(profile.command))
+    }
+
     func testPreviewShowsASyntheticCreditOnTheAPIKeyProfile() {
         let now = Date(timeIntervalSince1970: 1_789_000_000)
         let credit = DemoData.apiKeyCredit(now: now)
