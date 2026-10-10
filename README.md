@@ -525,6 +525,7 @@ claudock help                                                                   
 | The browser is signed in to the wrong account during a sign-in or `setup-token` | Use a private browsing window, one per account, or sign the browser out first. |
 | `NAME is pinned to the model MODEL; --model can name only that model.` | The endpoint profile serves one model. Leave `--model` out, or pin another one with `claudock profile set-endpoint NAME --model MODEL`. |
 | `No endpoint key is saved for 'NAME'.` | Save the provider's key with `claudock profile set-key NAME`, from a key file or the clipboard as when you added it. |
+| `NAME: FILE sets ANTHROPIC_AUTH_TOKEN, which Claude Code would send to HOST instead of the endpoint key.` | A project's settings carry their own token for Claude Code. Remove that `env` entry, or start the endpoint profile in another folder. |
 | `NAME runs on HOST, but the session … has replies from …` | That conversation was made with other models and may fail on the endpoint. Start a new session, or add `--allow-cross-provider-resume` before `--` to resume it anyway. |
 | `"deepseek-flash" isn't described by this version's model catalog` | Claude Code does not know the model. Map it with `claudock profile set-endpoint NAME --behaves-as claude-sonnet-4-6`, or pin `deepseek-flash[1m]`. See [Use a third-party endpoint](#use-a-third-party-endpoint-eg-deepseek). |
 

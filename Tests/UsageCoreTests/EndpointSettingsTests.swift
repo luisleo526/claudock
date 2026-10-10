@@ -23,6 +23,15 @@ final class EndpointSettingsTests: XCTestCase {
     }
 
     private func pinnedEnvironment(_ model: String, disable1M: String = "1") -> [String: String] {
+        // Every credential, provider, and model variable a launch clears is blank here too, so no settings file sets one;
+        // the folder and nested-session variables are Claude Code's own and stay, and the key cannot be in arguments.
+        var blanks: [String: String] = [:]
+        for name in LaunchCommand.clearedEnvironment where !["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE",
+                                                             "ANTHROPIC_AUTH_TOKEN"].contains(name) { blanks[name] = "" }
+        return blanks.merging(pinnedValues(model, disable1M: disable1M)) { $1 }
+    }
+
+    private func pinnedValues(_ model: String, disable1M: String) -> [String: String] {
         ["ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic", "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
          "ANTHROPIC_DEFAULT_SONNET_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model,
          "ANTHROPIC_SMALL_FAST_MODEL": model, "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -67,7 +76,9 @@ final class EndpointSettingsTests: XCTestCase {
     }
 
     func testTheProcessEnvironmentFollowsTheOneMillionTokenChoice() throws {
-        let plain = EndpointLaunch.environment(["CLAUDE_CODE_DISABLE_1M_CONTEXT": "0"], configuration: flash, key: "k")
+        let plain = EndpointLaunch.environment(["CLAUDE_CODE_DISABLE_1M_CONTEXT": "0", "CLAUDE_CONFIG_DIR": "/synthetic/profile"],
+                                               configuration: flash, key: "k")
+        XCTAssertEqual(plain["CLAUDE_CONFIG_DIR"], "/synthetic/profile", "the profile's folder is LaunchCommand's to set")
         XCTAssertEqual(plain["CLAUDE_CODE_DISABLE_1M_CONTEXT"], "1")
         let wide = try EndpointConfiguration(baseURL: flash.baseURL, model: "deepseek-flash[1m]")
         XCTAssertNil(EndpointLaunch.environment(["CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"], configuration: wide, key: "k")["CLAUDE_CODE_DISABLE_1M_CONTEXT"])
@@ -117,6 +128,20 @@ final class EndpointSettingsTests: XCTestCase {
         }
         // The pinned values themselves, and a blank credential, are what Claudock sets anyway.
         XCTAssertNoThrow(try launch(["--settings", #"{"env":{"ANTHROPIC_API_KEY":"","ANTHROPIC_SMALL_FAST_MODEL":"deepseek-flash"},"fallbackModel":"deepseek-flash"}"#]))
+    }
+
+    func testSettingsFilesThatWouldReplaceTheKeyAreFound() throws {
+        let project = folder.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let managed = folder.appendingPathComponent("managed-settings.json")
+        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]), [])
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"","OTHER":"x"}}"#.utf8).write(to: project.appendingPathComponent("settings.json"))
+        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]), [])
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"}}"#.utf8).write(to: project.appendingPathComponent("settings.local.json"))
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-managed"}}"#.utf8).write(to: managed)
+        XCTAssertEqual(EndpointLaunch.overridingCredentials(workingDirectory: folder.path, managedSettings: [managed.path]),
+                       [APICreditCapture.Override(file: project.appendingPathComponent("settings.local.json").path, key: "ANTHROPIC_AUTH_TOKEN"),
+                        APICreditCapture.Override(file: managed.path, key: "ANTHROPIC_AUTH_TOKEN")])
     }
 
     func testUnreadableOrRepeatedSettingsAreRefused() throws {
