@@ -57,6 +57,9 @@ struct ProfileManagerView: View {
                             Text("Console account (sign in)").tag(ProfileAuthKind.consoleLogin)
                         }
                         .pickerStyle(.segmented).labelsHidden().accessibilityIdentifier("profileKindPicker")
+                        Text("A third-party endpoint, such as DeepSeek's Anthropic-compatible API, is added in Terminal: "
+                             + "claudock profile add NAME --endpoint URL --model MODEL")
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
                     HStack {
                         Text("Name").foregroundStyle(.secondary)
@@ -174,6 +177,7 @@ struct ProfileManagerView: View {
     private func resetEditor() { editing = nil; name = ""; configPath = ""; apiKeyText = "" }
     private func credentialButtonTitle(_ profile: Profile) -> String {
         if profile.authKind == .apiKey { return "Replace API key…" }
+        if profile.authKind == .endpoint { return "Replace key…" }
         switch credentialStatuses[profile.id] {
         case .token(.active)?, .token(.expired)?, .token(.imported)?: return "Manage token…"
         default: return "Set token…"
@@ -191,19 +195,23 @@ struct ProfileManagerView: View {
     private func beginCredentialChange(_ profile: Profile) {
         guard !actionsUnavailable, !profile.isVertex, profile.discoveryNote == nil, profile.authKind != .consoleLogin else { return }
         lastCredentialProfile = profile
-        if profile.authKind == .apiKey { replacingKey = profile } else { minting = profile }
+        if profile.authKind == .apiKey || profile.authKind == .endpoint { replacingKey = profile } else { minting = profile }
     }
     private func credentialStatusDescription(_ profile: Profile) -> String {
-        let apiKey = profile.authKind == .apiKey, console = profile.authKind == .consoleLogin
-        if store.isDemo && !profile.authKind.isConsole { return "Inference token: demo preview" }
+        let apiKey = profile.authKind == .apiKey, console = profile.authKind == .consoleLogin, endpoint = profile.authKind == .endpoint
+        if store.isDemo && profile.authKind == .subscription { return "Inference token: demo preview" }
         if profile.isVertex || profile.discoveryNote != nil { return "Inference token unavailable for this profile" }
         if unavailableCredentialStatuses.contains(profile.id) {
-            return apiKey ? "API key status unavailable" : console ? "Console sign-in status unavailable" : "Inference token status unavailable"
+            return apiKey ? "API key status unavailable" : console ? "Console sign-in status unavailable"
+                : endpoint ? "Endpoint key status unavailable" : "Inference token status unavailable"
         }
         guard let status = credentialStatuses[profile.id] else {
-            return apiKey ? "Checking API key…" : console ? "Checking Console sign-in…" : "Checking inference token…"
+            return apiKey ? "Checking API key…" : console ? "Checking Console sign-in…" : endpoint ? "Checking endpoint key…" : "Checking inference token…"
         }
         switch status {
+        case .endpointKey(let saved):
+            let label = profile.endpoint.map { "Third-party endpoint · \($0.host) · \($0.model)" } ?? "Third-party endpoint"
+            return label + (saved ? " · key saved · billed per token by the provider" : " · key missing · choose Replace key…")
         case .consoleLogin(let signedIn):
             guard signedIn else { return "Not signed in to a Console account · choose Sign in…" }
             let account = store.accounts.first(where: { $0.profile == profile })
@@ -377,7 +385,9 @@ struct ProfileManagerView: View {
             // Quoted for the shell, as the CLI prints it, so it can go into `rm -r` as it is.
             lines.append("Config folder: \(LaunchCommand.quote(profile.configDirectory))")
         }
-        lines.append("Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.")
+        lines.append(profile.authKind.isEndpoint
+                     ? "Keys and tokens stay valid until they are revoked: an endpoint key at its provider, others in the Console or on claude.ai."
+                     : "Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.")
         return lines.joined(separator: "\n")
     }
     private func login(_ profile: Profile) {
@@ -441,7 +451,8 @@ struct ProfileManagerView: View {
 /// only reach the sheet's state and the store, which stay the same objects.
 private struct ProfileRow: View, Equatable {
     let profile: Profile
-    /// The inference token, the Console API key of an API-key profile, or the sign-in of a Console-login profile.
+    /// The inference token, the Console API key of an API-key profile, the sign-in of a Console-login profile, or the
+    /// endpoint and key of a third-party endpoint profile.
     let credentialStatus: String
     let credentialButton: String
     let actionsUnavailable: Bool
@@ -517,6 +528,13 @@ private struct ProfileRow: View, Equatable {
                             .accessibilityLabel("Sign in to the Anthropic Console account for \(profile.name)")
                             .help("Opens Claude Code’s Console sign-in for this profile in Terminal")
                     }
+                } else if profile.authKind == .endpoint {
+                    Button(credentialButton, action: setCredential)
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(actionsUnavailable)
+                        .accessibilityIdentifier("replaceEndpointKey-\(profile.id)")
+                        .accessibilityLabel("Replace the third-party endpoint key for \(profile.name)")
+                        .help("Paste a new key for this endpoint; it replaces the key saved in Keychain")
                 } else {
                     Button(credentialButton, action: setCredential)
                         .buttonStyle(.bordered).controlSize(.small)
@@ -538,6 +556,8 @@ private enum CredentialStatus: Equatable {
     case apiKey(saved: Bool)
     /// Whether Claude Code's Console sign-in keeps an API key for the profile.
     case consoleLogin(signedIn: Bool)
+    /// Whether a third-party endpoint profile's key is saved.
+    case endpointKey(saved: Bool)
 }
 
 /// Reads one profile's credential status; it may start a `security` process, so call it off the main actor.
@@ -547,6 +567,9 @@ private func readLaunchCredential(_ profile: Profile, isDemo: Bool) throws -> Cr
     }
     if profile.authKind == .consoleLogin {
         return .consoleLogin(signedIn: isDemo ? DemoData.consoleSignedIn(profile: profile) : try ConsoleLogin.isSignedIn(profile: profile))
+    }
+    if profile.authKind == .endpoint {
+        return .endpointKey(saved: isDemo ? true : try EndpointKeyStore.isSaved(profile: profile))
     }
     do { return .token(isDemo ? DemoData.mintStatus(profile: profile) : try MintTokenStore.status(profile: profile)) }
     catch MintTokenError.accountMismatch { return .tokenOfAnotherAccount }

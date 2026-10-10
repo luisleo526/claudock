@@ -28,7 +28,11 @@ README = PROJECT / "README.md"
 # command list repeats them, and every form a line stands for runs with these synthetic values in place of its
 # placeholders. Any other README command runs exactly as written.
 PLACEHOLDERS = {"NAME": "smoke", "NEWNAME": "renamed", "ABS_PATH": "/synthetic/readme-check", "AMOUNT": "187.42",
-                "ISO8601_DATE": "2031-01-01", "SECONDS": "60", "CLAUDE_ARGS...": "--resume"}
+                "ISO8601_DATE": "2031-01-01", "SECONDS": "60", "CLAUDE_ARGS...": "--resume", "URL": "https://api.example.test/anthropic",
+                "MODEL": "example-flash"}
+# What an endpoint launch adds beyond the variables a launch clears; the fake claude reports them too.
+ENDPOINT_EXTRA_KEYS = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
+                       "OTEL_LOGS_EXPORTER", "CLAUDE_CODE_ENABLE_TELEMETRY"]
 SHELL_LANGUAGES = {"sh", "bash", "zsh", "shell", "console"}
 SHELL_OPERATORS = {"|", "||", "&", "&&", ";", "<", ">", ">>"}
 
@@ -144,7 +148,8 @@ def readme_link_problems(text):
 
 
 def check(base):
-    environment = os.environ.copy()
+    # The fake reports these, so none may come from the caller's own shell.
+    environment = {key: value for key, value in os.environ.items() if key not in ENDPOINT_EXTRA_KEYS and not key.startswith("OTEL_")}
     home = base / "home"
     home.mkdir()
     environment["HOME"] = str(home)
@@ -157,9 +162,9 @@ def check(base):
             raise RuntimeError(result.stderr)
 
     sources = [PROJECT / "Sources/ClaudockCLI/ClaudockCLI.swift", PROJECT / "Sources/UsageCore/Profile.swift", PROJECT / "Sources/UsageCore/LaunchCommand.swift",
-               PROJECT / "Sources/UsageCore/SubscriptionPlan.swift"]
+               PROJECT / "Sources/UsageCore/SubscriptionPlan.swift", PROJECT / "Sources/UsageCore/Endpoint.swift"]
     compile_swift(["-emit-library", "-emit-module", "-module-name", "UsageCore", "-o", str(base / "libUsageCore.dylib"),
-                   str(FIXTURES / "UsageCoreFixture.swift"), str(sources[1]), str(sources[2]), str(sources[3]),
+                   str(FIXTURES / "UsageCoreFixture.swift"), *[str(source) for source in sources[1:]],
                    str(PROJECT / "Sources/UsageCore/SubscriptionConfiguration.swift"), str(PROJECT / "Sources/UsageCore/APICredit.swift")])
     binary = base / "claudock"
     compile_swift(["-parse-as-library", "-I", str(base), "-L", str(base), "-lUsageCore", "-Xlinker", "-rpath", "-Xlinker", str(base),
@@ -174,7 +179,7 @@ print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": {
     if key in ALLOWED_KEYS
 }}))
 sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
-'''.replace("ALLOWED_KEYS", repr(cleared_keys + ["TEST_KEEP"])))
+'''.replace("ALLOWED_KEYS", repr(cleared_keys + ENDPOINT_EXTRA_KEYS + ["TEST_KEEP"])))
     fake.chmod(0o700)
     marker = base / "store-marker"
     environment["CLAUDOCK_TEST_MARK"] = str(marker)
@@ -223,7 +228,26 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["profile", "add", "work", "--console", "--api-key"], 2), (["profile", "add", "work", "--api-key", "--console"], 2),
              (["profile", "add", "work", "--console", "--console"], 2), (["profile", "add", "work", "--console=yes"], 2),
              (["profile", "add", "work", "--console", "extra"], 2), (["profile", "login", "smoke", "--console", "extra"], 2),
-             (["profile", "login", "smoke", "--claudeai"], 2), (["profile", "login", "--console", "smoke"], 2)]
+             (["profile", "login", "smoke", "--claudeai"], 2), (["profile", "login", "--console", "smoke"], 2),
+             (["profile", "add", "x", "--endpoint"], 2), (["profile", "add", "x", "--endpoint", "http://api.example.test", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test"], 2), (["profile", "add", "x", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "two models"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m[2m]"], 2),
+             (["profile", "add", "x", "--endpoint", "https://user:pass@api.example.test", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test/?key=x", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test/#x", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "--api-key"], 2),
+             (["profile", "add", "x", "--console", "--endpoint", "https://api.example.test", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "--directory", "/synthetic/x"], 2),
+             (["profile", "add", "x", "--endpoint", "https://a.test", "--endpoint", "https://a.test", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "--model", "m"], 2),
+             (["profile", "add", "x", "--endpoint", "https://api.example.test", "--model", "m", "sk-synthetic-key"], 2),
+             (["profile", "set-endpoint"], 2), (["profile", "set-endpoint", "deep", "--endpoint"], 2),
+             (["profile", "set-endpoint", "deep", "--endpoint", "http://api.example.test"], 2),
+             (["profile", "set-endpoint", "deep", "--model", "two models"], 2), (["profile", "set-endpoint", "deep", "extra"], 2),
+             (["profile", "set-endpoint", "deep", "--model", "m", "--model", "m"], 2), (["profile", "set-endpoint", "sk-ant-api03-x"], 2),
+             (["run", "smoke", "--allow-cross-provider-resume", "x"], 2), (["run", "smoke", "x", "--allow-cross-provider-resume"], 2),
+             (["run", "smoke", "--allow-cross-provider-resume", "--allow-cross-provider-resume"], 2)]
     for arguments, expected_status in cases:
         marker.unlink(missing_ok=True)
         result = run(arguments)
@@ -425,6 +449,63 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert result.stdout.startswith("Removed team from Claudock. Claude data, its Console sign-in, and your own shell commands were preserved.\n"), result.stdout
     passed.append("profile remove keeps each kind's success line")
 
+    # A third-party endpoint launch: the real environment builder and argument check, a synthetic key.
+    endpoint_environment = {"CLAUDE_CONFIG_DIR": "/synthetic/endpoint deep", "ANTHROPIC_BASE_URL": "https://api.example.test/anthropic",
+                            "ANTHROPIC_AUTH_TOKEN": "synthetic-endpoint-key", "ANTHROPIC_MODEL": "example-flash",
+                            "ANTHROPIC_DEFAULT_OPUS_MODEL": "example-flash", "ANTHROPIC_DEFAULT_SONNET_MODEL": "example-flash",
+                            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "example-flash", "ANTHROPIC_DEFAULT_FABLE_MODEL": "example-flash",
+                            "ANTHROPIC_SMALL_FAST_MODEL": "example-flash", "CLAUDE_CODE_SUBAGENT_MODEL": "example-flash",
+                            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "TEST_KEEP": "preserved"}
+    hostile = {**conflicts, "TEST_KEEP": "preserved", "OTEL_LOGS_EXPORTER": "otlp", "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+               "CLAUDE_CODE_SUBAGENT_MODEL": "opus", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"}
+    for arguments in (["run", "deep", "--", "-p", "a b"], ["run", "claude-deep", "--", "-p", "a b"],
+                      ["launch-bound", "fixture-endpoint", "Claude Code-credentials-deadbeef", "run", "--", "-p", "a b"]):
+        for extra in ({}, {"CLAUDOCK_TEST_REQUIRE_TOKEN": "1", "CLAUDOCK_TEST_MINT": "1"}):
+            marker.unlink(missing_ok=True)
+            result = run(arguments, {**hostile, **extra, "CLAUDOCK_TEST_ENDPOINT_KEY": "synthetic-endpoint-key", "CLAUDOCK_TEST_EXIT": "5"})
+            assert result.returncode == 5 and result.stderr == "", (arguments, extra, result.stderr)
+            value = json.loads(result.stdout)
+            assert value["argv"][-2:] == ["-p", "a b"] and value["env"] == endpoint_environment, (arguments, extra, value)
+            assert marker.read_text() == "endpoint key", (arguments, "an endpoint launch reads only its key after the registry")
+    passed.append("endpoint launches set exactly the endpoint environment, whatever the token policy, and keep the exit status")
+    for arguments in (["run", "deep", "--", "--model", "other-model"], ["run", "deep", "--", "--model=other-model"],
+                      ["run", "deep", "--", "--fallback-model", "example-flash,other-model"],
+                      ["launch-bound", "fixture-endpoint", "Claude Code-credentials-deadbeef", "run", "--", "--model", "other-model"]):
+        marker.unlink(missing_ok=True)
+        result = run(arguments, {**conflicts, "CLAUDOCK_TEST_ENDPOINT_KEY": "synthetic-endpoint-key"})
+        assert result.returncode == 2 and not result.stdout and "pinned to the model example-flash" in result.stderr, (arguments, result.stderr)
+        assert "other-model" not in result.stderr and marker.read_text() == "profile store", (arguments, result.stderr)
+    passed.append("an endpoint launch naming another model exits 2 before its key is read")
+    result = run(["run", "deep"], conflicts)
+    assert result.returncode == 1 and result.stderr == "claudock: No endpoint key is saved for 'deep'. Save one with: claudock profile set-key deep\n", result.stderr
+    passed.append("an endpoint launch without a saved key stops before exec")
+    for arguments, reason in ((["profile", "set-credit", "deep", "5"], "billed per token by the provider"),
+                              (["profile", "set-token", "deep"], "Inference tokens are only for"),
+                              (["profile", "setup-token", "deep"], "Inference tokens are only for"),
+                              (["profile", "clear-token", "deep"], "Inference tokens are only for"),
+                              (["profile", "login", "deep"], "set-key"), (["profile", "login", "deep", "--console"], "set-key"),
+                              (["launch-bound", "fixture-endpoint", "Claude Code-credentials-deadbeef", "login", "--"], "set-key")):
+        marker.unlink(missing_ok=True)
+        result = run(arguments, {"CLAUDOCK_TEST_ENDPOINT_KEY": "synthetic-endpoint-key", "CLAUDOCK_TEST_TOKEN_SAVED": "1"})
+        assert result.returncode == 1 and not result.stdout and reason in result.stderr and result.stderr.count("\n") == 1, (arguments, result.stderr)
+        assert marker.read_text() == "profile store", (arguments, "a refusal must not reach Keychain, the ledger, or Claude")
+    passed.append("credit, token, and sign-in commands refuse endpoint profiles with one line, before any other access")
+    result = run(["profile", "set-endpoint", "deep"])
+    assert result.returncode == 0 and "https://api.example.test/anthropic" in result.stdout and "example-flash" in result.stdout, result.stdout
+    result = run(["profile", "set-endpoint", "deep", "--model", "example-flash[1m]", "--endpoint", "https://other.example.test/v1/"])
+    assert result.returncode == 0 and "https://other.example.test/v1 with the model example-flash[1m]" in result.stdout, result.stdout
+    result = run(["profile", "set-endpoint", "smoke", "--model", "example-flash"])
+    assert result.returncode == 1 and "not a third-party endpoint profile" in result.stderr, result.stderr
+    passed.append("set-endpoint shows or changes an endpoint profile's endpoint and refuses other kinds")
+    result = run(["profile", "remove", "deep"], {"CLAUDOCK_TEST_LEFTOVERS": "endpointKey"})
+    assert result.returncode == 0 and result.stdout == (
+        "Removed deep from Claudock. Claude data, its endpoint key, and your own shell commands were preserved.\n"
+        "Credentials left in Keychain. To delete one, run its command:\n"
+        "  Fixture endpointKey\n    security delete-generic-password -s 'Fixture-service-endpointKey'\n"
+        "Config folder: '/synthetic/endpoint deep'\n"
+        "Keys and tokens stay valid until they are revoked: an endpoint key at its provider, others in the Console or on claude.ai.\n"), result.stdout
+    passed.append("profile remove lists an endpoint profile's key and says where to revoke it")
+
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout
     passed.append("unsupported Vertex blocked")
@@ -445,8 +526,10 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
 
     result = run(["profile", "list"])
     assert result.returncode == 0 and "SELECTOR" in result.stdout and "claude-default" in result.stdout
-    assert "team\tclaude-team\tconsole-login\t/synthetic/console team\n" in result.stdout, result.stdout
-    passed.append("list exact selectors and the console-login kind")
+    assert result.stdout.startswith("PROFILE\tSELECTOR\tKIND\tCONFIG_DIRECTORY\tENDPOINT\n"), result.stdout
+    assert "team\tclaude-team\tconsole-login\t/synthetic/console team\t-\n" in result.stdout, result.stdout
+    assert "deep\tclaude-deep\tendpoint\t/synthetic/endpoint deep\tapi.example.test · example-flash\n" in result.stdout, result.stdout
+    passed.append("list exact selectors, the console-login and endpoint kinds, and the endpoint's host and model")
 
     # Reproduce the real app layout: the running CLI is a secondary executable,
     # while CFBundleExecutable points at the GUI. Integration must call the CLI.
@@ -476,7 +559,9 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert "Max 20×" in result.stdout
     assert ("claudock: team: skipped; Console login · Fixture Org is billed per token and has no subscription limits. "
             "Set its balance with: claudock profile set-credit team AMOUNT\n") in result.stderr, result.stderr
-    passed.append("synthetic quota TSV and skipped unsupported, with the Console organization")
+    assert ("claudock: deep: third-party endpoint (api.example.test, example-flash), billed per token by the provider; "
+            "no quota to read.\n") in result.stderr and "deep\t" not in result.stdout, result.stderr
+    passed.append("synthetic quota TSV and skipped unsupported, with the Console organization and the endpoint note")
 
     for flags in (["--fresh"], ["--max-age", "0"], ["--max-age", "86400"]):
         flagged = run(["usage", *flags])
@@ -494,6 +579,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert "smoke\tsubscription\tMax 20×\t75.00%\tWeekly\tunknown" in lines, lines
     assert not any(line.startswith(("vertex\t", "team\t")) for line in lines), lines
     assert "claudock: team: not listed; set its Console credit to track it: claudock profile set-credit team AMOUNT\n" in result.stderr, result.stderr
+    assert ("claudock: deep: not listed; third-party endpoint (api.example.test, example-flash), billed per token by the provider; "
+            "no quota to read.\n") in result.stderr and not any(line.startswith("deep\t") for line in lines), result.stderr
     names = run(["available", "--names", "--fresh"])
     assert names.returncode == 0 and names.stdout.splitlines() == [line.split("\t")[0] for line in lines[1:]], names.stdout
     assert run(["available", "--max-age", "60", "--names"]).stdout == names.stdout

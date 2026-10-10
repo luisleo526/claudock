@@ -70,7 +70,7 @@ struct ContinueSessionView: View {
             Picker("Continue using", selection: $target) {
                 Text("Choose a profile").tag("")
                 ForEach(candidates) { account in
-                    Text(account.profile.command + (account.consoleLabel.map { " · " + $0 }
+                    Text(account.profile.command + ((account.consoleLabel ?? account.endpointLabel).map { " · " + $0 }
                         ?? (account.error == nil ? account.snapshot?.preferredLaunchWindow.map { " · \($0.title) \(Int($0.percent))% used" } ?? "" : " · check sign-in"))).tag(account.id)
                 }
             }

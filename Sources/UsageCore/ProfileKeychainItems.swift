@@ -11,6 +11,8 @@ public struct ProfileKeychainItem: Equatable, Sendable {
         case inferenceToken
         /// A Console API key saved by Claudock.
         case apiKey
+        /// A third-party endpoint's key saved by Claudock.
+        case endpointKey
     }
 
     public let kind: Kind
@@ -22,6 +24,7 @@ public struct ProfileKeychainItem: Equatable, Sendable {
         case .consoleKey: return "Console API key from Claude Code's sign-in"
         case .inferenceToken: return "Claudock inference token"
         case .apiKey: return "Claudock Console API key"
+        case .endpointKey: return "Claudock third-party endpoint key"
         }
     }
 
@@ -38,8 +41,8 @@ public struct ProfileKeychainLookup: Equatable, Sendable {
 }
 
 /// The Keychain items a profile can leave behind. Removing a profile keeps its credentials, so the person removing
-/// it needs every item named: Claude Code's own and Claudock's, whatever kind of profile it was, because a profile
-/// that switched between a pasted key and a Console sign-in has both.
+/// it needs every item named: Claude Code's own and Claudock's, whatever kind of profile it is now, because a profile
+/// that switched between a pasted key and a Console sign-in has both, and a folder can outlive a profile of another kind.
 public enum ProfileKeychainItems {
     /// Every item that could hold a credential for `profile`, in the order they are shown, without asking Keychain.
     /// A profile with no known config folder has none: its names would be those of another account's items.
@@ -49,7 +52,8 @@ public enum ProfileKeychainItems {
         return [ProfileKeychainItem(kind: .login, service: CredentialStore.serviceName(for: profile)),
                 ProfileKeychainItem(kind: .consoleKey, service: ConsoleLogin.keychainService(for: profile)),
                 ProfileKeychainItem(kind: .inferenceToken, service: MintTokenStore.serviceName(for: profile)),
-                ProfileKeychainItem(kind: .apiKey, service: APIKeyStore.serviceName(for: profile))]
+                ProfileKeychainItem(kind: .apiKey, service: APIKeyStore.serviceName(for: profile)),
+                ProfileKeychainItem(kind: .endpointKey, service: EndpointKeyStore.serviceName(for: profile))]
     }
 
     /// Which of the profile's items exist, from attribute-only lookups: no secret is read, so nothing prompts.

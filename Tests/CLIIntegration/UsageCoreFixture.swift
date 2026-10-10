@@ -20,7 +20,7 @@ public enum MonitorError: Error, LocalizedError {
 }
 
 public enum LaunchCredential {
-    case consoleAPIKey, consoleLogin, inferenceToken(String), profileLogin
+    case consoleAPIKey, consoleLogin, endpointKey, inferenceToken(String), profileLogin
 }
 /// Mirrors the real launch decision over a synthetic token (CLAUDOCK_TEST_MINT), policy
 /// (CLAUDOCK_TEST_REQUIRE_TOKEN), and a saved token that belongs to another account
@@ -33,6 +33,7 @@ public enum InferenceTokenPolicy {
     public static func setRequired(_ required: Bool) throws { markAccess("preferences") }
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         if signIn { return .profileLogin }
+        if profile.authKind == .endpoint { return .endpointKey }
         if profile.authKind == .apiKey { return .consoleAPIKey }
         if profile.authKind == .consoleLogin { return .consoleLogin }
         if claudeArguments.first == "setup-token" { return .profileLogin }
@@ -67,6 +68,8 @@ public enum ProfileStore {
                     authKind: .consoleLogin),
             // An imported folder whose name holds a control character, which a terminal must not receive.
             Profile(command: "claude-tabbed", configDirectory: "/synthetic/tab\there"),
+            Profile(command: "claude-deep", configDirectory: "/synthetic/endpoint deep", registryID: "fixture-endpoint", managed: true,
+                    authKind: .endpoint, endpoint: try! EndpointConfiguration(baseURL: "https://api.example.test/anthropic", model: "example-flash")),
         ]
     }
 
@@ -74,6 +77,14 @@ public enum ProfileStore {
     public static func add(name: String, configDirectory: String?) throws -> Profile { try load()[1] }
     public static func addAPIKeyProfile(name: String, apiKey: ConsoleAPIKey, configDirectory: String?) throws -> Profile { try load()[1] }
     public static func addConsoleLoginProfile(name: String, configDirectory: String?) throws -> Profile { try load()[6] }
+    public static func addEndpointProfile(name: String, endpoint: EndpointConfiguration, key: EndpointAPIKey) throws -> Profile {
+        markAccess("endpoint key")
+        throw MonitorError.unsupported("The synthetic fixture stores no endpoint keys.")
+    }
+    public static func setEndpoint(_ endpoint: EndpointConfiguration, for profile: Profile) throws -> Profile {
+        Profile(command: profile.command, configDirectory: profile.configDirectory, registryID: profile.registryID, managed: profile.managed,
+                authKind: profile.authKind, endpoint: endpoint)
+    }
     public static func setAuthKind(_ kind: ProfileAuthKind, for profile: Profile, beforePublishing: (Profile) throws -> Void = { _ in }) throws -> Profile {
         markAccess("kind change")
         throw MonitorError.unsupported("The synthetic fixture changes no profile kind.")
@@ -94,6 +105,17 @@ public enum APIKeyStore {
     public static func serviceName(for profile: Profile) -> String { "Claudock-apikey-fixture" }
     public static func environmentKey(profile: Profile) throws -> String? { markAccess("API key"); return nil }
     public static func save(_ key: ConsoleAPIKey, profile: Profile) throws { markAccess("API key") }
+}
+
+// Endpoint keys are covered by endpoint_e2e.py against the real Keychain; here CLAUDOCK_TEST_ENDPOINT_KEY is the saved
+// key, so the smoke checks cover how the CLI passes it and words a missing one.
+public enum EndpointKeyStore {
+    public static func serviceName(for profile: Profile) -> String { "Claudock-endpointkey-fixture" }
+    public static func environmentKey(profile: Profile) throws -> String? {
+        markAccess("endpoint key")
+        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_ENDPOINT_KEY"]
+    }
+    public static func save(_ key: EndpointAPIKey, profile: Profile) throws { markAccess("endpoint key") }
 }
 
 // Console credit is covered by credit_e2e.py against the real ledger and launcher; amounts and row
@@ -160,7 +182,7 @@ public enum MintTokenStore {
 // CLAUDOCK_TEST_UNCONFIRMED=1 says Keychain could not be asked about them, so the smoke checks cover how the CLI
 // words and orders what it prints.
 public struct ProfileKeychainItem {
-    public enum Kind: String { case login, consoleKey, inferenceToken, apiKey }
+    public enum Kind: String { case login, consoleKey, inferenceToken, apiKey, endpointKey }
     public let kind: Kind
     public let service: String
     public var title: String { "Fixture " + kind.rawValue }
@@ -175,7 +197,7 @@ public enum ProfileKeychainItems {
         markAccess("Keychain items")
         let environment = ProcessInfo.processInfo.environment
         let kinds = (environment["CLAUDOCK_TEST_LEFTOVERS"] ?? "").split(separator: ",").map(String.init)
-        let items = [ProfileKeychainItem.Kind.login, .consoleKey, .inferenceToken, .apiKey].filter { kinds.contains($0.rawValue) }.map {
+        let items = [ProfileKeychainItem.Kind.login, .consoleKey, .inferenceToken, .apiKey, .endpointKey].filter { kinds.contains($0.rawValue) }.map {
             ProfileKeychainItem(kind: $0, service: "Fixture-service-" + $0.rawValue)
         }
         return environment["CLAUDOCK_TEST_UNCONFIRMED"] == "1"
@@ -205,6 +227,7 @@ public enum CredentialStore {
         switch profile.registryID {
         case "fixture-stable": return "Claude Code-credentials-aabbccdd"
         case "fixture-console": return "Claude Code-credentials-c0ffee00"
+        case "fixture-endpoint": return "Claude Code-credentials-deadbeef"
         default: return "Claude Code-credentials"
         }
     }

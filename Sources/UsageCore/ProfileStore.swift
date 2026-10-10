@@ -80,6 +80,45 @@ public enum ProfileStore {
         }
     }
 
+    /// A profile for a third-party endpoint, pinned to one model. Like an API-key profile, its key is saved in Keychain
+    /// before the entry is published, and a failed add rolls back the entry, its account folder, and an item it created.
+    public static func addEndpointProfile(name: String, endpoint: EndpointConfiguration, key: EndpointAPIKey,
+                                          home: String = NSHomeDirectory()) throws -> Profile {
+        try addEndpointProfile(name: name, endpoint: endpoint, key: key, home: home, isSaved: EndpointKeyStore.isSaved,
+                               save: EndpointKeyStore.save, delete: { EndpointKeyStore.delete(profile: $0) })
+    }
+
+    static func addEndpointProfile(name: String, endpoint: EndpointConfiguration, key: EndpointAPIKey, home: String,
+                                   isSaved: (Profile) throws -> Bool, save: (EndpointAPIKey, Profile) throws -> Void,
+                                   delete: (Profile) -> Void) throws -> Profile {
+        var created: Profile?
+        do {
+            return try add(name: name, configDirectory: nil, authKind: .endpoint, endpoint: endpoint, home: home) { profile in
+                if try !isSaved(profile) { created = profile }
+                try save(key, profile)
+            }
+        } catch {
+            if let created { delete(created) }
+            throw error
+        }
+    }
+
+    /// Points an endpoint profile at another endpoint or model, keeping its registry identity, name, config folder,
+    /// and so its key. A profile that changed meanwhile is refused.
+    @discardableResult
+    public static func setEndpoint(_ endpoint: EndpointConfiguration, for profile: Profile, home: String = NSHomeDirectory()) throws -> Profile {
+        guard profile.authKind.isEndpoint, profile.managed else { throw Failure.notEndpointProfile }
+        return try withState(home: home) { state in
+            let index = try currentIndex(profile, in: state)
+            let current = state.profiles[index]
+            let changed = Profile(command: current.command, configDirectory: current.configDirectory, isVertex: current.isVertex,
+                                  discoveryNote: current.discoveryNote, registryID: current.registryID, managed: current.managed,
+                                  authKind: current.authKind, endpoint: endpoint)
+            state.profiles[index] = changed
+            return changed
+        }
+    }
+
     /// A profile that signs in to an Anthropic Console account through Claude Code (`claude auth login --console`).
     /// Claude Code keeps the resulting API key, so nothing is saved before the entry is published.
     public static func addConsoleLoginProfile(name: String, configDirectory: String? = nil, home: String = NSHomeDirectory()) throws -> Profile {
@@ -99,13 +138,13 @@ public enum ProfileStore {
             let current = state.profiles[index]
             let switched = Profile(command: current.command, configDirectory: current.configDirectory, isVertex: current.isVertex,
                                    discoveryNote: current.discoveryNote, registryID: current.registryID, managed: current.managed,
-                                   authKind: kind)
+                                   authKind: kind, endpoint: current.endpoint)
             state.profiles[index] = switched
             return switched
         }
     }
 
-    static func add(name: String, configDirectory: String?, authKind: ProfileAuthKind, home: String,
+    static func add(name: String, configDirectory: String?, authKind: ProfileAuthKind, endpoint: EndpointConfiguration? = nil, home: String,
                     beforePublishing: (Profile) throws -> Void) throws -> Profile {
         let command = try validatedCommand(name)
         let explicitDirectory = configDirectory.flatMap { $0.isEmpty ? nil : $0 }
@@ -119,7 +158,8 @@ public enum ProfileStore {
         let accountParent = directory(home: home).appendingPathComponent("accounts", isDirectory: true).appendingPathComponent(identifier, isDirectory: true)
         let path = explicitDirectory ?? accountParent.appendingPathComponent("claude", isDirectory: true).path
         return try withState(home: home, createAccount: explicitDirectory == nil ? accountParent : nil, beforePublishing: beforePublishing) { state in
-            let profile = Profile(command: command, configDirectory: path, registryID: identifier, managed: true, authKind: authKind)
+            let profile = Profile(command: command, configDirectory: path, registryID: identifier, managed: true, authKind: authKind,
+                                  endpoint: endpoint)
             guard !state.profiles.contains(where: { $0.command == command }) else { throw Failure.duplicateName }
             guard !state.profiles.contains(where: { sameCredentialIdentity($0, profile) }) else { throw Failure.duplicateDirectory }
             guard explicitDirectory != nil || !pathEntryExists(accountParent.path) else { throw Failure.directoryExists }
@@ -142,7 +182,8 @@ public enum ProfileStore {
             suppress(profile, in: &state)
             let renamed = Profile(command: command, configDirectory: profile.configDirectory,
                                   isVertex: profile.isVertex, discoveryNote: profile.discoveryNote,
-                                  registryID: state.profiles[index].registryID, managed: true, authKind: profile.authKind)
+                                  registryID: state.profiles[index].registryID, managed: true, authKind: profile.authKind,
+                                  endpoint: profile.endpoint)
             state.profiles[index] = renamed
             state.profiles = sorted(state.profiles)
             return renamed
@@ -304,9 +345,10 @@ public enum ProfileStore {
 
     /// Validates the final state and returns the bytes a write would store.
     private static func serialized(_ state: inout State) throws -> Data {
-        // Older builds accept only version 1 and would drop a Console profile's kind when
-        // rewriting the file; a registry holding one is version 2, so they refuse it instead.
-        state.version = state.profiles.contains { $0.authKind.isConsole } ? 2 : 1
+        // Older builds accept only version 1 and would drop a Console profile's kind when rewriting the file; a
+        // registry holding one is version 2, so they refuse it instead. Builds that accept 1 and 2 cannot keep an
+        // endpoint profile either, so a registry holding one is version 3.
+        state.version = state.profiles.contains { $0.authKind.isEndpoint } ? 3 : state.profiles.contains { $0.authKind.isConsole } ? 2 : 1
         try validate(state)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -380,7 +422,7 @@ public enum ProfileStore {
     private static func validate(_ state: State) throws {
         let ids = state.profiles.compactMap(\.registryID)
         let commands = state.profiles.map(\.command)
-        guard [1, 2].contains(state.version), state.profiles.count <= 1_000,
+        guard [1, 2, 3].contains(state.version), state.profiles.count <= 1_000,
               state.suppressedCommands.count <= 10_000, state.suppressedDirectories.count <= 10_000,
               ids.count == state.profiles.count, Set(ids).count == ids.count,
               ids.allSatisfy({ UUID(uuidString: $0) != nil }), Set(commands).count == commands.count,
@@ -392,7 +434,7 @@ public enum ProfileStore {
               state.suppressedDirectories.allSatisfy(validPath),
               state.profiles.allSatisfy({ profile in
                   (validPath(profile.configDirectory) || (profile.configDirectory.isEmpty && profile.discoveryNote != nil)) &&
-                  (profile.authKind == .subscription || profile.managed) &&
+                  (profile.authKind == .subscription || profile.managed) && (profile.authKind == .endpoint) == (profile.endpoint != nil) &&
                   (!profile.managed || (profile.command != "claude" && !profile.isVertex && profile.discoveryNote == nil && (try? validatedCommand(profile.name, allowLegacyAuto: true)) == profile.command))
               }) else { throw Failure.invalidManagedFiles }
     }
