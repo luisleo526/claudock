@@ -213,6 +213,8 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
              (["usage", "--fresh", "extra"], 2), (["usage", "--fresh", "--fresh"], 2), (["usage", "--max-age", "1", "--max-age", "2"], 2),
              (["profile", "setup-token"], 2), (["profile", "setup-token", "smoke", "extra"], 2),
              (["profile", "setup-token", "smoke", "--expires", "2099-01-01"], 2),
+             (["profile", "clear-token"], 2), (["profile", "clear-token", "smoke", "extra"], 2),
+             (["profile", "clear-token", "smoke", "--expires", "2099-01-01"], 2), (["profile", "clear-token", "sk-ant-oat01-x"], 2),
              (["profile", "set-credit", "smoke"], 2), (["profile", "set-credit", "smoke", "1.234"], 2),
              (["profile", "set-credit", "smoke", "-5"], 2), (["profile", "set-credit", "smoke", "5", "extra"], 2),
              (["profile", "set-credit", "sk-ant-api03-x", "5"], 2),
@@ -362,10 +364,64 @@ sys.exit(int(os.environ.get("CLAUDOCK_TEST_EXIT", "0")))
     assert result.returncode == 1 and not result.stdout and "subscription" in result.stderr, result.stderr
     assert marker.read_text() == "profile store", "a refused --console sign-in must not launch or change anything"
     passed.append("profile login --console refused for subscription profiles")
-    for arguments in (["profile", "setup-token", "team"], ["profile", "set-token", "team"]):
+    for arguments in (["profile", "setup-token", "team"], ["profile", "set-token", "team"], ["profile", "clear-token", "team"]):
         result = run(arguments)
         assert result.returncode == 1 and "Inference tokens are only for" in result.stderr and not result.stdout, (arguments, result.stderr)
     passed.append("inference-token commands refused for console-login profiles")
+
+    # `profile clear-token` reports the token it deleted, exits 1 when none is saved, and refuses Console and
+    # unsupported profiles before Keychain is asked.
+    marker.unlink(missing_ok=True)
+    result = run(["profile", "clear-token", "smoke"], {"CLAUDOCK_TEST_TOKEN_SAVED": "1"})
+    assert result.returncode == 0 and not result.stderr, result.stderr
+    assert result.stdout == ("Deleted the inference token saved for smoke from Keychain (service Claudock-inference-fixture). "
+                             "Claude Code's own login was not touched.\n"
+                             "'claudock run smoke' now starts Claude with the profile's normal login.\n"), result.stdout
+    assert marker.read_text() == "inference token"
+    result = run(["profile", "clear-token", "smoke"], {"CLAUDOCK_TEST_TOKEN_SAVED": "1", "CLAUDOCK_TEST_REQUIRE_TOKEN": "1"})
+    assert result.returncode == 0 and result.stdout.endswith(
+        "Claudock requires an inference token to launch, so 'claudock run smoke' is refused until you save one: "
+        "claudock profile setup-token smoke, then pbpaste | claudock profile set-token smoke.\n"), result.stdout
+    passed.append("profile clear-token reports the token it deleted and what a launch does now")
+    result = run(["profile", "clear-token", "smoke"])
+    assert result.returncode == 1 and not result.stdout, result.stdout
+    assert result.stderr == "claudock: No inference token is saved for 'smoke'.\n", result.stderr
+    passed.append("profile clear-token exits 1 when no token is saved")
+    for name in ("team", "vertex"):
+        marker.unlink(missing_ok=True)
+        result = run(["profile", "clear-token", name], {"CLAUDOCK_TEST_TOKEN_SAVED": "1"})
+        assert result.returncode == 1 and not result.stdout, (name, result.stderr)
+        assert marker.read_text() == "profile store", (name, "a refused clear-token must not reach Keychain")
+    passed.append("profile clear-token refuses Console and unsupported profiles before Keychain")
+
+    # `profile remove` keeps the success line, lists the Keychain items that exist in a fixed order with their delete
+    # commands, then the config folder and the reminder that keys stay valid until revoked.
+    removed = "Removed smoke from Claudock. Claude data, credentials, and your own shell commands were preserved.\n"
+    reminder = "Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.\n"
+    result = run(["profile", "remove", "smoke"], {"CLAUDOCK_TEST_LEFTOVERS": "apiKey,inferenceToken,login"})
+    assert result.returncode == 0 and not result.stderr, result.stderr
+    assert result.stdout == (removed + "Credentials left in Keychain. To delete one, run its command:\n"
+                             "  Fixture login\n    security delete-generic-password -s 'Fixture-service-login'\n"
+                             "  Fixture inferenceToken\n    security delete-generic-password -s 'Fixture-service-inferenceToken'\n"
+                             "  Fixture apiKey\n    security delete-generic-password -s 'Fixture-service-apiKey'\n"
+                             "Config folder: '/synthetic/account space'\n" + reminder), result.stdout
+    result = run(["profile", "remove", "smoke"], {"CLAUDOCK_TEST_LEFTOVERS": "consoleKey", "CLAUDOCK_TEST_UNCONFIRMED": "1"})
+    assert result.returncode == 0 and result.stdout == (
+        removed + "Credentials left in Keychain. To delete one, run its command:\n"
+        "  Fixture consoleKey (Keychain could not be checked; it may not exist)\n"
+        "    security delete-generic-password -s 'Fixture-service-consoleKey'\n"
+        "Config folder: '/synthetic/account space'\n" + reminder), result.stdout
+    result = run(["profile", "remove", "smoke"])
+    assert result.returncode == 0 and result.stdout == removed + "Config folder: '/synthetic/account space'\n" + reminder, result.stdout
+    passed.append("profile remove lists only the Keychain items that exist, then the config folder and the revoke reminder")
+    result = run(["profile", "remove", "tabbed"])
+    assert result.returncode == 0 and result.stdout == (
+        "Removed tabbed from Claudock. Claude data, credentials, and your own shell commands were preserved.\n"
+        "Config folder: '/synthetic/tab here' (control characters in the name are shown as spaces)\n" + reminder), result.stdout
+    passed.append("profile remove shows a config folder with a control character as spaces and says the name is not exact")
+    result = run(["profile", "remove", "team"], {"CLAUDOCK_TEST_LEFTOVERS": "consoleKey"})
+    assert result.stdout.startswith("Removed team from Claudock. Claude data, its Console sign-in, and your own shell commands were preserved.\n"), result.stdout
+    passed.append("profile remove keeps each kind's success line")
 
     result = run(["run", "vertex"])
     assert result.returncode == 1 and not result.stdout

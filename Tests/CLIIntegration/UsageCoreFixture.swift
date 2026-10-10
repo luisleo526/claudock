@@ -65,6 +65,8 @@ public enum ProfileStore {
             Profile(command: "claude-vertex", configDirectory: "/synthetic/vertex", isVertex: true),
             Profile(command: "claude-team", configDirectory: "/synthetic/console team", registryID: "fixture-console", managed: true,
                     authKind: .consoleLogin),
+            // An imported folder whose name holds a control character, which a terminal must not receive.
+            Profile(command: "claude-tabbed", configDirectory: "/synthetic/tab\there"),
         ]
     }
 
@@ -139,12 +141,46 @@ public enum MintTokenStatus {
     case imported(expiresAt: Date?)
 }
 public struct MintToken { public let expiresAt: Date? }
+/// `profile clear-token` reports a saved token (CLAUDOCK_TEST_TOKEN_SAVED=1) as deleted, or none as missing.
 public enum MintTokenStore {
+    public static func serviceName(for profile: Profile) -> String { "Claudock-inference-fixture" }
     public static func importToken(raw: String, profile: Profile, expiresAt: Date?) throws -> MintToken {
         markAccess("inference token")
         throw MintTokenError.unsupportedProfile
     }
     public static func status(profile: Profile) throws -> MintTokenStatus { markAccess("inference token"); return .notConfigured }
+    public static func delete(profile: Profile) throws -> Bool {
+        markAccess("inference token")
+        return ProcessInfo.processInfo.environment["CLAUDOCK_TEST_TOKEN_SAVED"] == "1"
+    }
+}
+
+// The Keychain items a removed profile leaves are covered by the end-to-end checks against the real Keychain; here
+// CLAUDOCK_TEST_LEFTOVERS lists the kinds that exist (login, consoleKey, inferenceToken, apiKey) and
+// CLAUDOCK_TEST_UNCONFIRMED=1 says Keychain could not be asked about them, so the smoke checks cover how the CLI
+// words and orders what it prints.
+public struct ProfileKeychainItem {
+    public enum Kind: String { case login, consoleKey, inferenceToken, apiKey }
+    public let kind: Kind
+    public let service: String
+    public var title: String { "Fixture " + kind.rawValue }
+    public var deleteCommand: String { "security delete-generic-password -s '" + service + "'" }
+}
+public struct ProfileKeychainLookup {
+    public let existing: [ProfileKeychainItem]
+    public let unchecked: [ProfileKeychainItem]
+}
+public enum ProfileKeychainItems {
+    public static func lookup(for profile: Profile) -> ProfileKeychainLookup {
+        markAccess("Keychain items")
+        let environment = ProcessInfo.processInfo.environment
+        let kinds = (environment["CLAUDOCK_TEST_LEFTOVERS"] ?? "").split(separator: ",").map(String.init)
+        let items = [ProfileKeychainItem.Kind.login, .consoleKey, .inferenceToken, .apiKey].filter { kinds.contains($0.rawValue) }.map {
+            ProfileKeychainItem(kind: $0, service: "Fixture-service-" + $0.rawValue)
+        }
+        return environment["CLAUDOCK_TEST_UNCONFIRMED"] == "1"
+            ? ProfileKeychainLookup(existing: [], unchecked: items) : ProfileKeychainLookup(existing: items, unchecked: [])
+    }
 }
 
 public enum ShellIntegration {

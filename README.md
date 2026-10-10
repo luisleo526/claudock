@@ -417,6 +417,7 @@ claudock version                                            # Print the version
 claudock help                                               # Print this list and notes
 ```
 
+claudock profile clear-token NAME                           # Delete a profile's saved inference token
 `claudock auto` was removed in 1.6.0. It prints a notice on stderr and exits with status 2. Use `claudock run NAME`.
 
 ## Troubleshooting
