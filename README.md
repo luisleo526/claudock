@@ -6,7 +6,7 @@ A macOS menu bar app and `claudock` command for people with more than one Claude
 
 [Download v1.6.0](https://github.com/luisleo526/claudock/releases/download/v1.6.0/Claudock-1.6.0-macOS-arm64.dmg) · [User guide](docs/GUIDE.md) · [Release notes](https://github.com/luisleo526/claudock/releases/tag/v1.6.0)
 
-> The published download is v1.6.0, for Apple Silicon and macOS 14 or newer. It is ad-hoc signed and not Apple-notarized. Several features landed after it and are on `main` only: Console accounts (API key and sign-in) with credit tracking, the `claudock profile set-token`, `tokens`, and `setup-token` commands, `claudock require-token`, and the shared usage cache (`claudock usage --fresh` and `--max-age`). Build from source to use them until the next release. A build from `main` still reports version 1.6.0. Sections that need such a build say so.
+> The published download is v1.6.0, for Apple Silicon and macOS 14 or newer. It is ad-hoc signed and not Apple-notarized. Several features landed after it and are on `main` only: Console accounts (API key and sign-in) with credit tracking, the `claudock profile set-token`, `tokens`, `setup-token`, and `clear-token` commands, the Keychain items `claudock profile remove` lists, `claudock require-token`, and the shared usage cache (`claudock usage --fresh` and `--max-age`). Build from source to use them until the next release. A build from `main` still reports version 1.6.0. Sections that need such a build say so.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts.png">
@@ -149,7 +149,7 @@ Claudock's credit meter is built from the amount you entered, so it cannot tell 
 
 ### Import, rename, remove
 
-**Import folder…** and **Import zsh profiles** in Manage profiles bring in accounts you already use. Importing from zsh files only reads them and never runs them. **Rename…** and **Remove…** are on each row, except the default profile's. Removing keeps the profile's Claude folder, conversations, and credentials. To also delete a Console profile's key or sign-in and its folder, see [Remove a profile completely](#remove-a-profile-completely).
+**Import folder…** and **Import zsh profiles** in Manage profiles bring in accounts you already use. Importing from zsh files only reads them and never runs them. **Rename…** and **Remove…** are on each row, except the default profile's. Removing keeps the profile's Claude folder, conversations, and credentials, and lists the credentials it left in Keychain. To delete those and the folder too, see [Remove a profile completely](#remove-a-profile-completely).
 
 ```sh
 claudock profile add work --directory /Users/you/.claude-work
@@ -160,37 +160,47 @@ claudock profile remove office
 
 ### Remove a profile completely
 
-*The key and sign-in steps need a build from `main`; not in v1.6.0.*
+*The credential list and `clear-token` need a build from `main`; not in v1.6.0.*
 
-Removing a profile keeps its folder, its conversations, and its credentials. To delete a Console profile's key or sign-in and its folder as well, follow these steps in order. Steps 3 to 5 cannot be undone.
+Removing a profile keeps its folder, its conversations, and its credentials. To delete the credentials and the folder as well, follow these steps in order. Steps 2 to 4 cannot be undone.
 
-1. Note the profile's folder first, because the list no longer shows it once the profile is removed. It is the `CONFIG_DIRECTORY` column:
+1. Remove the profile in Terminal, or with **Remove…** in Manage profiles. The command prints each credential the profile left in Keychain, with the command that deletes it, and then the profile's folder, quoted for the shell, which the profile list no longer shows once the profile is gone. The app shows the same in its notice. A profile can leave up to four items. The command prints those that exist, and marks any that Keychain could not be asked about:
 
-   ```sh
-   claudock profile list
-   ```
-
-2. Remove the profile in Terminal, or with **Remove…** in Manage profiles. For a Console key or sign-in, the command prints the Keychain service that holds the key, with the command that deletes it. The app shows the service in its notice.
+   - `Claude Code-credentials-…`: Claude Code's login for the profile's folder, for a subscription or a Console account.
+   - `Claude Code-…`: the API key Claude Code made when you signed in to a Console account.
+   - `Claudock-inference-…`: an inference token saved in Claudock.
+   - `Claudock-apikey-…`: a Console API key saved in Claudock.
 
    ```sh
    claudock profile remove console
    ```
 
-3. Delete the Keychain item. Run the delete command that `profile remove` printed. If you used the app, run this one with the service from its notice in place of `SERVICE`:
+   The output looks like this, here for a Console API key profile:
+
+   ```text
+   Removed console from Claudock. Claude data, its Console API key, and your own shell commands were preserved.
+   Credentials left in Keychain. To delete one, run its command:
+     Claudock Console API key
+       security delete-generic-password -s 'Claudock-apikey-…'
+   Config folder: '/Users/you/Library/Application Support/Claudock/accounts/…/claude'
+   Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.
+   ```
+
+2. Delete the Keychain items you no longer need. Run the delete command that `profile remove` printed for each one. If you used the app, copy the commands from its notice. Keep an item that something else still uses: Claude Code keeps a folder's login in its `Claude Code-credentials-…` item, so deleting it signs out every shell command of yours that starts Claude with that folder. Each command looks like this, with the item's service in place of `SERVICE`:
 
    ```sh
    security delete-generic-password -s 'SERVICE'
    ```
 
-4. Revoke the key in the Console (Settings → API keys). Everything else that uses that key stops working. For a sign-in, revoke the key Claude Code added to your Console workspace when you signed in.
+3. Revoke the keys. Deleting an item does not revoke what it held: a key or token stays valid at Anthropic until it is revoked. Revoke a Console API key in the Console (Settings → API keys). For a Console sign-in, revoke the key Claude Code added to your Console workspace when you signed in. Revoke a Claude login or an inference token on claude.ai. Everything else that uses the key or token stops working.
 
-5. Delete the profile's folder if you no longer need it. Quit any Claude session running under the profile first. A folder Claudock created, under `~/Library/Application Support/Claudock/accounts/`, holds the profile's own files and links to your shared `~/.claude`. `rm -r` deletes the links, not what they point to. A folder you imported with `--directory` holds its own conversations, so keep it unless you no longer need them. Never run `rm -r` on `~/.claude` itself: it is your default account and the history all profiles share. Put the path from step 1 in place of `CONFIG_DIRECTORY`, exactly as printed and without a trailing slash:
+4. Delete the profile's folder if you no longer need it. Quit any Claude session running under the profile first. A folder Claudock created, under `~/Library/Application Support/Claudock/accounts/`, holds the profile's own files and links to your shared `~/.claude`. `rm -r` deletes the links, not what they point to. A folder you imported with `--directory` holds its own conversations, so keep it unless you no longer need them. Never run `rm -r` on `~/.claude` itself: it is your default account and the history all profiles share. Put the quoted path from the `Config folder:` line in place of `CONFIG_FOLDER`. If the line ends with a note about control characters, the name shown is not exact, so delete the folder in Finder instead:
 
    ```sh
-   rm -r 'CONFIG_DIRECTORY'
+   rm -r CONFIG_FOLDER
    ```
 
-Removal leaves other Keychain items alone: a subscription profile's login, an inference token saved for a profile, and the credential a Console profile stopped using when it switched between a key and a sign-in. `profile remove` prints a service name only for a Console profile's current key or sign-in, and Claudock offers no way to delete a saved inference token.
+Removal itself deletes nothing in Keychain. To delete only a saved inference token and keep the profile, run `claudock profile clear-token NAME` or choose **Delete token** in **Manage token…**; see [Inference tokens](#inference-tokens-optional). The default profile cannot be removed, so Claudock never prints a delete command for its own login.
 
 ## Start Claude with a profile
 
@@ -341,7 +351,7 @@ Set the credit again from the Console whenever you check it.
 
 An inference token is a long-lived Claude Code token (`sk-ant-oat01-…`) for a subscription profile. Claudock keeps it in Keychain and passes it to Claude Code when it starts that profile, so Claude Code uses it instead of the profile's normal login. Console profiles do not use tokens.
 
-In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one.
+In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one. When a token is saved, **Delete token** removes it from Keychain after you confirm.
 
 *The commands and the setting below need a build from `main`; not in v1.6.0.* In Terminal:
 
@@ -349,11 +359,13 @@ In the app, open **Manage profiles** and choose **Set token…** (or **Manage to
 claudock profile setup-token work
 pbpaste | claudock profile set-token work
 claudock profile tokens
+claudock profile clear-token work
 ```
 
 - `setup-token` runs Claude Code's own token command for the profile. It signs in through your browser, so sign the browser in to that profile's claude.ai account first. A private window per account helps. Claude then prints a token.
 - Copy the token, then run `set-token`. It reads the token from standard input, never from arguments, and saves it in Keychain. Add `--expires 2027-10-09` if you know when it expires.
 - `tokens` lists each profile's token status and expiry, never the token. The status is `none`, `active`, `expired`, `pasted-unverified`, `n/a`, or `unavailable`.
+- `clear-token` deletes the token Claudock saved for the profile from Keychain, and only that: Claude Code's own login stays. It exits with status 1 when no token is saved. Afterwards `tokens` shows `none`, and a launch uses the profile's normal login, or stops if you require a token (below). It does not revoke the token at Anthropic.
 
 To make sure a launch never falls back to a profile's normal login, require a token:
 
@@ -405,6 +417,7 @@ claudock profile set-credit NAME AMOUNT                     # Record the Console
 claudock profile set-token NAME [--expires ISO8601_DATE]    # Save an inference token (token from stdin)
 claudock profile setup-token NAME                           # Create an inference token through Claude Code
 claudock profile tokens                                     # Show each profile's token status
+claudock profile clear-token NAME                           # Delete a profile's saved inference token
 claudock profile rename NAME NEWNAME                        # Rename a profile; its data and login stay
 claudock profile remove NAME                                # Remove a profile; Claude data and credentials stay
 claudock profile login NAME [--console]                     # Sign in again; --console uses a Console account
@@ -417,7 +430,6 @@ claudock version                                            # Print the version
 claudock help                                               # Print this list and notes
 ```
 
-claudock profile clear-token NAME                           # Delete a profile's saved inference token
 `claudock auto` was removed in 1.6.0. It prints a notice on stderr and exits with status 2. Use `claudock run NAME`.
 
 ## Troubleshooting

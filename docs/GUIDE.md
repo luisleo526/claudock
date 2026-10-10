@@ -100,6 +100,8 @@ New accounts receive a private, stable config directory whose UUID does not depe
 
 Importing an explicit existing folder preserves its paths, credentials, history, and layout without adding these links. Renaming never moves an account directory. Removing a profile only removes its Claudock registration; it preserves Claude conversations, settings, credentials, and original shell wrappers. The default account is protected from rename and removal.
 
+Because removal keeps every credential, `claudock profile remove NAME` and the notice the app shows list the ones that are still in Keychain: Claude Code's login for the profile's folder (`Claude Code-credentials-…`), the API key Claude Code made at a Console sign-in (`Claude Code-…`), an inference token saved in Claudock (`Claudock-inference-…`), and a pasted Console API key (`Claudock-apikey-…`). Only items that exist are listed, and one that Keychain could not be asked about is listed with a note. Each comes with the `security delete-generic-password -s 'SERVICE'` command that deletes it, followed by the profile's config folder, quoted for the shell. Claude Code keeps a folder's login in one item, so deleting it signs out every command of yours that starts Claude with that folder. Claudock only prints these commands. Deleting an item does not revoke its key or token at Anthropic: revoke API keys in the Console, and logins and tokens on claude.ai. The README walks through [removing a profile completely](../README.md#remove-a-profile-completely).
+
 When upgrading from Claude Usage, active shell declarations are imported, including the old `~/.config/claude-usage/profiles.zsh` when it is sourced by zsh. Legacy files remain intact; an orphaned old JSON registry with no active wrapper is not automatically imported, so use Import folder for those accounts. Claudock does not rewrite old generated wrappers or remove their source line. Existing external `claude-NAME` wrappers continue to be owned by their original shell configuration; renaming or removing a Claudock entry does not rewrite those commands.
 
 ### Optional shell integration
@@ -202,7 +204,7 @@ claudock run team
 
 The dashboard shows a Console-login profile like an API-key profile, with an **API** badge, its organization, and a **Credit** meter once a credit is set.
 
-Inference tokens do not apply: `profile setup-token` and `profile set-token` refuse Console-login profiles, and **Require inference token to launch** does not block them. **Remove** keeps Claude Code's sign-in in Keychain, in its `Claude Code-…` item, and the CLI prints that item's name.
+Inference tokens do not apply: `profile setup-token` and `profile set-token` refuse Console-login profiles, and **Require inference token to launch** does not block them. **Remove** keeps Claude Code's sign-in in Keychain, in its `Claude Code-…` item (and any login it kept in `Claude Code-credentials-…`), and the CLI lists each item that exists with the command that deletes it.
 
 ### Track the Console credit
 
@@ -220,7 +222,7 @@ This is an estimate, and the Console balance is authoritative. Use of the same k
 
 For these launches Claudock replaces any `OTEL_*` variables in your environment, so your own OpenTelemetry collector does not receive them.
 
-**Remove it** like any profile. Removal keeps the key in Keychain, as Claudock keeps other credentials, and the CLI prints the item's service name. To delete the key, use that name:
+**Remove it** like any profile. Removal keeps the key in Keychain, as Claudock keeps other credentials, and the CLI prints the item's service name with the command that deletes it; the app shows the same in its notice. A profile that once signed in to a Console account lists Claude Code's key as well. To delete the key, run that command:
 
 ```sh
 security delete-generic-password -s 'Claudock-apikey-…'
@@ -272,6 +274,7 @@ There is no analytics service, telemetry, or developer-operated backend. Automat
 | The credit left differs from the Console | The estimate counts only Claude Code sessions Claudock starts on this Mac. Set the credit again from the Console balance: `claudock profile set-credit NAME AMOUNT` or **Set credit…**. |
 | `… sets OTEL_… for Claude Code, which can send its usage events elsewhere` | A settings file gives Claude Code its own telemetry settings, which override Claudock's. Remove that `env` entry for Console profiles, or set the credit again later. |
 | `usage events from this run could not be saved` | The credit ledger was busy or unreadable. Set the credit again from the Console balance. |
+| `No inference token is saved for 'NAME'.` | `claudock profile clear-token NAME` found nothing to delete: no token is saved for that profile, and `claudock profile tokens` shows `none`. |
 | NAME's saved inference token belongs to a different account than its current Claude login | The profile was signed in to another account after its token was saved. Run `claudock profile login NAME` with the token's account, or make a new token: `claudock profile setup-token NAME`, then `pbpaste \| claudock profile set-token NAME`. |
 | Launch at login needs approval | Check System Settings → General → Login Items & Extensions. |
 
@@ -339,7 +342,7 @@ Automatic token renewal runs in the resident menu bar app. The one-shot `claudoc
 
 ## Long-lived inference tokens
 
-Open **Manage profiles → Set token…** (or **Manage token…** for an existing token). **Paste token** is selected by default. Paste a raw `sk-ant-oat01-…` token or its `export CLAUDE_CODE_OAUTH_TOKEN=…` assignment and choose **Save to Keychain**. The input is parsed as data, never executed. Import does not require a browser or a prior normal Claude login.
+Open **Manage profiles → Set token…** (or **Manage token…** for an existing token). **Paste token** is selected by default. Paste a raw `sk-ant-oat01-…` token or its `export CLAUDE_CODE_OAUTH_TOKEN=…` assignment and choose **Save to Keychain**. The input is parsed as data, never executed. Import does not require a browser or a prior normal Claude login. When a token is saved, or its status cannot be read, **Delete token** in the same sheet deletes it from Keychain after you confirm; the row's status refreshes when the sheet closes.
 
 Pasted tokens are assigned manually to the selected profile. Their provider account identity cannot be verified from the opaque value; expiry is shown as unknown unless supplied. Use the matching account's token when pairing it with a quota-monitoring login.
 
@@ -351,17 +354,20 @@ From Terminal, `claudock profile set-token NAME` saves a token the same way. It 
 claudock profile setup-token work
 pbpaste | claudock profile set-token work
 claudock profile tokens
+claudock profile clear-token work
 ```
 
 `claudock profile setup-token work` takes no other arguments and never reads the saved token, so it works whatever that token's state. `claudock run work -- setup-token` also works while `setup-token` is the first Claude argument; if a shell function of yours puts flags before it, use `profile setup-token`.
 
 `claudock profile tokens` lists each profile's token status and expiry in UTC, never the token: `none`, `active`, `expired`, `pasted-unverified`, `n/a` for Console API-key, Console-login, and unresolved profiles, or `unavailable` when Keychain cannot be read. A last line on stderr shows whether tokens are required. When a pasted token has expired, `claudock run` stops and tells you to make a new one with `profile setup-token`.
 
+`claudock profile clear-token work` deletes the token Claudock saved for the profile from Keychain and prints what it deleted. It touches only that item (`Claudock-inference-…`): Claude Code's own login and key stay, and it never reads the token. It exits with status 1 and says so when no token is saved, and, like `set-token`, it refuses Console API-key, Console-login, and unresolved profiles. Afterwards `claudock profile tokens` shows `none`, and a launch uses the profile's normal login, or, with **Require inference token to launch** on, stops with instructions to save a new token. Deleting does not revoke the token at Anthropic.
+
 A saved token remembers the account the profile was signed in to when it was saved. If the login later moves to another account, `claudock run` and the app's launches stop and say so (with the requirement below on, they report an invalid token instead): sign in again with the token's account (`claudock profile login work`), or make a new token as above.
 
 Without a token, or after a browser-created token expires, a launch uses the profile's normal Claude Code login. To rule that out, turn on **Require inference token to launch** in Settings, or run `claudock require-token on`. Then `claudock run`, managed shortcuts, **Open in Terminal**, and **Continue as…** stop with instructions whenever a subscription profile's token is missing, expired, or unreadable. `claudock profile login`, `claudock profile setup-token`, and `claudock run NAME -- setup-token` always work, even after a saved token expires or belongs to another account, so you can create a replacement, and Console API-key and Console-login profiles keep using their key or sign-in. The setting is off by default; `claudock require-token status` prints `on` or `off`.
 
-Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely.
+Saved tokens are preferred by GUI launches, managed shortcuts, and `claudock run`. They survive renames. Imported user-authored wrappers retain their previous authentication; use the copied Claudock command for those profiles. Removing a profile preserves token data and does not revoke it remotely; `profile remove` lists the token's Keychain item with the command that deletes it, and `profile clear-token` deletes it while keeping the profile.
 
 Quota monitoring still uses normal OAuth. A monitoring re-login warning does not mean an independently saved inference token has expired. Revoked or expired tokens need replacement; an unknown expiry is not a promise of unlimited validity.
 
