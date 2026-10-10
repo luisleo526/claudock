@@ -60,6 +60,26 @@ final class EndpointTests: XCTestCase {
         }
     }
 
+    func testBehavesAsIsAnOptionalFullCatalogID() throws {
+        XCTAssertNil(configuration.behavesAs)
+        for target in ["claude-sonnet-4-6", "claude-opus-4-8", "claude-3-5-haiku", "claude-fable-5-1"] {
+            XCTAssertEqual(try EndpointConfiguration(baseURL: deepseek, model: "deepseek-flash", behavesAs: target).behavesAs, target)
+        }
+        // Claude Code 2.1.296 maps only a full catalog id; an alias such as "sonnet" is ignored, so it is refused here.
+        for target in ["sonnet", "opus", "Claude-Sonnet-4-6", "claude sonnet", "claude-", "gpt-5", "claude-sonnet-4-6[1m]",
+                       "claude-" + String(repeating: "a", count: 122), ""] {
+            XCTAssertThrowsError(try EndpointConfiguration(baseURL: deepseek, model: "deepseek-flash", behavesAs: target), target) {
+                XCTAssertEqual($0 as? EndpointError, .invalidBehavesAs, target)
+            }
+        }
+        let mapped = try EndpointConfiguration(baseURL: deepseek, model: "deepseek-flash", behavesAs: "claude-sonnet-4-6")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(mapped)) as? [String: Any])
+        XCTAssertEqual(object as NSDictionary, ["baseURL": deepseek, "model": "deepseek-flash", "behavesAs": "claude-sonnet-4-6"] as NSDictionary)
+        XCTAssertEqual(try JSONDecoder().decode(EndpointConfiguration.self, from: JSONEncoder().encode(mapped)), mapped)
+        XCTAssertThrowsError(try JSONDecoder().decode(EndpointConfiguration.self, from: Data(
+            #"{"baseURL":"https://api.deepseek.com/anthropic","model":"deepseek-flash","behavesAs":"sonnet"}"#.utf8)))
+    }
+
     func testStoredConfigurationsDecodeOnlyWhenValidAndNormalised() throws {
         let decoded = try JSONDecoder().decode(EndpointConfiguration.self, from: Data(#"{"baseURL":"https://api.deepseek.com/anthropic","model":"deepseek-flash"}"#.utf8))
         XCTAssertEqual(decoded, configuration)
@@ -227,14 +247,14 @@ final class EndpointTests: XCTestCase {
             "ANTHROPIC_MODEL": "deepseek-flash", "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash", "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash", "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-flash",
             "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-flash", "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
             "E2E_UNRELATED": "kept", "PATH": "/usr/bin:/bin"])
     }
 
     func testOnlyThePinnedModelMayBeChosenOnTheCommandLine() throws {
         let allowed: [[String]] = [[], ["-p", "hi"], ["--model", "deepseek-flash"], ["--model=deepseek-flash"], ["--fallback-model", "deepseek-flash"],
                                    ["--fallback-model=deepseek-flash,deepseek-flash"], ["-p", "--model deepseek-v4-pro"],
-                                   ["--resume", "abc", "--print", "x"], ["-p", "--model"]]
+                                   ["--resume", "abc", "--print", "x"], ["-p", "--model"], ["--advisor", "deepseek-flash"]]
         for arguments in allowed {
             XCTAssertNoThrow(try EndpointLaunch.checkModelArguments(arguments, configuration: configuration), "\(arguments)")
         }
@@ -242,7 +262,8 @@ final class EndpointTests: XCTestCase {
             (["--model", "deepseek-v4-pro"], "--model"), (["-p", "x", "--model=deepseek-v4-pro"], "--model"), (["--model", "opus"], "--model"),
             (["--model", "Deepseek-Flash"], "--model"), (["--model="], "--model"), (["--model", "deepseek-flash", "--model", "sonnet"], "--model"),
             (["--fallback-model", "deepseek-v4-pro"], "--fallback-model"), (["--fallback-model=deepseek-flash,deepseek-v4-pro"], "--fallback-model"),
-            (["--fallback-model", "deepseek-flash,"], "--fallback-model"),
+            (["--fallback-model", "deepseek-flash,"], "--fallback-model"), (["--advisor", "deepseek-v4-pro"], "--advisor"),
+            (["--advisor=opus"], "--advisor"),
             // Claude Code takes `--` as the value of an option that needs one, so `--` does not end the check.
             (["--append-system-prompt", "--", "--model", "deepseek-v4-pro"], "--model"), (["-p", "--", "--model", "deepseek-v4-pro"], "--model")]
         for (arguments, option) in refused {

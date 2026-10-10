@@ -339,6 +339,8 @@ func accountDetails(_ profile: Profile, knownPlan: SubscriptionPlan?) -> (email:
             // Second and third in the list, so previews show the Console rows beside a subscription account.
             demo.insert(AccountState(profile: DemoData.apiKeyProfile, credit: DemoData.apiKeyCredit(now: now)), at: min(1, demo.count))
             demo.insert(AccountState(profile: DemoData.consoleLoginProfile, organization: DemoData.consoleOrganization), at: min(2, demo.count))
+            // Last, so the documented screenshots of the first rows stay the same.
+            demo.append(AccountState(profile: DemoData.endpointProfile))
             accounts = demo
             lastRefresh = now; nextRefresh = now.addingTimeInterval(interval)
             loadAnalytics(); statusChanged?(); return

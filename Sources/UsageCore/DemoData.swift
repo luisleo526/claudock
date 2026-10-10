@@ -10,6 +10,10 @@ public enum DemoData {
     public static let consoleLoginProfile = Profile(command: "claude-team", configDirectory: "/Users/demo/.claude-team",
                                                     managed: true, authKind: .consoleLogin)
     public static let consoleOrganization = "Demo Labs LLC"
+    /// One third-party endpoint profile, pinned to one model.
+    public static let endpointProfile = Profile(command: "claude-deepseek", configDirectory: "/Users/demo/.claude-deepseek", managed: true,
+                                                authKind: .endpoint,
+                                                endpoint: try! EndpointConfiguration(baseURL: "https://api.deepseek.com/anthropic", model: "deepseek-flash"))
 
     /// The first four previews keep their documented names; larger previews add numbered profiles.
     public static func profiles(count: Int) -> [Profile] {

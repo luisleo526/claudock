@@ -1,7 +1,7 @@
 import Foundation
 
 public enum EndpointError: Error, LocalizedError, Equatable {
-    case invalidBaseURL, invalidModel
+    case invalidBaseURL, invalidModel, invalidBehavesAs
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +10,8 @@ public enum EndpointError: Error, LocalizedError, Equatable {
                 + "without a user name, password, query, or fragment."
         case .invalidModel:
             return "Use one model id of letters, digits, and . _ : / - (at most 128 characters), optionally ending in [1m], such as deepseek-flash."
+        case .invalidBehavesAs:
+            return "--behaves-as takes the full id of a model Claude Code knows, such as claude-sonnet-4-6, or none; an alias such as sonnet does not work."
         }
     }
 }
@@ -21,11 +23,20 @@ public struct EndpointConfiguration: Codable, Hashable, Sendable {
     public let baseURL: String
     /// The model id the endpoint serves, sent as is. A `[1m]` suffix asks Claude Code for its one-million-token context.
     public let model: String
+    /// A model in Claude Code's catalog whose handling (prompt, limits, context window) Claude Code applies to `model`,
+    /// through a `modelPicker` row's `behavesAs`; nil leaves Claude Code treating the model as unknown.
+    public let behavesAs: String?
 
-    public init(baseURL: String, model: String) throws {
+    public init(baseURL: String, model: String, behavesAs: String? = nil) throws {
         self.baseURL = try Self.validatedBaseURL(baseURL)
         self.model = try Self.validatedModel(model)
+        self.behavesAs = try behavesAs.map(Self.validatedBehavesAs)
     }
+
+    /// Whether the model asks Claude Code for its one-million-token context (`[1m]`).
+    public var isOneMillionTokens: Bool { model.hasSuffix("[1m]") }
+    /// The model id without `[1m]`: what Claude Code sends to the endpoint.
+    public var baseModel: String { isOneMillionTokens ? String(model.dropLast(4)) : model }
 
     /// The host, with its port when the URL names one, for display.
     public var host: String {
@@ -58,14 +69,30 @@ public struct EndpointConfiguration: Codable, Hashable, Sendable {
         return raw
     }
 
-    private enum CodingKeys: String, CodingKey { case baseURL, model }
+    /// Claude Code 2.1.296 maps a model only to a full catalog id (`claude-sonnet-4-6`), never an alias (`sonnet`).
+    public static func validatedBehavesAs(_ raw: String) throws -> String {
+        guard raw.utf8.count <= 128, raw.range(of: #"\Aclaude-[a-z0-9][a-z0-9.-]*\z"#, options: .regularExpression) != nil else {
+            throw EndpointError.invalidBehavesAs
+        }
+        return raw
+    }
+
+    private enum CodingKeys: String, CodingKey { case baseURL, model, behavesAs }
 
     /// A stored endpoint must already be valid and normalised; anything else makes the registry invalid.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let baseURL = try values.decode(String.self, forKey: .baseURL)
-        try self.init(baseURL: baseURL, model: values.decode(String.self, forKey: .model))
+        try self.init(baseURL: baseURL, model: values.decode(String.self, forKey: .model),
+                      behavesAs: values.decodeIfPresent(String.self, forKey: .behavesAs))
         guard self.baseURL == baseURL else { throw EndpointError.invalidBaseURL }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(baseURL, forKey: .baseURL)
+        try values.encode(model, forKey: .model)
+        try values.encodeIfPresent(behavesAs, forKey: .behavesAs)
     }
 }
 
@@ -129,10 +156,19 @@ public struct EndpointAPIKey: Equatable, Sendable, CustomStringConvertible, Cust
 public enum EndpointLaunchError: Error, LocalizedError, Equatable {
     /// `option` named a model other than `pinned`.
     case modelNotAllowed(option: String, pinned: String)
+    /// The `--settings` given to Claude Code sets this key, which the profile pins (`env.NAME` for a variable).
+    case settingsConflict(String)
+    /// The `--settings` given to Claude Code is neither a JSON object nor a readable file that holds one.
+    case settingsUnreadable
+    /// `--settings` was given more than once; Claude Code would silently keep only the last.
+    case settingsRepeated
 
     public var errorDescription: String? {
         switch self {
         case .modelNotAllowed(let option, let pinned): return "This profile is pinned to the model \(pinned); \(option) can name only that model."
+        case .settingsConflict(let key): return "--settings sets \(key), which this endpoint profile pins."
+        case .settingsUnreadable: return "--settings must be a JSON object, or the path of a readable file that holds one."
+        case .settingsRepeated: return "Pass --settings once; Claude Code would keep only the last one."
         }
     }
 }
@@ -147,24 +183,117 @@ public enum EndpointLaunch {
     /// `isolated`, which `LaunchCommand.environment` has cleared of inherited credentials, providers, and models, plus the
     /// endpoint: its URL, the key as a bearer token (`ANTHROPIC_AUTH_TOKEN`; `ANTHROPIC_API_KEY` would make an
     /// interactive Claude Code ask to approve it), the pinned model in every slot, and no nonessential traffic.
+    /// Claude Code's default model is the Opus one with `[1m]`, so a model pinned without `[1m]` turns the
+    /// one-million-token context off and keeps that default the pinned id; one pinned with `[1m]` keeps it on.
     /// Inherited telemetry settings go too: a third-party session is not reported to anyone.
     public static func environment(_ isolated: [String: String], configuration: EndpointConfiguration, key: String) -> [String: String] {
         var result = isolated.filter { !APICreditCapture.isTelemetryKey($0.key) }
-        result["ANTHROPIC_BASE_URL"] = configuration.baseURL
+        for (name, value) in settingsEnvironment(configuration) where !value.isEmpty { result[name] = value }
+        if configuration.isOneMillionTokens { result.removeValue(forKey: oneMillionSwitch) }
         result["ANTHROPIC_AUTH_TOKEN"] = key
-        for name in modelVariables { result[name] = configuration.model }
-        result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-        result["DISABLE_NON_ESSENTIAL_MODEL_CALLS"] = "1"
         return result
     }
 
-    /// Refuses `--model X`, `--model=X`, `--fallback-model X[,Y…]`, and `--fallback-model=X[,Y…]` unless every model they
-    /// name is the pinned one. Every argument is checked, after a `--` too: Claude Code takes the argument after an
-    /// option that needs a value as that value, even `--`, so a `--` does not reliably end its options.
+    static let oneMillionSwitch = "CLAUDE_CODE_DISABLE_1M_CONTEXT"
+
+    /// The variables `--settings` repeats in its `env`. Claude Code copies each settings file's `env` over its process
+    /// environment, lowest first, and `--settings` ranks above user, project, and local settings, so no settings file
+    /// below managed settings can point the session elsewhere or choose another model. A blank `ANTHROPIC_API_KEY` and
+    /// `ANTHROPIC_CUSTOM_HEADERS` keep a settings file's Anthropic key or headers from travelling to the endpoint with the
+    /// endpoint key. The key itself is never here: arguments are visible to other processes.
+    static func settingsEnvironment(_ configuration: EndpointConfiguration) -> [String: String] {
+        var result = ["ANTHROPIC_BASE_URL": configuration.baseURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                      // Claude Code 2.1.296 reads no such variable; it is set for versions that do.
+                      "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+                      oneMillionSwitch: configuration.isOneMillionTokens ? "" : "1", "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": ""]
+        for name in modelVariables { result[name] = configuration.model }
+        return result
+    }
+
+    /// `arguments` with Claudock's `--settings` first: the user's own `--settings`, if Claude Code would read one, merged
+    /// into it and taken out. The object pins the model for interactive choice too: `availableModels` makes `/model` and
+    /// the model picker refuse other models (it matches by prefix, so the id without `[1m]` admits both forms), and with
+    /// `behavesAs` a single `modelPicker` row maps the pinned id to a model Claude Code knows.
+    public static func arguments(_ arguments: [String], configuration: EndpointConfiguration, workingDirectory: String) throws -> [String] {
+        let given = ClaudeCommandLine.options(in: arguments).filter { $0.name == "--settings" }
+        guard given.count <= 1 else { throw EndpointLaunchError.settingsRepeated }
+        var rest = arguments, user: [String: Any]?
+        if let option = given.first {
+            guard let value = option.value else { throw EndpointLaunchError.settingsUnreadable }
+            user = try userSettings(value, workingDirectory: workingDirectory)
+            for index in option.indices.sorted(by: >) { rest.remove(at: index) }
+        }
+        return ["--settings", try settings(configuration, merging: user)] + rest
+    }
+
+    /// As Claude Code reads `--settings`: trimmed text in braces is JSON, anything else a file path from the working directory.
+    private static func userSettings(_ value: String, workingDirectory: String) throws -> [String: Any] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data: Data?
+        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") { data = Data(trimmed.utf8) }
+        else if !trimmed.isEmpty { data = BoundedFile.read(trimmed.hasPrefix("/") ? trimmed : workingDirectory + "/" + trimmed, limit: 1_048_576) }
+        else { data = nil }
+        guard let data, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw EndpointLaunchError.settingsUnreadable
+        }
+        return object
+    }
+
+    static func settings(_ configuration: EndpointConfiguration, merging user: [String: Any]?) throws -> String {
+        var object = user ?? [:]
+        try refuseConflicts(object, configuration: configuration)
+        var environment = object["env"] as? [String: Any] ?? [:]
+        for (name, value) in settingsEnvironment(configuration) { environment[name] = value }
+        object["env"] = environment
+        object["availableModels"] = [configuration.baseModel]
+        if let behavesAs = configuration.behavesAs {
+            object["modelPicker"] = ["replaceBuiltInOptions": true,
+                                     "options": [["model": configuration.model, "label": configuration.model,
+                                                  "description": "Pinned by Claudock · \(configuration.host)", "behavesAs": behavesAs]]]
+        }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// A user's settings may not choose another model, endpoint, or credential: those keys must be absent, blank, or
+    /// the pinned values.
+    private static func refuseConflicts(_ object: [String: Any], configuration: EndpointConfiguration) throws {
+        let pinned = configuration.model
+        func models(_ value: Any) -> [String]? { (value as? String).map { [$0] } ?? value as? [String] }
+        if let value = object["model"], models(value) != [pinned] { throw EndpointLaunchError.settingsConflict("model") }
+        if let value = object["availableModels"],
+           !(models(value).map { value is [String] && $0.allSatisfy { [pinned, configuration.baseModel].contains($0) } } ?? false) {
+            throw EndpointLaunchError.settingsConflict("availableModels")
+        }
+        if let value = object["fallbackModel"], !(models(value)?.allSatisfy { $0 == pinned } ?? false) {
+            throw EndpointLaunchError.settingsConflict("fallbackModel")
+        }
+        if let value = object["advisorModel"], models(value) != [pinned] { throw EndpointLaunchError.settingsConflict("advisorModel") }
+        for key in ["modelOverrides", "modelPicker"] where object[key] != nil { throw EndpointLaunchError.settingsConflict(key) }
+        if let helper = object["apiKeyHelper"], (helper as? String)?.isEmpty != true { throw EndpointLaunchError.settingsConflict("apiKeyHelper") }
+        guard let value = object["env"] else { return }
+        guard let environment = value as? [String: Any] else { throw EndpointLaunchError.settingsConflict("env") }
+        let pinnedEnvironment = settingsEnvironment(configuration)
+        for (name, value) in environment.sorted(by: { $0.key < $1.key }) {
+            if let expected = pinnedEnvironment[name] {
+                guard (value as? String) == expected else { throw EndpointLaunchError.settingsConflict("env." + name) }
+            } else if LaunchCommand.clearedEnvironment.contains(name), (value as? String)?.isEmpty != true {
+                // Every credential, provider, and model variable a launch clears.
+                throw EndpointLaunchError.settingsConflict("env." + name)
+            }
+        }
+    }
+
+    /// Claude Code's options that name a model: the session's, its fallbacks (comma-separated), and the advisor's.
+    static let modelOptions = ["--model", "--fallback-model", "--advisor"]
+
+    /// Refuses `--model X`, `--fallback-model X[,Y…]`, `--advisor X`, and their `=` forms unless every model they name is
+    /// the pinned one. Every argument is checked, after a `--` too: Claude Code takes the argument after an option that
+    /// needs a value as that value, even `--`, so a `--` does not reliably end its options.
     public static func checkModelArguments(_ arguments: [String], configuration: EndpointConfiguration) throws {
         var index = 0
         while index < arguments.count {
-            for option in ["--model", "--fallback-model"] {
+            for option in modelOptions {
                 let value: String
                 if arguments[index] == option {
                     // Without a value Claude Code reports the missing argument itself and starts nothing.

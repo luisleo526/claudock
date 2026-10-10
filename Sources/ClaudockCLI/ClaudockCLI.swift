@@ -8,6 +8,10 @@ private enum CLIError: LocalizedError {
     case tokenAccountMismatch(String), consoleSignIn(String), subscriptionConsoleSignIn(String), consoleLoginToken(String), noToken(String)
     /// `endpointModel(NAME, OPTION, PINNED)`: a launch argument chose a model other than the pinned one.
     case endpointModel(String, String, String), missingEndpointKey(String), endpointSignIn(String), endpointToken(String), notEndpoint(String)
+    /// `endpointSettings(NAME, DETAIL)`: the user's `--settings` cannot be merged into the pinned ones.
+    case endpointSettings(String, String)
+    /// `endpointSession(NAME, SESSION, MODELS, HOST)`: the session to resume has replies from other models.
+    case endpointSession(String, String, [String], String)
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +42,12 @@ private enum CLIError: LocalizedError {
         case .endpointToken(let name): return "'\(name)' uses a third-party endpoint with its own key. Inference tokens are only for Claude subscription profiles."
         case .notEndpoint(let name):
             return "'\(name)' is not a third-party endpoint profile. Add one with: claudock profile add NAME --endpoint URL --model MODEL"
+        case .endpointSettings(let name, let detail):
+            return "\(name): \(detail) Claudock passes its own --settings to pin the endpoint's model; keep other settings in yours."
+        case .endpointSession(let name, let session, let models, let host):
+            return "\(name) runs on \(host), but the session \(session) has replies from \(models.joined(separator: ", ")). "
+                + "A long session made with other models can fail there, for example when Claude Code compacts it. "
+                + "Start a new session, or resume it anyway with: claudock run \(name) \(Command.crossProviderResume) -- CLAUDE_ARGS"
         case .consoleSignIn(let name): return "\(name) is not signed in to a Console account. Sign in with: claudock profile login \(name)"
         case .subscriptionConsoleSignIn(let name):
             return "'\(name)' is a Claude subscription profile and signs in with: claudock profile login \(name). "
@@ -57,8 +67,9 @@ private enum Command {
     case help, version, list, importShell
     case add(String, String?), addAPIKey(String, String?), addConsoleLogin(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
     case addEndpoint(String, EndpointConfiguration)
-    /// `setEndpoint(NAME, URL, MODEL)`: nil keeps that part; with neither, the endpoint is shown.
-    case setEndpoint(String, String?, String?)
+    /// `setEndpoint(NAME, URL, MODEL, BEHAVES_AS)`: nil keeps that part (`.some(nil)` clears the mapping); with
+    /// none given, the endpoint is shown.
+    case setEndpoint(String, String?, String?, String??)
     case clearToken(String)
     case setCredit(String, Decimal)
     /// `login(NAME, console)`: `--console` asks for an Anthropic Console sign-in.
@@ -165,7 +176,7 @@ private enum Command {
     /// or --endpoint it is read from standard input.
     private static func add(name value: String, options: [String]) throws -> Command {
         let name = try newName(value)
-        var kinds: [String] = [], directory: String?, endpoint: String?, model: String?
+        var kinds: [String] = [], directory: String?, endpoint: String?, model: String?, behavesAs: String?
         var index = 0
         while index < options.count {
             let option = options[index]
@@ -173,8 +184,10 @@ private enum Command {
                 throw CLIError.arguments("Choose only one of --api-key, --console, or --endpoint.")
             } else if ["--api-key", "--console"].contains(option), !kinds.contains(option) {
                 kinds.append(option); index += 1
-            } else if ["--endpoint", "--model"].contains(option), index + 1 >= options.count {
-                throw CLIError.arguments("\(option) needs a value: claudock profile add NAME --endpoint URL --model MODEL.")
+            } else if ["--endpoint", "--model", "--behaves-as"].contains(option), index + 1 >= options.count {
+                throw CLIError.arguments("\(option) needs a value: claudock profile add NAME --endpoint URL --model MODEL [--behaves-as CATALOG_MODEL].")
+            } else if option == "--behaves-as", behavesAs == nil {
+                behavesAs = try catalogModel(options[index + 1]); index += 2
             } else if option == "--endpoint", endpoint == nil {
                 endpoint = try endpointURL(options[index + 1]); kinds.append(option); index += 2
             } else if option == "--model", model == nil {
@@ -194,26 +207,34 @@ private enum Command {
         if let endpoint {
             guard let model else { throw CLIError.arguments("--endpoint needs --model MODEL, the one model the profile is pinned to.") }
             guard directory == nil else { throw CLIError.arguments("An endpoint profile gets a config folder of its own; --directory does not combine with --endpoint.") }
-            return .addEndpoint(name, try EndpointConfiguration(baseURL: endpoint, model: model))
+            return .addEndpoint(name, try EndpointConfiguration(baseURL: endpoint, model: model, behavesAs: behavesAs))
         }
-        guard model == nil else { throw CLIError.arguments("--model goes with --endpoint URL: claudock profile add NAME --endpoint URL --model MODEL.") }
+        guard model == nil, behavesAs == nil else {
+            throw CLIError.arguments("--model and --behaves-as go with --endpoint URL: claudock profile add NAME --endpoint URL --model MODEL.")
+        }
         return kinds == ["--api-key"] ? .addAPIKey(name, directory) : kinds == ["--console"] ? .addConsoleLogin(name, directory) : .add(name, directory)
     }
 
-    /// `profile set-endpoint NAME [--endpoint URL] [--model MODEL]`; with neither, the command shows the endpoint.
+    /// `profile set-endpoint NAME [--endpoint URL] [--model MODEL] [--behaves-as CATALOG_MODEL|none]`; with none of
+    /// them, the command shows the endpoint.
     private static func setEndpoint(selector value: String, options: [String]) throws -> Command {
         let selector = try name(value)
-        var endpoint: String?, model: String?
+        var endpoint: String?, model: String?, behavesAs: String??
         var index = 0
         while index < options.count {
             let option = options[index]
-            guard (option == "--endpoint" && endpoint == nil) || (option == "--model" && model == nil), index + 1 < options.count else {
-                throw CLIError.arguments("Use: claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL].")
+            guard (option == "--endpoint" && endpoint == nil) || (option == "--model" && model == nil)
+                    || (option == "--behaves-as" && behavesAs == nil), index + 1 < options.count else {
+                throw CLIError.arguments("Use: claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL] [--behaves-as CATALOG_MODEL|none].")
             }
-            if option == "--endpoint" { endpoint = try endpointURL(options[index + 1]) } else { model = try modelID(options[index + 1]) }
+            switch option {
+            case "--endpoint": endpoint = try endpointURL(options[index + 1])
+            case "--model": model = try modelID(options[index + 1])
+            default: behavesAs = .some(options[index + 1] == "none" ? nil : try catalogModel(options[index + 1]))
+            }
             index += 2
         }
-        return .setEndpoint(selector, endpoint, model)
+        return .setEndpoint(selector, endpoint, model, behavesAs)
     }
 
     /// The input is never echoed: it may be a key typed in the wrong place.
@@ -225,6 +246,11 @@ private enum Command {
     private static func modelID(_ value: String) throws -> String {
         do { return try EndpointConfiguration.validatedModel(value) }
         catch { throw CLIError.arguments(EndpointError.invalidModel.localizedDescription) }
+    }
+
+    private static func catalogModel(_ value: String) throws -> String {
+        do { return try EndpointConfiguration.validatedBehavesAs(value) }
+        catch { throw CLIError.arguments(EndpointError.invalidBehavesAs.localizedDescription) }
     }
 
     /// `usage [--max-age SECONDS | --fresh]`: 180 seconds by default, 0 to 86400, and `--fresh` for 0.
@@ -297,7 +323,7 @@ private struct ClaudockCLI {
     /// Usage errors and launches refused for their arguments exit 2, before anything starts.
     private static func isArgumentError(_ error: Error) -> Bool {
         switch error as? CLIError {
-        case .arguments?, .endpointModel?: return true
+        case .arguments?, .endpointModel?, .endpointSettings?, .endpointSession?: return true
         default: return false
         }
     }
@@ -314,7 +340,7 @@ private struct ClaudockCLI {
                     : profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login"
                     : profile.authKind == .endpoint ? "endpoint" : profile.managed ? "managed" : "imported"
                 // The host and pinned model, never the key.
-                let endpoint = profile.endpoint.map { "\($0.host) · \($0.model)" } ?? "-"
+                let endpoint = profile.endpoint.map { "\($0.host) · \($0.model)" + ($0.behavesAs.map { " · behaves as " + $0 } ?? "") } ?? "-"
                 print([profile.name, profile.command, kind, profile.configDirectory, endpoint].map(field).joined(separator: "\t"))
             }
         case .importShell:
@@ -337,16 +363,20 @@ private struct ClaudockCLI {
                   + "with its key saved in Keychain. Start it with: claudock run \(profile.name)")
             print("Its first interactive launch asks whether you trust the folder. If Claude Code asks to make auto mode your default "
                   + "permission mode, choose No: the answer would change the settings every profile shares.")
-        case .setEndpoint(let name, let url, let model):
+        case .setEndpoint(let name, let url, let model, let behavesAs):
             let profile = try resolve(name)
             guard profile.authKind.isEndpoint, let current = profile.endpoint else { throw CLIError.notEndpoint(profile.name) }
-            guard url != nil || model != nil else {
-                print("\(profile.name) uses the third-party endpoint \(current.baseURL) with the model \(current.model).")
-                print("Change them with: claudock profile set-endpoint \(profile.name) [--endpoint URL] [--model MODEL]")
+            guard url != nil || model != nil || behavesAs != nil else {
+                print("\(profile.name) uses the third-party endpoint \(current.baseURL) with the model \(current.model)"
+                      + (current.behavesAs.map { ", which behaves as \($0)." } ?? "."))
+                print("Change them with: claudock profile set-endpoint \(profile.name) [--endpoint URL] [--model MODEL] [--behaves-as CATALOG_MODEL|none]")
                 return
             }
-            let changed = try ProfileStore.setEndpoint(EndpointConfiguration(baseURL: url ?? current.baseURL, model: model ?? current.model), for: profile)
-            print("\(changed.name) now uses \(changed.endpoint?.baseURL ?? "-") with the model \(changed.endpoint?.model ?? "-"). Its key was kept.")
+            let changed = try ProfileStore.setEndpoint(EndpointConfiguration(baseURL: url ?? current.baseURL, model: model ?? current.model,
+                                                                             behavesAs: behavesAs ?? current.behavesAs), for: profile)
+            guard let endpoint = changed.endpoint else { throw CLIError.notEndpoint(changed.name) }
+            print("\(changed.name) now uses \(endpoint.baseURL) with the model \(endpoint.model)"
+                  + (endpoint.behavesAs.map { ", which behaves as \($0)" } ?? "") + ". Its key was kept.")
         case .addConsoleLogin(let name, let directory):
             let profile = try ProfileStore.addConsoleLoginProfile(name: name, configDirectory: directory)
             print("Added \(profile.name). Sign in to its Anthropic Console account in your browser. "
@@ -576,9 +606,23 @@ private struct ClaudockCLI {
     private static func launch(profile: Profile, arguments: [String], signIn: Bool = false, notice: String? = nil,
                                allowCrossProviderResume: Bool = false) throws {
         // An endpoint launch's arguments are checked before anything else is read, so a refused one starts nothing.
+        var claudeArguments = arguments
         if profile.authKind.isEndpoint, !signIn, let endpoint = profile.endpoint {
             do { try EndpointLaunch.checkModelArguments(arguments, configuration: endpoint) }
             catch EndpointLaunchError.modelNotAllowed(let option, let pinned) { throw CLIError.endpointModel(profile.name, option, pinned) }
+            let directory = FileManager.default.currentDirectoryPath
+            do { claudeArguments = try EndpointLaunch.arguments(arguments, configuration: endpoint, workingDirectory: directory) }
+            catch let error as EndpointLaunchError { throw CLIError.endpointSettings(profile.name, error.localizedDescription) }
+            if !allowCrossProviderResume {
+                switch EndpointSession.check(arguments: arguments, workingDirectory: directory, configDirectory: profile.configDirectory,
+                                             environment: ProcessInfo.processInfo.environment, pinned: endpoint.model) {
+                case .otherModels(let session, let models): throw CLIError.endpointSession(profile.name, session, models, endpoint.host)
+                case .uncheckable:
+                    writeError("\(profile.name): the session picker or a remote session can load a session other models replied in, which can "
+                               + "fail on \(endpoint.host); Claudock checks only --continue and --resume with a session ID, title, or .jsonl path.")
+                case .clear: break
+                }
+            }
         }
         guard let executable = ClaudeExecutable.find() else { throw CLIError.missingExecutable }
         var environment = try LaunchCommand.environment(profile: profile, inherited: ProcessInfo.processInfo.environment)
@@ -607,7 +651,7 @@ private struct ClaudockCLI {
         case .inferenceToken(let token): environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
         case .profileLogin: break
         }
-        let argumentStrings = [executable] + arguments
+        let argumentStrings = [executable] + claudeArguments
         guard argumentStrings.allSatisfy({ !$0.contains("\0") }), environment.allSatisfy({ !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
             throw CLIError.invalidEnvironment
         }
@@ -628,7 +672,7 @@ private struct ClaudockCLI {
         if counted {
             // A child process instead of execve: Claude Code reports each request's cost to Claudock while it runs.
             do {
-                exit(try APICreditLaunch.run(profile: profile, executable: executable, arguments: arguments, environment: environment,
+                exit(try APICreditLaunch.run(profile: profile, executable: executable, arguments: claudeArguments, environment: environment,
                                              warn: writeError))
             } catch APICreditLaunchError.receiverUnavailable {
                 writeError("Could not start Claudock's local usage receiver; this run's spend is not counted toward the Console credit.")
@@ -828,9 +872,9 @@ private struct ClaudockCLI {
       claudock profile add NAME [--directory ABS_PATH]
       claudock profile add NAME --api-key [--directory ABS_PATH]
       claudock profile add NAME --console [--directory ABS_PATH]
-      claudock profile add NAME --endpoint URL --model MODEL
+      claudock profile add NAME --endpoint URL --model MODEL [--behaves-as CATALOG_MODEL]
       claudock profile set-key NAME
-      claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL]
+      claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL] [--behaves-as CATALOG_MODEL]
       claudock profile set-credit NAME AMOUNT
       claudock profile set-token NAME [--expires ISO8601_DATE]
       claudock profile setup-token NAME
@@ -909,10 +953,21 @@ private struct ClaudockCLI {
     An Anthropic key (sk-ant-…) is refused. The key is stored only in the macOS
     Keychain and reaches Claude as ANTHROPIC_AUTH_TOKEN, with the URL as
     ANTHROPIC_BASE_URL and MODEL pinned in every model slot; 'run' refuses a
-    --model or --fallback-model that names another model. 'profile set-endpoint'
-    changes the URL or the model and keeps the key; 'profile set-key' replaces
-    the key. These profiles have no Claude sign-in, inference token, or Console
-    credit; 'usage' and 'available' print a note instead of a row.
+    --model, --fallback-model, or --advisor that names another model, and
+    passes Claude Code a --settings object whose availableModels makes /model
+    refuse other models too. A --settings of your own is merged into it, unless
+    it sets the model, endpoint, or a credential. --behaves-as CATALOG_MODEL
+    (a full id such as claude-sonnet-4-6; none removes it) lets Claude Code
+    treat MODEL like that model: its prompt, limits, and context window.
+    'profile set-endpoint' changes the URL, the model, or --behaves-as and keeps
+    the key; 'profile set-key' replaces the key. These profiles have no Claude
+    sign-in, inference token, or Console credit; 'usage' and 'available' print a
+    note instead of a row.
+    Sessions are shared by every profile, and a long one made with other models
+    can fail on an endpoint. So 'run' refuses to resume, with --continue or
+    --resume, a session in which another model replied, unless it is given
+    --allow-cross-provider-resume before '--'. The session picker (--resume
+    without a value) cannot be checked first, and prints a warning.
 
     Console credit: 'profile set-credit NAME AMOUNT' records the remaining
     prepaid credit shown in the Claude Console for an API-key or Console-login

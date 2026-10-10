@@ -18,6 +18,8 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 
 from claudock_e2e import (PROJECT, Checks, Sandbox, build_cli, check_removal, clean_up_on_termination, credential_service,
                           endpoint_key_service, inference_service, keychain_item_exists, preflight, read_policy_preference,
@@ -55,7 +57,34 @@ def endpoint_environment(sandbox, extra, profile, key, url=URL, model=MODEL):
                      "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model,
                      "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                      "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1"})
+    # Claude Code's default model is the Opus one with [1m]; a plain pin turns that window off, a [1m] pin keeps it.
+    if model.endswith("[1m]"):
+        expected.pop("CLAUDE_CODE_DISABLE_1M_CONTEXT", None)
+    else:
+        expected["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
     return expected
+
+
+def pinned_settings(url=URL, model=MODEL, behaves_as=None, host=HOST, extra=None):
+    """The --settings object a launch must pass: the allowlist, the endpoint's variables, and a picker row for behaves-as."""
+    environment = {"ANTHROPIC_BASE_URL": url, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+                   "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1", "ANTHROPIC_API_KEY": "",
+                   "ANTHROPIC_CUSTOM_HEADERS": ""}
+    for name in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                 "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
+        environment[name] = model
+    settings = dict(extra or {})
+    settings["env"] = {**settings.get("env", {}), **environment}
+    settings["availableModels"] = [model.removesuffix("[1m]")]
+    if behaves_as:
+        settings["modelPicker"] = {"replaceBuiltInOptions": True, "options": [
+            {"model": model, "label": model, "description": f"Pinned by Claudock · {host}", "behavesAs": behaves_as}]}
+    return settings
+
+
+def recorded_settings(record):
+    argv = record["argv"]
+    return json.loads(argv[1]) if argv[:1] == ["--settings"] and len(argv) > 1 else None
 
 
 def recorded_environment(record):
@@ -139,6 +168,9 @@ def launches(sandbox, checks, profile, key):
     checks.expect(record["cwd"] == str(sandbox.base), "run must keep the working directory")
     checks.expect(key not in everything_printed(result), "a launch must not print the key")
     checks.done("run sets exactly the endpoint environment over a hostile parent, keeps unrelated variables and literal arguments")
+    checks.expect(recorded_settings(record) == pinned_settings(),
+                  f"run must pass exactly one --settings that pins the model, got {record['argv'][:2]!r}")
+    checks.done("run passes one --settings with availableModels and the endpoint's variables, never the key")
 
     # claude-deepseek shortcuts call `run claude-deepseek`; Open in Terminal and Continue as… call launch-bound.
     for arguments in (("run", "claude-deepseek", "--", "-p", "x"),
@@ -170,6 +202,140 @@ def launches(sandbox, checks, profile, key):
     checks.expect(result.returncode == 0 and record is not None and record["env"].get("ANTHROPIC_AUTH_TOKEN") == key
                   and "CLAUDE_CODE_OAUTH_TOKEN" not in record["env"], "require-token on must not block an endpoint launch", result)
     checks.done("require-token on does not block endpoint profiles")
+
+
+def user_settings(sandbox, checks):
+    """A --settings of the user's own is merged into Claudock's one; one that would change the model, the endpoint, or a
+    credential, or that Claude Code would not read whole, is refused before launch."""
+    inline = {"permissions": {"allow": ["Bash(ls)"]}, "env": {"E2E_SETTING": "kept"}}
+    result = sandbox.run("run", "deepseek", "--", "-p", "x", "--settings", json.dumps(inline))
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None, "a launch with the user's own --settings must start", result)
+    checks.expect(claude_arguments(record) == ["-p", "x"], f"the user's --settings must be taken out, got {record['argv']!r}")
+    checks.expect(recorded_settings(record) == pinned_settings(extra=inline), "the user's settings must be merged into the one --settings")
+    (sandbox.base / "e2e-settings.json").write_text(json.dumps({"outputStyle": "Explanatory", "model": MODEL}))
+    result = sandbox.run("run", "deepseek", "--", "--settings=e2e-settings.json", "-p", "x")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == ["-p", "x"]
+                  and recorded_settings(record) == pinned_settings(extra={"outputStyle": "Explanatory", "model": MODEL}),
+                  "a settings file named relative to the working directory must be merged too", result)
+    checks.done("a user's own --settings, inline or a file, is merged into the one Claudock passes")
+
+    for value, key in ((json.dumps({"model": "deepseek-v4-pro"}), "model"),
+                       (json.dumps({"availableModels": ["deepseek-v4-pro"]}), "availableModels"),
+                       (json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://elsewhere.example"}}), "env.ANTHROPIC_BASE_URL"),
+                       (json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-ant-api03-e2e-synthetic"}}), "env.ANTHROPIC_API_KEY"),
+                       (json.dumps({"modelOverrides": {"claude-sonnet-4-6": "deepseek-v4-pro"}}), "modelOverrides")):
+        result = sandbox.run("run", "deepseek", "--", "--settings", value, "-p", "x")
+        checks.expect(result.returncode == 2 and sandbox.record() is None and key in result.stderr, f"--settings setting {key} must be refused", result)
+        checks.expect("v4-pro" not in result.stderr and "sk-ant" not in result.stderr, "the refusal must not echo the setting's value", result)
+    for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}")):
+        result = sandbox.run("run", "deepseek", "--", *arguments)
+        checks.expect(result.returncode == 2 and sandbox.record() is None, f"--settings {' '.join(arguments[1:])} must be refused", result)
+    checks.done("a user's --settings that changes the model, endpoint, or key, or that cannot be read once, is refused before launch")
+
+
+def behaves_as(sandbox, checks, key):
+    result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", "claude-sonnet-4-6")
+    checks.expect(result.returncode == 0, "set-endpoint --behaves-as must accept a catalog id", result)
+    listed = sandbox.listed()["deepseek"]["endpoint"]
+    checks.expect(listed == f"{HOST} · {MODEL} · behaves as claude-sonnet-4-6", f"profile list must show the mapping, got {listed!r}")
+    stored = next(entry for entry in json.loads(sandbox.registry_path.read_text())["profiles"] if entry["command"] == "claude-deepseek")
+    checks.expect(stored["endpoint"] == {"baseURL": URL, "model": MODEL, "behavesAs": "claude-sonnet-4-6"}, f"the registry must keep it, got {stored!r}")
+    result = sandbox.run("run", "deepseek", "--", "-p", "x")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and recorded_settings(record) == pinned_settings(behaves_as="claude-sonnet-4-6")
+                  and record["env"].get("ANTHROPIC_AUTH_TOKEN") == key, "the launch must add the one picker row that maps the model", result)
+    for value in ("sonnet", "claude-sonnet-4-6[1m]", ""):
+        result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", value)
+        checks.expect(result.returncode == 2, f"--behaves-as {value!r} must be a usage error", result)
+    result = sandbox.run("profile", "set-endpoint", "deepseek", "--behaves-as", "none")
+    record = sandbox.run("run", "deepseek") and sandbox.record()
+    checks.expect(result.returncode == 0 and sandbox.listed()["deepseek"]["endpoint"] == f"{HOST} · {MODEL}"
+                  and record is not None and recorded_settings(record) == pinned_settings(), "--behaves-as none must remove the mapping", result)
+    mapped_key = synthetic_key()
+    result = sandbox.run("profile", "add", "mapped", "--endpoint", URL, "--model", MODEL, "--behaves-as", "claude-opus-4-8", stdin=mapped_key)
+    checks.expect(result.returncode == 0, "profile add must accept --behaves-as", result)
+    mapped = sandbox.listed()["mapped"]
+    sandbox.track(endpoint_key_service(mapped))
+    checks.expect(mapped["endpoint"] == f"{HOST} · {MODEL} · behaves as claude-opus-4-8", f"the added mapping must be listed, got {mapped!r}")
+    checks.done("--behaves-as maps the pinned model for Claude Code's catalog through one picker row, and none removes it")
+
+
+def project_folder(sandbox):
+    """Where Claude Code 2.1.296 keeps the sessions of the sandbox's working directory: its real path with every character
+    that is not an ASCII letter or digit as '-', under the history every profile shares."""
+    return sandbox.home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(sandbox.base))
+
+
+def write_session(sandbox, folder, models, age, session_id=None):
+    """A compact transcript like Claude Code's: a user line, then one assistant line per model."""
+    session_id = session_id or str(uuid.uuid4())
+    entries = [{"parentUuid": None, "isSidechain": False, "type": "user", "uuid": f"u-{session_id}", "sessionId": session_id,
+                "cwd": str(sandbox.base), "message": {"role": "user", "content": "e2e-transcript-text question"}}]
+    entries += [{"parentUuid": f"u-{session_id}", "isSidechain": False, "type": "assistant", "uuid": f"a{index}-{session_id}",
+                 "sessionId": session_id, "cwd": str(sandbox.base),
+                 "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "e2e-transcript-text answer"}]}}
+                for index, model in enumerate(models)]
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{session_id}.jsonl"
+    path.write_text("".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries))
+    stamp = time.time() - 3600 + age
+    os.utime(path, (stamp, stamp))
+    return session_id, path
+
+
+def resume_guard(sandbox, checks, profile):
+    folder = project_folder(sandbox)
+    claude_id, claude_path = write_session(sandbox, folder, ["claude-opus-5-5", "<synthetic>"], age=10)
+    own_id, own_path = write_session(sandbox, folder, [MODEL], age=20)
+    bound = ("launch-bound", sandbox.registry_id("deepseek"), credential_service(profile), "run", "--")
+    for arguments in (("run", "deepseek", "--", "--resume", claude_id), ("run", "deepseek", "--", "-r", claude_id),
+                      ("run", "deepseek", "--", f"--resume={claude_id}", "-p", "go on"),
+                      ("run", "claude-deepseek", "--", "--resume", str(claude_path), "--fork-session"),
+                      (*bound, "--resume", str(claude_path), "--fork-session")):
+        result = sandbox.run(*arguments)
+        checks.expect(result.returncode == 2 and sandbox.record() is None, f"{' '.join(arguments[:2])} … must refuse a Claude-made session", result)
+        checks.expect("claude-opus-5-5" in result.stderr and claude_id in result.stderr and "--allow-cross-provider-resume" in result.stderr
+                      and "<synthetic>" not in result.stderr, "the refusal must name the other models, the session, and the override", result)
+        checks.expect("e2e-transcript-text" not in everything_printed(result), "the refusal must not print the transcript's text", result)
+    checks.done("--resume of a session another model replied in is refused (ID, -r, --resume=, .jsonl path, shortcut, app launch)")
+
+    for arguments in (("--resume", own_id), ("-c",), ("--continue", "-p", "x")):
+        result = sandbox.run("run", "deepseek", "--", *arguments)
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == list(arguments) and result.stderr == "",
+                      f"run -- {' '.join(arguments)} must resume the session only the pinned model replied in", result)
+    os.utime(claude_path, None)
+    for arguments in (("-c",), ("-pc", "x"), ("--continue", "--resume", own_id)):
+        result = sandbox.run("run", "deepseek", "--", *arguments)
+        checks.expect(result.returncode == 2 and sandbox.record() is None and claude_id in result.stderr,
+                      f"run -- {' '.join(arguments)} must refuse the newest session, which Claude made", result)
+    checks.done("--continue checks the newest session of the working directory, as Claude Code picks it")
+
+    for arguments in (("run", "deepseek", "--allow-cross-provider-resume", "--", "-c"),
+                      ("run", "claude-deepseek", "--allow-cross-provider-resume", "--", "--resume", claude_id)):
+        result = sandbox.run(*arguments)
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == list(arguments[4:]),
+                      f"{' '.join(arguments[:3])} must resume anyway", result)
+    checks.done("--allow-cross-provider-resume resumes such a session anyway")
+
+    result = sandbox.run("run", "deepseek", "--", "--resume")
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == ["--resume"]
+                  and result.stderr.count("\n") == 1 and "picker" in result.stderr, "the picker must launch with one warning line", result)
+    checks.done("the session picker launches with a one-line warning")
+
+    other_id, _ = write_session(sandbox, sandbox.home / ".claude" / "projects" / "-e2e-other-project", ["claude-sonnet-5-5"], age=30)
+    result = sandbox.run("run", "deepseek", "--", "--resume", other_id)
+    checks.expect(result.returncode == 2 and sandbox.record() is None and "claude-sonnet-5-5" in result.stderr,
+                  "a session Claude Code finds in another project's folder must be checked too", result)
+    write_session(sandbox, folder / own_id / "subagents", ["claude-haiku-5-5"], age=40, session_id="agent-e2e")
+    result = sandbox.run("run", "deepseek", "--", "--resume", own_id)
+    checks.expect(result.returncode == 2 and sandbox.record() is None and "claude-haiku-5-5" in result.stderr,
+                  "the resumed session's subagent transcripts must be checked too", result)
+    checks.done("sessions in other project folders and a session's subagent transcripts are checked too")
 
 
 def rejected_input(sandbox, checks):
@@ -310,6 +476,9 @@ def main():
             launches(sandbox, checks, profile, key)
         finally:
             checks.expect(restore_policy_preference(cli, original_policy), "the inference-token requirement must be restored")
+        user_settings(sandbox, checks)
+        behaves_as(sandbox, checks, key)
+        resume_guard(sandbox, checks, profile)
         rejected_input(sandbox, checks)
         key = change_endpoint(sandbox, checks, profile, key)
         refusals(sandbox, checks, profile)
