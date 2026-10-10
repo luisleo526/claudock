@@ -38,7 +38,7 @@ CLEARED = set(re.findall(r'"([A-Z_]+)"', (PROJECT / "Sources/UsageCore/LaunchCom
 OTHER_MODEL_VARIABLES = ["ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL", "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
                          "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL", "ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
                          "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
-                         "CLAUDE_CODE_USE_GATEWAY"]
+                         "CLAUDE_CODE_USE_GATEWAY", "CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL"]
 HOSTILE = {"ANTHROPIC_API_KEY": "synthetic-parent-api-key", "ANTHROPIC_AUTH_TOKEN": "synthetic-parent-auth-token",
            "ANTHROPIC_BASE_URL": "https://parent.example.invalid", "ANTHROPIC_MODEL": "claude-opus-5-5",
            "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-5-5", "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
@@ -46,7 +46,7 @@ HOSTILE = {"ANTHROPIC_API_KEY": "synthetic-parent-api-key", "ANTHROPIC_AUTH_TOKE
            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.invalid", "OTEL_LOGS_EXPORTER": "otlp",
            "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0", "E2E_UNRELATED": "kept",
            "ANTHROPIC_CUSTOM_MODEL_OPTION": "claude-opus-4-8", "CLAUDE_CODE_AUTO_MODE_MODEL": "claude-sonnet-5-5",
-           "CLAUDE_CODE_USE_GATEWAY": "1"}
+           "CLAUDE_CODE_USE_GATEWAY": "1", "CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL": "1", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "0"}
 LITERAL_ARGUMENTS = ["-p", "a b", "quote'word", "$(touch SHOULD_NOT_EXIST)", "; echo bad"]
 
 
@@ -64,7 +64,7 @@ def endpoint_environment(sandbox, extra, profile, key, url=URL, model=MODEL):
                      "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
                      "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model,
                      "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1"})
+                     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"})
     # Claude Code's default model is the Opus one with [1m]; a plain pin turns that window off, a [1m] pin keeps it.
     if model.endswith("[1m]"):
         expected.pop("CLAUDE_CODE_DISABLE_1M_CONTEXT", None)
@@ -80,7 +80,7 @@ def pinned_settings(profile, url=URL, model=MODEL, behaves_as=None, host=HOST, e
     environment = {name: "" for name in (CLEARED | set(OTHER_MODEL_VARIABLES)) - {"CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"}}
     environment.update({"CLAUDE_CONFIG_DIR": profile["configDirectory"], "ANTHROPIC_BASE_URL": url,
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-                        "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1"})
+                        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1", "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1"})
     for name in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
         environment[name] = model
@@ -241,11 +241,16 @@ def user_settings(sandbox, checks, profile):
         result = sandbox.run("run", "deepseek", "--", "--settings", value, "-p", "x")
         checks.expect(result.returncode == 2 and sandbox.record() is None and key in result.stderr, f"--settings setting {key} must be refused", result)
         checks.expect("v4-pro" not in result.stderr and "sk-ant" not in result.stderr, "the refusal must not echo the setting's value", result)
-    for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}"),
-                      ("--project-config-root", str(sandbox.base))):
+    for arguments in (("--settings", "{}", "--settings", "{}"), ("--settings", "e2e-missing.json"), ("--settings", "{not json}")):
         result = sandbox.run("run", "deepseek", "--", *arguments)
         checks.expect(result.returncode == 2 and sandbox.record() is None, f"--settings {' '.join(arguments[1:])} must be refused", result)
-    checks.done("a user's --settings that changes the model, endpoint, or key, or that cannot be read once, is refused before launch")
+    for option in ("--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64"):
+        for arguments in ((option, str(sandbox.base), "-p", "x"), (f"{option}={sandbox.base}", "-p", "x")):
+            result = sandbox.run("run", "deepseek", "--", *arguments)
+            checks.expect(result.returncode == 2 and sandbox.record() is None and option in result.stderr,
+                          f"{arguments[0]} must be refused, naming the option", result)
+    checks.done("a user's --settings that changes the model, endpoint, or key, or that cannot be read once, is refused before launch,"
+                " and so are the options that move or add settings")
 
     # A project's settings that set ANTHROPIC_AUTH_TOKEN would replace the key; --settings cannot pin it, so the launch stops.
     project = sandbox.base / ".claude"
@@ -257,9 +262,29 @@ def user_settings(sandbox, checks, profile):
         checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
                       and "ANTHROPIC_AUTH_TOKEN" in result.stderr and "sk-ant" not in result.stderr,
                       "a project's settings that set ANTHROPIC_AUTH_TOKEN must stop the launch, naming the file", result)
+        # Claude Code joins these lists from every settings file, so a project's other model would come back.
+        for settings, setting in (({"availableModels": [MODEL, "deepseek-v4-pro"]}, "availableModels"),
+                                  ({"fallbackModel": "deepseek-v4-pro"}, "fallbackModel"),
+                                  ({"modelOverrides": {MODEL: "deepseek-v4-pro"}}, "modelOverrides")):
+            local.write_text(json.dumps(settings))
+            result = sandbox.run("run", "deepseek", "--", "-p", "x")
+            checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
+                          and setting in result.stderr and "v4-pro" not in result.stderr,
+                          f"a project's settings that set {setting} to another model must stop the launch", result)
+        # A file Claudock cannot parse whole might set anything Claude Code reads, so the launch stops too.
+        local.write_text('{"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-e2e-synthetic"} /* note */}')
+        result = sandbox.run("run", "deepseek", "--", "-p", "x")
+        checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
+                      and "cannot check" in result.stderr and "sk-ant" not in result.stderr,
+                      "a project settings file that is not a JSON object must stop the launch", result)
+        local.write_text(json.dumps({"availableModels": [MODEL], "model": "opus", "outputStyle": "Explanatory"}))
+        result = sandbox.run("run", "deepseek", "--", "-p", "x")
+        record = sandbox.record()
+        checks.expect(result.returncode == 0 and record is not None and recorded_settings(record) == pinned_settings(profile),
+                      "a project's settings that keep to the pinned model must not stop the launch", result)
     finally:
         local.unlink()
-    checks.done("a project's settings that would replace the endpoint key stop the launch")
+    checks.done("a project's settings that would replace the endpoint key, add another model, or cannot be read stop the launch")
 
 
 def behaves_as(sandbox, checks, key, profile):

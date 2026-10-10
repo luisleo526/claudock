@@ -46,9 +46,12 @@ private enum CLIError: LocalizedError {
             return "'\(name)' is not a third-party endpoint profile. Add one with: claudock profile add NAME --endpoint URL --model MODEL"
         case .endpointSettings(let name, let detail):
             return "\(name): \(detail) Claudock passes its own --settings to pin the endpoint's model; keep other settings in yours."
-        case .endpointSettingsOverride(let name, let file, let variable, let host):
-            return "\(name): \(file) sets \(variable), which "
-                + (variable == "ANTHROPIC_AUTH_TOKEN" ? "Claude Code would send to \(host) instead of the endpoint key."
+        case .endpointSettingsOverride(let name, let file, let setting, let host):
+            if setting == EndpointLaunch.unreadableSettings {
+                return "\(name): \(file) is not a JSON object Claudock can read, so it cannot check what the file sets for Claude Code. Fix or remove it."
+            }
+            return "\(name): \(file) sets \(setting), which "
+                + (setting.hasSuffix("ANTHROPIC_AUTH_TOKEN") ? "Claude Code would send to \(host) instead of the endpoint key."
                    : "would override what Claudock pins for \(host).") + " Remove it from that file."
         case .endpointSession(let name, let session, let models, let host):
             return "\(name) runs on \(host), but the session \(session) has replies from \(models.joined(separator: ", ")). "

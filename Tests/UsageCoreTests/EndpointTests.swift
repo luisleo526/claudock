@@ -255,7 +255,7 @@ final class EndpointTests: XCTestCase {
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash", "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-flash",
             "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-flash", "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
-            "E2E_UNRELATED": "kept", "PATH": "/usr/bin:/bin"])
+            "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1", "E2E_UNRELATED": "kept", "PATH": "/usr/bin:/bin"])
     }
 
     func testOnlyThePinnedModelMayBeChosenOnTheCommandLine() throws {
