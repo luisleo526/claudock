@@ -264,19 +264,20 @@ public enum EndpointLaunch {
     /// Claudock's. In managed settings (`managed-settings.json` and the `.json` files of `managed-settings.d`), which
     /// outrank `--settings`: anything a user's `--settings` may not set either. The profile's own settings are refused for
     /// the key already (`SubscriptionConfiguration`). An existing file that is not a JSON object of at most 4 MiB counts
-    /// as `unreadableSettings`, and so does nothing else: Claudock cannot tell what Claude Code would read in it. A name
-    /// given twice counts too, since JSON parsers disagree on which value wins.
+    /// as `unreadableSettings`, and so does nothing else: Claudock cannot tell what Claude Code would read in it. So does a
+    /// file that is not strict JSON (`StrictJSON`): Foundation reads trailing commas, which other parsers refuse, and
+    /// parsers disagree on which value of a name given twice wins.
     public static func overridingSettings(configuration: EndpointConfiguration, configDirectory: String, workingDirectory: String,
                                           managedSettings: [String] = APICreditCapture.managedSettingsFiles,
                                           managedDirectory: String = managedSettingsDirectory) -> [APICreditCapture.Override] {
-        let pinned = settingsEnvironment(configuration, configDirectory: configDirectory)
         let dropIns = ((try? FileManager.default.contentsOfDirectory(atPath: managedDirectory)) ?? []).filter { $0.hasSuffix(".json") }
             .sorted().map { managedDirectory + "/" + $0 }
         let project = [workingDirectory + "/.claude/settings.json", workingDirectory + "/.claude/settings.local.json"].map { ($0, false) }
         return (project + (managedSettings + dropIns).map { ($0, true) }).compactMap { file, outranks in
             var status = stat()
             guard stat(file, &status) == 0, status.st_mode & S_IFMT == S_IFREG else { return nil }
-            guard let data = BoundedFile.read(file, limit: 4_194_304), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            guard let data = BoundedFile.read(file, limit: 4_194_304), StrictJSON.isValid(data),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
                 return APICreditCapture.Override(file: file, key: unreadableSettings)
             }
             var conflict: String?
@@ -287,15 +288,7 @@ public enum EndpointLaunch {
             } else {
                 conflict = projectConflict(object, configuration: configuration)
             }
-            let environmentNames = ["ANTHROPIC_AUTH_TOKEN"] + (outranks ? pinned.keys.sorted() : [])
-            let topNames = outranks ? ["model", "availableModels", "fallbackModel", "advisorModel", "modelOverrides", "modelPicker", "apiKeyHelper"]
-                : ["availableModels", "fallbackModel", "modelOverrides"]
-            let repeated = (environmentNames.map { ($0, "env." + $0) } + topNames.map { ($0, $0) }).first { name, _ in
-                let needle = Data(("\"" + name + "\"").utf8)
-                guard let first = data.range(of: needle) else { return false }
-                return data.range(of: needle, in: first.upperBound..<data.endIndex) != nil
-            }
-            return (conflict ?? repeated?.1).map { APICreditCapture.Override(file: file, key: $0) }
+            return conflict.map { APICreditCapture.Override(file: file, key: $0) }
         }
     }
 
@@ -404,6 +397,139 @@ public enum EndpointLaunch {
                 break
             }
             index += 1
+        }
+    }
+}
+
+/// RFC 8259 JSON, a leading byte order mark aside, with no name given twice in any object once its escapes are decoded.
+/// Settings files are checked against it before Foundation reads them, so Claudock judges a file only when every JSON
+/// parser reads it the same way.
+enum StrictJSON {
+    /// Deeper nesting is refused rather than followed.
+    static let maximumDepth = 256
+
+    static func isValid(_ data: Data) -> Bool {
+        var scanner = Scanner(bytes: Array(data.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data[...]))
+        return scanner.document()
+    }
+
+    private struct Scanner {
+        let bytes: [UInt8]
+        var index = 0
+        var depth = 0
+
+        init(bytes: [UInt8]) { self.bytes = bytes }
+
+        private var next: UInt8? { index < bytes.count ? bytes[index] : nil }
+
+        private mutating func skipWhitespace() {
+            while let byte = next, byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D { index += 1 }
+        }
+
+        private mutating func take(_ byte: UInt8) -> Bool {
+            skipWhitespace()
+            guard next == byte else { return false }
+            index += 1
+            return true
+        }
+
+        mutating func document() -> Bool {
+            guard value() else { return false }
+            skipWhitespace()
+            return index == bytes.count
+        }
+
+        private mutating func value() -> Bool {
+            skipWhitespace()
+            switch next {
+            case UInt8(ascii: "{"): return container(closing: UInt8(ascii: "}"), named: true)
+            case UInt8(ascii: "["): return container(closing: UInt8(ascii: "]"), named: false)
+            case UInt8(ascii: "\""): return string() != nil
+            case UInt8(ascii: "t"): return literal("true")
+            case UInt8(ascii: "f"): return literal("false")
+            case UInt8(ascii: "n"): return literal("null")
+            default: return number()
+            }
+        }
+
+        /// An object, whose names must differ, or an array; empty, or members separated by commas with none after the last.
+        private mutating func container(closing: UInt8, named: Bool) -> Bool {
+            depth += 1
+            defer { depth -= 1 }
+            guard depth <= StrictJSON.maximumDepth else { return false }
+            index += 1
+            if take(closing) { return true }
+            var names = Set<[UInt16]>()
+            repeat {
+                if named {
+                    skipWhitespace()
+                    guard let name = string(), names.insert(name).inserted, take(UInt8(ascii: ":")) else { return false }
+                }
+                guard value() else { return false }
+            } while take(UInt8(ascii: ","))
+            return take(closing)
+        }
+
+        /// A string's UTF-16 code units with its escapes decoded, as JavaScript compares names; nil when it is malformed.
+        private mutating func string() -> [UInt16]? {
+            guard next == UInt8(ascii: "\"") else { return nil }
+            index += 1
+            var units: [UInt16] = [], run: [UInt8] = []
+            func flush() { units += String(decoding: run, as: UTF8.self).utf16; run.removeAll() }
+            while let byte = next {
+                index += 1
+                switch byte {
+                case UInt8(ascii: "\""):
+                    flush()
+                    return units
+                case UInt8(ascii: "\\"):
+                    guard let escaped = next else { return nil }
+                    index += 1
+                    flush()
+                    switch escaped {
+                    case UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"): units.append(UInt16(escaped))
+                    case UInt8(ascii: "b"): units.append(0x08)
+                    case UInt8(ascii: "f"): units.append(0x0C)
+                    case UInt8(ascii: "n"): units.append(0x0A)
+                    case UInt8(ascii: "r"): units.append(0x0D)
+                    case UInt8(ascii: "t"): units.append(0x09)
+                    case UInt8(ascii: "u"):
+                        guard index + 4 <= bytes.count, let unit = UInt16(String(decoding: bytes[index..<index + 4], as: UTF8.self), radix: 16),
+                              bytes[index..<index + 4].allSatisfy({ $0 != UInt8(ascii: "+") && $0 != UInt8(ascii: "-") }) else { return nil }
+                        index += 4
+                        units.append(unit)
+                    default: return nil
+                    }
+                case 0x00..<0x20: return nil
+                default: run.append(byte)
+                }
+            }
+            return nil
+        }
+
+        private mutating func literal(_ word: String) -> Bool {
+            let expected = Array(word.utf8)
+            guard bytes[index...].starts(with: expected) else { return false }
+            index += expected.count
+            return true
+        }
+
+        /// `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`
+        private mutating func number() -> Bool {
+            func digits() -> Int {
+                let start = index
+                while let byte = next, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) { index += 1 }
+                return index - start
+            }
+            if next == UInt8(ascii: "-") { index += 1 }
+            if next == UInt8(ascii: "0") { index += 1 } else if digits() == 0 { return false }
+            if next == UInt8(ascii: ".") { index += 1; guard digits() > 0 else { return false } }
+            if next == UInt8(ascii: "e") || next == UInt8(ascii: "E") {
+                index += 1
+                if next == UInt8(ascii: "+") || next == UInt8(ascii: "-") { index += 1 }
+                guard digits() > 0 else { return false }
+            }
+            return true
         }
     }
 }

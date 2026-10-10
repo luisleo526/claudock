@@ -182,28 +182,38 @@ final class EndpointSettingsTests: XCTestCase {
         }
     }
 
-    func testDuplicateNamesAreRefusedBecauseParsersDisagreeOnThem() throws {
+    func testANameGivenTwiceStopsTheLaunchBecauseParsersDisagreeOnIt() throws {
         let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("none.d")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let file = project.appendingPathComponent("settings.json")
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token","ANTHROPIC_AUTH_TOKEN":""}}"#.utf8).write(to: file)
-        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
-                       [APICreditCapture.Override(file: file.path, key: "env.ANTHROPIC_AUTH_TOKEN")])
+        // Names are compared once their escapes are decoded, in every object, whatever they name.
+        for content in [#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token","ANTHROPIC_AUTH_TOKEN":""}}"#,
+                        #"{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_AUTH_TOKE\u004e":"fixture-token"}}"#,
+                        #"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"},"\u0065nv":{}}"#,
+                        #"{"statusLine":{"type":"command","command":"a","command":"b"}}"#, #"{"caf\u00e9":1,"café":2}"#] {
+            try Data(content.utf8).write(to: file)
+            XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
+                           [APICreditCapture.Override(file: file.path, key: EndpointLaunch.unreadableSettings)], content)
+        }
+        // The same name in two objects, escapes, and every kind of value are plain JSON.
+        try Data(("\u{FEFF}" + #"{"env":{"ANTHROPIC_AUTH_TOKEN":""},"statusLine":{"type":"command","command":"printf \"\u00e9\\n\""},"#
+                  + #""list":[1,-0.5e3,2E+2,true,false,null,{"type":"a"},{"type":"b"},[]],"empty":{}}"#).utf8).write(to: file)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns), [])
     }
 
     func testASettingsFileThatCannotBeReadAsAnObjectStopsTheLaunch() throws {
         let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("none.d")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let local = project.appendingPathComponent("settings.local.json")
+        // Foundation reads a trailing comma, which other parsers refuse, so it counts as well.
         for content in [#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"} /* note */}"#, #"{"broken": "#, "[]",
+                        #"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}}"#, #"{"list":[1,]}"#, #"{"n":01}"#, #"{"s":"\x"}"#,
+                        "{\"s\":\"a\tb\"}", "{\"deep\":" + String(repeating: "[", count: 300) + String(repeating: "]", count: 300) + "}",
                         "{\"padding\":\"" + String(repeating: "x", count: 4_200_000) + "\"}"] {
             try Data(content.utf8).write(to: local)
             XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
                            [APICreditCapture.Override(file: local.path, key: EndpointLaunch.unreadableSettings)], String(content.prefix(30)))
         }
-        // Foundation reads a trailing comma where a strict parser stops: either way the file stops the launch.
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}}"#.utf8).write(to: local)
-        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns).map(\.file), [local.path])
     }
 
     func testOptionsThatAddOrMoveSettingsAreRefused() {
