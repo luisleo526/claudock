@@ -5,7 +5,7 @@ public enum ProfileManager {
     public enum ManagementError: LocalizedError {
         case invalidName, reservedName, duplicateName, duplicateDirectory, missingProfile, protectedProfile, unresolvedProfile
         case directoryExists, invalidDirectory, invalidManagedFiles, concurrentChange, busy
-        case unsupportedShellFile, ioFailure, unsupportedKindChange
+        case unsupportedShellFile, ioFailure, unsupportedKindChange, notEndpointProfile
 
         public var errorDescription: String? {
             switch self {
@@ -25,6 +25,7 @@ public enum ProfileManager {
             case .ioFailure: return "The profile could not be saved. Check that Claudock's data folder is writable."
             case .unsupportedKindChange:
                 return "Only a Console profile added through Claudock can switch between a Console API key and a Console account sign-in."
+            case .notEndpointProfile: return "Only a third-party endpoint profile has an endpoint and a model to change."
             }
         }
     }

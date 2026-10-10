@@ -48,13 +48,16 @@ The build targets your Mac's architecture. Apple Silicon is validated; Intel is 
 
 ## Add your accounts
 
-Claudock has three kinds of profile. Pick the one that matches how the account is billed.
+Claudock has four kinds of profile. Pick the one that matches how the account is billed.
 
 | Kind | Billed to | The dashboard shows |
 | --- | --- | --- |
 | Claude subscription (Pro, Max, Team, or Enterprise) | Your plan | 5-hour, Weekly, and Fable limits |
 | Console account, signed in with a browser | The Anthropic Console organization you sign in to, per token | Console credit, once you set it |
 | Console API key | The Console organization that owns the key, per token | Console credit, once you set it |
+| Third-party endpoint, such as DeepSeek | The endpoint's provider, per token | The endpoint's host and model |
+
+A third-party endpoint profile is added in Terminal: see [Use a third-party endpoint](#use-a-third-party-endpoint-eg-deepseek).
 
 In the app, open **Manage profiles**: the button at the bottom of the dashboard, or **Manage profiles…** in the … menu. Under **Add an account**, choose the account type, type a name, and choose **Add profile**.
 
@@ -74,6 +77,8 @@ A Claude subscription suits interactive daily coding. The dashboard shows its 5-
 A Console profile, signed in or with an API key, suits headless work: scripts, agents, and other runs that take one prompt, print the answer, and exit. It is billed per token, and Claudock tracks the credit you set. See [Headless runs and automation](#headless-runs-and-automation).
 
 Check that your Console credit covers interactive use before you rely on it. See [Interactive sessions on Console credit](#interactive-sessions-on-console-credit).
+
+A third-party endpoint profile runs Claude Code on another provider's model, such as DeepSeek's, for work that does not need Claude. It is billed per token by that provider.
 
 ### Claude subscription
 
@@ -152,12 +157,13 @@ claudock profile remove office
 
 Removing a profile keeps its folder, its conversations, and its credentials. To delete the credentials and the folder as well, follow these steps in order. Steps 2 to 4 cannot be undone.
 
-1. Remove the profile in Terminal, or with **Remove…** in Manage profiles. The command prints each credential the profile left in Keychain, with the command that deletes it, and then the profile's folder, quoted for the shell, which the profile list no longer shows once the profile is gone. The app shows the same in its notice, which stays until your next action in Manage profiles, so copy what you need first. A profile can leave up to four items. The command prints those that exist, and marks any that Keychain could not be asked about:
+1. Remove the profile in Terminal, or with **Remove…** in Manage profiles. The command prints each credential the profile left in Keychain, with the command that deletes it, and then the profile's folder, quoted for the shell, which the profile list no longer shows once the profile is gone. The app shows the same in its notice, which stays until your next action in Manage profiles, so copy what you need first. A profile can leave up to five items. The command prints those that exist, and marks any that Keychain could not be asked about:
 
    - `Claude Code-credentials-…`: Claude Code's login for the profile's folder, for a subscription or a Console account.
    - `Claude Code-…`: the API key Claude Code made when you signed in to a Console account.
    - `Claudock-inference-…`: an inference token saved in Claudock.
    - `Claudock-apikey-…`: a Console API key saved in Claudock.
+   - `Claudock-endpointkey-…`: a third-party endpoint's key saved in Claudock.
 
    ```sh
    claudock profile remove console
@@ -180,7 +186,7 @@ Removing a profile keeps its folder, its conversations, and its credentials. To 
    security delete-generic-password -s 'SERVICE'
    ```
 
-3. Revoke the keys. Deleting an item does not revoke what it held: a key or token stays valid at Anthropic until it is revoked. Revoke a Console API key in the Console (Settings → API keys). For a Console sign-in, revoke the key Claude Code added to your Console workspace when you signed in. Revoke a Claude login or an inference token on claude.ai. Everything else that uses the key or token stops working.
+3. Revoke the keys. Deleting an item does not revoke what it held: a key or token stays valid at Anthropic until it is revoked. Revoke a Console API key in the Console (Settings → API keys). For a Console sign-in, revoke the key Claude Code added to your Console workspace when you signed in. Revoke a Claude login or an inference token on claude.ai, and a third-party endpoint's key with its provider. Everything else that uses the key or token stops working.
 
 4. Delete the profile's folder if you no longer need it. Quit any Claude session running under the profile first. A folder Claudock created, under `~/Library/Application Support/Claudock/accounts/`, holds the profile's own files and links to your shared `~/.claude`. `rm -r` deletes the links, not what they point to. A folder you imported with `--directory` holds its own conversations, so keep it unless you no longer need them. Never run `rm -r` on `~/.claude` itself: it is your default account and the history all profiles share. Put the quoted path from the `Config folder:` line in place of `CONFIG_FOLDER`. If the line ends with a note about control characters, the name shown is not exact, so delete the folder in Finder instead:
 
@@ -256,9 +262,43 @@ claudock run console -- -p --output-format json "Summarize what this folder cont
 
 A wrapper of your own that runs `claude` directly, instead of `claudock run`, gets none of what Claudock adds: no saved key or inference token, no Console credit tracking, and no clearing of inherited authentication variables. Call `claudock run NAME -- …` from the wrapper instead.
 
+## Use a third-party endpoint (e.g. DeepSeek)
+
+An endpoint profile runs Claude Code against another service that speaks the Anthropic Messages protocol, such as DeepSeek at `https://api.deepseek.com/anthropic`. You give it the endpoint's URL, one model, and the key the provider issued you. Usage is billed per token by that provider, not by Anthropic.
+
+Add one in Terminal. The app lists endpoint profiles but does not add them. The key is read from standard input, never from arguments: the raw key, or a shell key file whose one line is `export NAME=value`, quoted or not.
+
+```sh
+claudock profile add deepseek --endpoint https://api.deepseek.com/anthropic --model deepseek-flash < ~/.config/keys/deepseek.zsh
+pbpaste | claudock profile add deepseek --endpoint https://api.deepseek.com/anthropic --model deepseek-flash
+claudock run deepseek
+claudock run deepseek -- -p "Summarize what this folder contains"
+```
+
+- The URL must be `https`, with a host and no user name, password, query, or fragment.
+- The key is stored only in Keychain, never in `profiles.json`, arguments, or output. An Anthropic key (`sk-ant-…`) is refused, so it never reaches a third party.
+- The model is pinned. Claude Code gets it in every model slot: the main model, the Opus, Sonnet, Haiku, and Fable defaults, the small fast model, and subagents. `claudock run` refuses a `--model` or `--fallback-model` that names another model, before Claude starts.
+- The key reaches Claude Code as `ANTHROPIC_AUTH_TOKEN`, a bearer token, and the URL as `ANTHROPIC_BASE_URL`. Claude Code's nonessential traffic and model calls are turned off, and inherited `OTEL_…` settings are dropped.
+- No Claude sign-in, inference token, or Console credit applies. The dashboard row shows `Third-party endpoint · HOST · MODEL` and "billed per token by the provider", with no meters. `claudock usage` and `claudock available` print a note instead of a row.
+
+Change the endpoint or the model, or replace the key. The profile keeps its name, folder, and shared history:
+
+```sh
+claudock profile set-endpoint deepseek
+claudock profile set-endpoint deepseek --model deepseek-flash
+claudock profile set-endpoint deepseek --endpoint https://api.deepseek.com/anthropic
+claudock profile set-key deepseek < ~/.config/keys/deepseek.zsh
+```
+
+Without options, `set-endpoint` shows the current URL and model.
+
+The first interactive launch in a new profile folder shows Claude Code's first-run screens. Trust the folder if it is yours. If Claude Code asks **Make auto mode your default permission mode?**, choose **No, keep …**: your answer would be saved in the settings every profile shares.
+
+A registry that holds an endpoint profile is version 3. Claudock 1.7.0 and older report it as invalid instead of dropping the profile, so remove endpoint profiles before going back to an older version.
+
 ## Watch limits and credit
 
-The menu bar popover and the dashboard window list one row per profile. Claudock refreshes every 5 minutes by default. Choose a 1-, 5-, or 15-minute **Refresh interval** in the … menu. The refresh button asks again now, at most once a minute. The badge beside a subscription name is the plan Claude reports ([how badges are chosen](docs/GUIDE.md#account-plan-badges)). A Console profile's badge says API.
+The menu bar popover and the dashboard window list one row per profile. Claudock refreshes every 5 minutes by default. Choose a 1-, 5-, or 15-minute **Refresh interval** in the … menu. The refresh button asks again now, at most once a minute. The badge beside a subscription name is the plan Claude reports ([how badges are chosen](docs/GUIDE.md#account-plan-badges)). A Console profile's badge says API, and a third-party endpoint's says ENDPOINT.
 
 A subscription row has three bars: 5-hour, Weekly, and Fable. A bar that Claude does not report is left out, and other model limits show as small meters below.
 
@@ -268,15 +308,15 @@ A subscription row has three bars: 5-hour, Weekly, and Fable. A bar that Claude 
 - **Full** marks an allowance at 100% or more. **Not reported** means Claude reports no Fable allowance for that account.
 - **STALE** means the last refresh failed. The bars turn grey and keep the last good reading, with its time.
 
-A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization.
+A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization. A third-party endpoint row names its host and model and has no meters: the provider bills it per token.
 
 ### Many accounts
 
 With more than four profiles, a filter bar appears above the list:
 
-- **Status chips** count the profiles in each state and filter the list to one: **Available**, **Near limit** (less than 10% left, or low credit), **Full** (a limit is used up until it resets, or no credit is left), **Needs attention** (a sign-in is needed, or there is no reading), and **Not tracked** (Vertex, a profile to import, or a Console profile with no credit set). Click a chip again to show every profile.
+- **Status chips** count the profiles in each state and filter the list to one: **Available**, **Near limit** (less than 10% left, or low credit), **Full** (a limit is used up until it resets, or no credit is left), **Needs attention** (a sign-in is needed, or there is no reading), and **Not tracked** (Vertex, a profile to import, a third-party endpoint, or a Console profile with no credit set). Click a chip again to show every profile.
 - **The search field** finds a profile by name, plan, or Console organization, and by email while emails are shown. Press ⌘F to reach it.
-- **The View menu** limits the list to subscriptions or Console profiles, groups it, and sorts it.
+- **The View menu** limits the list to subscriptions, Console profiles, or third-party endpoints, groups it, and sorts it.
 
 **Group accounts by** in the … menu splits the list into **Account type** or **Usage status** sections. Click a section header to collapse it; Claudock remembers collapsed sections. **Sort accounts** offers **Profile order**, **Highest usage first**, and **Most left first**, which puts the profiles with the most room in their tightest 5-hour, Weekly, or Fable limit on top, then Console profiles by the share of credit left, then full profiles, soonest free first.
 
@@ -300,7 +340,7 @@ console  Console API  Credit · $187.42 of $200.00 left  6.29          -
 - `USED_PERCENT` is the share of that allowance already used, usually 0 to 100. It reaches 100 when the allowance, or the credit you set, is used up, and can go past it. It is not what is left. For a Console profile it is the share of the credit you set that has been spent.
 - `RESETS_UTC` is when the allowance resets, in UTC. It is `unknown` when Claude gives no time, and `-` for credit, which does not reset.
 
-A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. The exit status is 0 unless a profile has no reading at all.
+A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. A third-party endpoint profile has no row either, only a note such as `claudock: deepseek: third-party endpoint (api.deepseek.com, deepseek-flash), billed per token by the provider; no quota to read.` The exit status is 0 unless a profile has no reading at all.
 
 ### claudock available
 
@@ -420,27 +460,29 @@ You can also turn integration on from Terminal with the app's own command, which
 `claudock help` prints this list with more notes.
 
 ```sh
-claudock profile list                                       # List profiles, selectors, and kinds
-claudock profile add NAME [--directory ABS_PATH]            # Add a subscription profile, or import a folder
-claudock profile add NAME --api-key [--directory ABS_PATH]  # Add a Console API-key profile (key from stdin)
-claudock profile add NAME --console [--directory ABS_PATH]  # Add a Console profile and sign in in the browser
-claudock profile set-key NAME                               # Save a Console API key (key from stdin)
-claudock profile set-credit NAME AMOUNT                     # Record the Console credit left, in US dollars
-claudock profile set-token NAME [--expires ISO8601_DATE]    # Save an inference token (token from stdin)
-claudock profile setup-token NAME                           # Create an inference token through Claude Code
-claudock profile tokens                                     # Show each profile's token status
-claudock profile clear-token NAME                           # Delete a profile's saved inference token
-claudock profile rename NAME NEWNAME                        # Rename a profile; its data and login stay
-claudock profile remove NAME                                # Remove a profile; Claude data and credentials stay
-claudock profile login NAME [--console]                     # Sign in again; --console uses a Console account
-claudock profile import-shell                               # Import claude-NAME functions from your zsh files
-claudock run NAME [-- CLAUDE_ARGS...]                       # Start Claude Code under a profile
-claudock usage [--max-age SECONDS | --fresh]                # Print limits and Console credit
-claudock available [--names] [--max-age SECONDS | --fresh]  # List profiles with usage left, most first
-claudock require-token on|off|status                        # Require an inference token to launch
-claudock shell enable|disable|status                        # Turn zsh integration on or off, or check it
-claudock version                                            # Print the version
-claudock help                                               # Print this list and notes
+claudock profile list                                                  # List profiles, selectors, kinds, and endpoints
+claudock profile add NAME [--directory ABS_PATH]                       # Add a subscription profile, or import a folder
+claudock profile add NAME --api-key [--directory ABS_PATH]             # Add a Console API-key profile (key from stdin)
+claudock profile add NAME --console [--directory ABS_PATH]             # Add a Console profile and sign in in the browser
+claudock profile add NAME --endpoint URL --model MODEL                 # Add a third-party endpoint profile (key from stdin)
+claudock profile set-key NAME                                          # Save a Console API key or endpoint key (from stdin)
+claudock profile set-endpoint NAME [--endpoint URL] [--model MODEL]    # Show or change an endpoint profile's URL and model
+claudock profile set-credit NAME AMOUNT                                # Record the Console credit left, in US dollars
+claudock profile set-token NAME [--expires ISO8601_DATE]               # Save an inference token (token from stdin)
+claudock profile setup-token NAME                                      # Create an inference token through Claude Code
+claudock profile tokens                                                # Show each profile's token status
+claudock profile clear-token NAME                                      # Delete a profile's saved inference token
+claudock profile rename NAME NEWNAME                                   # Rename a profile; its data and login stay
+claudock profile remove NAME                                           # Remove a profile; Claude data and credentials stay
+claudock profile login NAME [--console]                                # Sign in again; --console uses a Console account
+claudock profile import-shell                                          # Import claude-NAME functions from your zsh files
+claudock run NAME [--allow-cross-provider-resume] [-- CLAUDE_ARGS...]  # Start Claude Code under a profile
+claudock usage [--max-age SECONDS | --fresh]                           # Print limits and Console credit
+claudock available [--names] [--max-age SECONDS | --fresh]             # List profiles with usage left, most first
+claudock require-token on|off|status                                   # Require an inference token to launch
+claudock shell enable|disable|status                                   # Turn zsh integration on or off, or check it
+claudock version                                                       # Print the version
+claudock help                                                          # Print this list and notes
 ```
 
 `claudock auto` was removed in 1.6.0. It prints a notice on stderr and exits with status 2. Use `claudock run NAME`.
@@ -455,6 +497,8 @@ claudock help                                               # Print this list an
 | `NAME is not signed in to a Console account. Sign in with: claudock profile login NAME` | The Console sign-in was cancelled, failed, or removed. Run that command, or choose **Sign in…** on the profile's row in **Manage profiles**. |
 | `Credit balance too low · Add funds` in an interactive session on a Console profile | Check the balance in the Console first, and add funds there if the credit is used up. If the Console shows credit and headless `-p` runs work, Anthropic may refuse interactive use of that credit. See [Interactive sessions on Console credit](#interactive-sessions-on-console-credit). |
 | The browser is signed in to the wrong account during a sign-in or `setup-token` | Use a private browsing window, one per account, or sign the browser out first. |
+| `NAME is pinned to the model MODEL; --model can name only that model.` | The endpoint profile serves one model. Leave `--model` out, or pin another one with `claudock profile set-endpoint NAME --model MODEL`. |
+| `No endpoint key is saved for 'NAME'.` | Save the provider's key with `claudock profile set-key NAME`, from a key file or the clipboard as when you added it. |
 
 More messages and fixes are in the [guide's troubleshooting table](docs/GUIDE.md#troubleshooting).
 
@@ -462,7 +506,8 @@ More messages and fixes are in the [guide's troubleshooting table](docs/GUIDE.md
 
 - No Claudock account and no hosted backend. Profiles live on your Mac.
 - No telemetry and no transcript uploads. Local activity is read locally. For Console credit, Claudock points Claude Code's per-request cost reports at `claudock` itself on `127.0.0.1`, so they stay on the Mac unless a Claude Code setting of yours redirects them.
-- Quota credentials stay in Claude's existing store. Inference tokens and Console API keys use their own Keychain items and reach Claude only through its launch environment.
+- Quota credentials stay in Claude's existing store. Inference tokens, Console API keys, and third-party endpoint keys use their own Keychain items and reach Claude only through its launch environment.
+- A third-party endpoint profile sends your prompts, files Claude reads, and tool results to that endpoint's provider, under the provider's terms.
 
 Starting or continuing Claude is an explicit action. It uses Claude's normal settings, authentication, and permissions. See [privacy and security details](SECURITY.md).
 

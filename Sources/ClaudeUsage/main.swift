@@ -54,7 +54,8 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
         let fetcher = UsageFetcher()
         for profile in profiles {
             if discoverOnly {
-                let kind = profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login" : "subscription"
+                let kind = profile.authKind == .apiKey ? "api-key" : profile.authKind == .consoleLogin ? "console-login"
+                    : profile.authKind == .endpoint ? "endpoint" : "subscription"
                 print("\(profile.command) | \(profile.configDirectory) | \(profile.discoveryNote ?? (profile.isVertex ? "Vertex" : kind))")
             } else {
                 let result = await Task.detached { await readAccount(profile, fetcher: fetcher, maxAge: 0) }.value
@@ -67,7 +68,8 @@ if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contain
                 }
                 let windows = shown?.snapshot.windows.map { "\($0.title)=\(Int($0.percent))%" }.joined(separator: ", ")
                 let console = profile.authKind == .apiKey ? "Console API key" : result.organization.map { "Console login · " + $0 } ?? "Console login"
-                let fallback = !profile.authKind.isConsole ? "Unavailable"
+                let endpoint = profile.endpoint.map { "Third-party endpoint · \($0.host) · \($0.model); billed per token by the provider" }
+                let fallback = profile.authKind.isEndpoint ? endpoint ?? "Third-party endpoint" : !profile.authKind.isConsole ? "Unavailable"
                     : result.credit.map { "\(console); \($0.usageWindow)" } ?? result.creditError ?? "\(console); billed per token, no credit set"
                 let stale = windows != nil ? problem.map { " (last reading: \($0.localizedDescription))" } ?? "" : ""
                 print("\(profile.command): \(windows ?? problem?.localizedDescription ?? fallback)\(stale)")

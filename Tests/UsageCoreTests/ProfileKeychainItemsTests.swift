@@ -7,6 +7,10 @@ final class ProfileKeychainItemsTests: XCTestCase {
     private var subscription: Profile { Profile(command: "claude-fixture", configDirectory: folder, managed: true) }
     private var apiKey: Profile { Profile(command: "claude-fixture", configDirectory: folder, managed: true, authKind: .apiKey) }
     private var consoleLogin: Profile { Profile(command: "claude-fixture", configDirectory: folder, managed: true, authKind: .consoleLogin) }
+    private var endpoint: Profile {
+        Profile(command: "claude-fixture", configDirectory: folder, managed: true, authKind: .endpoint,
+                endpoint: try! EndpointConfiguration(baseURL: "https://api.example.test/anthropic", model: "example-flash"))
+    }
 
     private func sha256(_ text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -17,24 +21,28 @@ final class ProfileKeychainItemsTests: XCTestCase {
     func testItemsListEveryServiceAProfileCanLeaveInTheOrderTheyAreShown() {
         let items = ProfileKeychainItems.items(for: subscription)
         let login = "Claude Code-credentials-" + hash8(folder)
-        XCTAssertEqual(items.map(\.kind), [.login, .consoleKey, .inferenceToken, .apiKey])
+        XCTAssertEqual(items.map(\.kind), [.login, .consoleKey, .inferenceToken, .apiKey, .endpointKey])
         XCTAssertEqual(items.map(\.service), [login, "Claude Code-" + hash8(folder),
-                                              "Claudock-inference-" + sha256(login), "Claudock-apikey-" + sha256(login)])
+                                              "Claudock-inference-" + sha256(login), "Claudock-apikey-" + sha256(login),
+                                              "Claudock-endpointkey-" + sha256(login)])
         XCTAssertEqual(items.map(\.service), [CredentialStore.serviceName(for: subscription), ConsoleLogin.keychainService(for: subscription),
-                                              MintTokenStore.serviceName(for: subscription), APIKeyStore.serviceName(for: subscription)])
-        XCTAssertEqual(Set(items.map(\.service)).count, 4)
+                                              MintTokenStore.serviceName(for: subscription), APIKeyStore.serviceName(for: subscription),
+                                              EndpointKeyStore.serviceName(for: subscription)])
+        XCTAssertEqual(Set(items.map(\.service)).count, 5)
     }
 
     func testTheDefaultProfileKeepsClaudeCodesPlainServiceNames() {
         let items = ProfileKeychainItems.items(for: Profile(command: "claude", configDirectory: "/synthetic/default"))
         XCTAssertEqual(items.map(\.service), ["Claude Code-credentials", "Claude Code", "Claudock-inference-" + sha256("Claude Code-credentials"),
-                                              "Claudock-apikey-" + sha256("Claude Code-credentials")])
+                                              "Claudock-apikey-" + sha256("Claude Code-credentials"),
+                                              "Claudock-endpointkey-" + sha256("Claude Code-credentials")])
     }
 
     func testEveryAuthKindAndANewNameListTheSameServicesBecauseTheyFollowTheConfigFolder() {
         let expected = ProfileKeychainItems.items(for: subscription).map(\.service)
         XCTAssertEqual(ProfileKeychainItems.items(for: apiKey).map(\.service), expected)
         XCTAssertEqual(ProfileKeychainItems.items(for: consoleLogin).map(\.service), expected)
+        XCTAssertEqual(ProfileKeychainItems.items(for: endpoint).map(\.service), expected)
         let renamed = Profile(command: "claude-renamed", configDirectory: folder, managed: true)
         XCTAssertEqual(ProfileKeychainItems.items(for: renamed).map(\.service), expected)
         let other = Profile(command: "claude-fixture", configDirectory: "/synthetic/other-profile", managed: true)
@@ -55,7 +63,7 @@ final class ProfileKeychainItemsTests: XCTestCase {
 
     func testEachKindHasItsOwnTitleAndTheDeleteCommandOfItsService() {
         let items = ProfileKeychainItems.items(for: subscription)
-        XCTAssertEqual(Set(items.map(\.title)).count, 4)
+        XCTAssertEqual(Set(items.map(\.title)).count, 5)
         XCTAssertTrue(items.allSatisfy { !$0.title.isEmpty })
         // Claude Code keeps a folder's login in one item, whoever else starts Claude with that folder.
         XCTAssertTrue(try XCTUnwrap(items.first { $0.kind == .login }).title.contains("config folder"))
@@ -88,12 +96,12 @@ final class ProfileKeychainItemsTests: XCTestCase {
         var asked = 0
         XCTAssertEqual(ProfileKeychainItems.lookup(for: apiKey, security: { _ in asked += 1; return 44 }),
                        ProfileKeychainLookup(existing: [], unchecked: []))
-        XCTAssertEqual(asked, 4)
+        XCTAssertEqual(asked, 5)
     }
 
     func testAnItemKeychainCouldNotBeAskedAboutIsNeitherListedAsExistingNorDropped() {
         let items = ProfileKeychainItems.items(for: subscription)
-        var answers: [Int32?] = [0, 36, nil, 44]
+        var answers: [Int32?] = [0, 36, nil, 44, 44]
         let lookup = ProfileKeychainItems.lookup(for: subscription, security: { _ in
             guard let status = answers.removeFirst() else { throw MonitorError.keychainLocked }
             return status

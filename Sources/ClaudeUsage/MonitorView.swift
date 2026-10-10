@@ -216,7 +216,8 @@ struct MonitorView: View {
             if let statusFilter, account.availability(at: now) != statusFilter { return false }
             guard !query.isEmpty else { return true }
             // Emails are searched only while they are shown.
-            let fields = [account.profile.name, account.plan?.displayName, account.consoleLabel, store.showEmails ? account.email : nil]
+            let fields = [account.profile.name, account.plan?.displayName, account.consoleLabel, account.endpointLabel,
+                          store.showEmails ? account.email : nil]
             return fields.contains { $0?.localizedCaseInsensitiveContains(query) == true }
         }
     }
@@ -227,7 +228,7 @@ struct MonitorView: View {
             HStack(spacing: 8) {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass").foregroundStyle(muted)
-                    TextField("Find a profile, plan, or organization", text: $search)
+                    TextField("Find a profile, plan, organization, or endpoint", text: $search)
                         .textFieldStyle(.plain).focused($searchFocused)
                         .accessibilityIdentifier("accountSearch")
                     if !search.isEmpty {
@@ -299,7 +300,7 @@ struct MonitorView: View {
         case .nearLimit: return "Less than 10% left in a limit, or low Console credit"
         case .full: return "A limit is used up until it resets, or no Console credit is left"
         case .attention: return "Needs a sign-in, or the last reading failed"
-        case .untracked: return "Vertex, a profile to import, a Console profile without a credit set, or not read yet"
+        case .untracked: return "Vertex, a profile to import, a third-party endpoint, a Console profile without a credit set, or not read yet"
         }
     }
     private func groupHeader(_ group: AccountGroup, collapsed: Bool) -> some View {
@@ -439,6 +440,8 @@ private struct AccountRow: View, Equatable {
                     .lineLimit(1).truncationMode(.middle).help(account.profile.command)
                 if let console = account.consoleLabel {
                     badge("API", help: "\(console), billed per token", accessibilityLabel: console)
+                } else if let endpoint = account.endpointLabel {
+                    badge("Endpoint", help: "\(endpoint), billed per token by the provider", accessibilityLabel: endpoint)
                 } else if let plan = account.plan {
                     badge(plan.displayName, help: plan.explanation, accessibilityLabel: "Subscription: \(plan.displayName)")
                 }
@@ -484,6 +487,13 @@ private struct AccountRow: View, Equatable {
             }
             if account.profile.authKind.isConsole {
                 credit.help(CreditView.estimateNote)
+            } else if let endpoint = account.endpointLabel {
+                // No limits or credit to show: where the requests go, and who bills them. Shown verbatim, never as Markdown.
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: endpoint).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                    Text("billed per token by the provider").font(.system(size: 10)).foregroundStyle(muted)
+                }
+                .accessibilityElement(children: .combine)
             }
             if let snapshot = account.snapshot {
                 let display = snapshot.displayWindows

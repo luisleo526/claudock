@@ -493,7 +493,7 @@ def default_profile_items_are_refused(checks):
     """The helpers must never create, track for deletion, or delete the real default profile's Keychain items. Only
     the guard and `track` are exercised, and `track` on a scratch object, not a live sandbox: a missing guard would
     otherwise put a real item on the teardown list."""
-    checks.expect(len(set(DEFAULT_PROFILE_SERVICES)) == 4, "the default profile has four distinct Keychain items")
+    checks.expect(len(set(DEFAULT_PROFILE_SERVICES)) == 5, "the default profile has five distinct Keychain items")
     scratch = types.SimpleNamespace(services=set())
     for service in DEFAULT_PROFILE_SERVICES:
         for refuse in (refuse_default_profile_item, lambda item: Sandbox.track(scratch, item)):

@@ -6,6 +6,8 @@ public enum LaunchCredential: Equatable, Sendable {
     case consoleAPIKey
     /// Claude Code's own Console sign-in: nothing is passed, and Claude Code uses the key it keeps.
     case consoleLogin
+    /// A third-party endpoint profile's key, read from Keychain at launch and passed with the endpoint's settings.
+    case endpointKey
     /// A subscription profile's inference token, passed as `CLAUDE_CODE_OAUTH_TOKEN`.
     case inferenceToken(String)
     /// No token: Claude Code uses the profile's own login.
@@ -27,6 +29,7 @@ public enum InferenceTokenPolicyError: Error, LocalizedError, Equatable {
 
 /// The optional rule that every Claudock launch of a subscription profile uses its inference
 /// token. It is off by default and shared by the app and the CLI through their preferences domain.
+/// Console and third-party endpoint profiles never use a token, so the rule never blocks them.
 public enum InferenceTokenPolicy {
     public static let preferenceKey = "requireInferenceToken"
 
@@ -55,7 +58,8 @@ public enum InferenceTokenPolicy {
     /// the profile's own login, whatever the requirement or the saved token's state. With the
     /// requirement off, a missing token or an expired browser-created token falls back to the profile's
     /// own login as before, while an expired pasted token or an unreadable one is an error. With it on,
-    /// a missing, expired, or unreadable token is an error.
+    /// a missing, expired, or unreadable token is an error. Console and endpoint profiles use their own
+    /// key or sign-in whatever the requirement and the arguments.
     public static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool) throws -> LaunchCredential {
         try launchCredential(profile: profile, claudeArguments: claudeArguments, signIn: signIn, requireToken: isRequired(),
                              mint: MintTokenStore.read)
@@ -64,6 +68,7 @@ public enum InferenceTokenPolicy {
     static func launchCredential(profile: Profile, claudeArguments: [String], signIn: Bool, requireToken: Bool,
                                  mint: (Profile) throws -> MintToken?, now: Date = Date()) throws -> LaunchCredential {
         if signIn { return .profileLogin }
+        if profile.authKind == .endpoint { return .endpointKey }
         if profile.authKind == .apiKey { return .consoleAPIKey }
         if profile.authKind == .consoleLogin { return .consoleLogin }
         // setup-token creates the replacement token, so a missing or expired one must never block it.

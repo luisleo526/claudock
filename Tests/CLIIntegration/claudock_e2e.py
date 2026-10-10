@@ -97,6 +97,11 @@ def api_key_service(profile):
     return "Claudock-apikey-" + hashlib.sha256(credential_service(profile).encode()).hexdigest()
 
 
+def endpoint_key_service(profile):
+    """Where Claudock keeps a third-party endpoint profile's key."""
+    return "Claudock-endpointkey-" + hashlib.sha256(credential_service(profile).encode()).hexdigest()
+
+
 def managed_key_service(profile):
     """Where Claude Code 2.1.295 keeps the API key that `auth login --console` creates: "Claude Code" plus the
     config folder's hash, as for its credentials. The default profile's unhashed item is real; never use it."""
@@ -145,11 +150,12 @@ def keychain_item_exists(service):
     return result.returncode == 0
 
 
-# The real default profile's Keychain items: Claude Code's login and Console key, and Claudock's token and key, which
+# The real default profile's Keychain items: Claude Code's login and Console key, and Claudock's token and keys, which
 # take their names from the login's. No check may create, overwrite, track for deletion, or delete them.
 DEFAULT_PROFILE_SERVICES = ("Claude Code", "Claude Code-credentials",
                             "Claudock-inference-" + hashlib.sha256(b"Claude Code-credentials").hexdigest(),
-                            "Claudock-apikey-" + hashlib.sha256(b"Claude Code-credentials").hexdigest())
+                            "Claudock-apikey-" + hashlib.sha256(b"Claude Code-credentials").hexdigest(),
+                            "Claudock-endpointkey-" + hashlib.sha256(b"Claude Code-credentials").hexdigest())
 
 
 def refuse_default_profile_item(service):
@@ -268,7 +274,8 @@ class Sandbox:
         if result.returncode != 0:
             raise AssertionError(f"profile list failed: {result.stderr!r}")
         rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
-        return {row[0]: {"command": row[1], "kind": row[2], "configDirectory": row[3]} for row in rows}
+        return {row[0]: {"command": row[1], "kind": row[2], "configDirectory": row[3], "endpoint": row[4] if len(row) > 4 else None}
+                for row in rows}
 
     def registry_id(self, name):
         """The stable identity the app passes to `claudock launch-bound`."""
@@ -391,7 +398,7 @@ class Checks:
 
 # The Keychain items `claudock profile remove` can list for a profile, in the order it lists them.
 LEFTOVER_ITEMS = (("login", credential_service), ("console key", managed_key_service),
-                  ("inference token", inference_service), ("API key", api_key_service))
+                  ("inference token", inference_service), ("API key", api_key_service), ("endpoint key", endpoint_key_service))
 
 
 def shell_quoted_folder(path):
@@ -401,7 +408,7 @@ def shell_quoted_folder(path):
 
 def check_removal(sandbox, checks, name, present):
     """Removes the profile `name` and checks what `profile remove` printed. `present` names the Keychain items that
-    exist for the profile, among "login", "console key", "inference token", and "API key". The output must hold
+    exist for the profile, among "login", "console key", "inference token", "API key", and "endpoint key". The output must hold
     exactly their delete commands, in that order, and mention no other service. The profile's config folder, quoted
     for the shell, and the reminder that keys stay valid at Anthropic until revoked come after them. The profile
     goes; every item stays. Returns the result."""

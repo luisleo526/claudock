@@ -5,6 +5,7 @@ import Foundation
 public enum APICreditError: Error, LocalizedError, Equatable {
     case invalidAmount
     case subscriptionProfile(String)
+    case endpointProfile(String)
     case ledgerUnreadable
     case ledgerUnavailable
     case ledgerBusy
@@ -17,6 +18,9 @@ public enum APICreditError: Error, LocalizedError, Equatable {
         case .subscriptionProfile(let name):
             return "'\(name)' is a Claude subscription profile. Credit applies only to Console API-key profiles and Console-login profiles, "
                 + "added with 'claudock profile add NAME --api-key' or '--console'."
+        case .endpointProfile(let name):
+            return "'\(name)' uses a third-party endpoint, billed per token by the provider. Credit applies only to Console API-key profiles "
+                + "and Console-login profiles."
         case .ledgerUnreadable:
             return "The Console credit ledger (api-credit.json in Claudock's Application Support folder) is unreadable. Set the credit again to start a new one; the unreadable file is kept beside it."
         case .ledgerUnavailable: return "Claudock could not read the Console credit ledger just now. Try again."

@@ -44,7 +44,8 @@ public enum AccountAvailability: String, CaseIterable, Sendable {
     case full
     /// The account needs a sign-in, or has no reading because the last one failed.
     case attention
-    /// Nothing to measure: Vertex, a shell setup to import, a Console profile without a credit set, or not read yet.
+    /// Nothing to measure: Vertex, a shell setup to import, a third-party endpoint, a Console profile without a credit
+    /// set, or not read yet.
     case untracked
 
     /// Below this many percent left, a limit is near.
@@ -71,7 +72,8 @@ public enum AccountAvailability: String, CaseIterable, Sendable {
     /// A stale reading still classifies the account unless the error means it must sign in again.
     public static func classify(profile: Profile, snapshot: UsageSnapshot?, error: MonitorError?,
                                 credit: APICreditStatus?, creditFailed: Bool = false, now: Date) -> AccountAvailability {
-        if profile.isVertex || profile.discoveryNote != nil { return .untracked }
+        // A third-party endpoint bills per token and has no limits or credit to read.
+        if profile.isVertex || profile.discoveryNote != nil || profile.authKind.isEndpoint { return .untracked }
         if profile.authKind.isConsole {
             if creditFailed { return .attention }
             guard let credit else { return .untracked }
