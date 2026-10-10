@@ -164,6 +164,8 @@ public enum EndpointLaunchError: Error, LocalizedError, Equatable {
     case settingsUnreadable
     /// `--settings` was given more than once; Claude Code would silently keep only the last.
     case settingsRepeated
+    /// An option whose effect on the settings Claudock cannot check, such as `--project-config-root`.
+    case unsupportedOption(String)
 
     public var errorDescription: String? {
         switch self {
@@ -171,6 +173,8 @@ public enum EndpointLaunchError: Error, LocalizedError, Equatable {
         case .settingsConflict(let key): return "--settings sets \(key), which this endpoint profile pins."
         case .settingsUnreadable: return "--settings must be a JSON object, or the path of a readable file that holds one."
         case .settingsRepeated: return "Pass --settings once; Claude Code would keep only the last one."
+        case .unsupportedOption(let option):
+            return "\(option) is not supported for endpoint profiles: Claudock cannot check the settings it points Claude Code to."
         }
     }
 }
@@ -190,7 +194,7 @@ public enum EndpointLaunch {
     /// Inherited telemetry settings go too: a third-party session is not reported to anyone.
     public static func environment(_ isolated: [String: String], configuration: EndpointConfiguration, key: String) -> [String: String] {
         var result = isolated.filter { !APICreditCapture.isTelemetryKey($0.key) }
-        for (name, value) in settingsEnvironment(configuration) {
+        for (name, value) in settingsEnvironment(configuration, configDirectory: isolated["CLAUDE_CONFIG_DIR"] ?? "") {
             if value.isEmpty { result.removeValue(forKey: name) } else { result[name] = value }
         }
         result["ANTHROPIC_AUTH_TOKEN"] = key
@@ -206,20 +210,24 @@ public enum EndpointLaunch {
                                       "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
                                       "CLAUDE_CODE_USE_GATEWAY"]
 
-    /// Variables a launch clears that `--settings` leaves alone: the config folder and nested-session markers are
-    /// Claude Code's own, and the key cannot travel in arguments, which other processes can read.
-    static let unpinnedVariables: Set<String> = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"]
+    /// Variables a launch clears that `--settings` leaves alone: the nested-session marker is Claude Code's own, and the
+    /// key cannot travel in arguments, which other processes can read.
+    static let unpinnedVariables: Set<String> = ["CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"]
+
+    /// Where Claude Code 2.1.296 also reads managed settings, one JSON file each, beside `managed-settings.json`.
+    public static let managedSettingsDirectory = "/Library/Application Support/ClaudeCode/managed-settings.d"
 
     /// The variables `--settings` repeats in its `env`. Claude Code copies each settings file's `env` over its process
     /// environment, lowest first, and `--settings` ranks above user, project, and local settings, so no settings file
     /// below managed settings can point the session elsewhere or choose another model. Every other credential, provider,
     /// and model variable a launch clears is blank, as are the other model-choosing ones: no settings file can add an
     /// Anthropic key or headers to the endpoint's requests (`ANTHROPIC_API_KEY` becomes `x-api-key` beside the bearer
-    /// token), switch the provider, or choose a model for another role. The key itself is never here: a settings file
-    /// that sets `ANTHROPIC_AUTH_TOKEN` is refused before launch instead (`overridingCredentials`).
-    static func settingsEnvironment(_ configuration: EndpointConfiguration) -> [String: String] {
+    /// token), switch the provider, choose a model for another role, or move the profile's folder. The key itself is
+    /// never here: a settings file that sets `ANTHROPIC_AUTH_TOKEN` is refused before launch instead (`overridingSettings`).
+    static func settingsEnvironment(_ configuration: EndpointConfiguration, configDirectory: String) -> [String: String] {
         var result: [String: String] = [:]
         for name in LaunchCommand.clearedEnvironment + otherModelVariables where !unpinnedVariables.contains(name) { result[name] = "" }
+        result["CLAUDE_CONFIG_DIR"] = configDirectory
         result["ANTHROPIC_BASE_URL"] = configuration.baseURL
         result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         // Claude Code 2.1.296 reads no such variable; it is set for versions that do.
@@ -229,27 +237,52 @@ public enum EndpointLaunch {
         return result
     }
 
-    /// Settings files that set `ANTHROPIC_AUTH_TOKEN`, which Claude Code would send to the endpoint instead of the key:
-    /// the working directory's project settings and managed settings. The profile's own settings are refused for it
-    /// already (`SubscriptionConfiguration`), and `--settings` cannot pin the key. Unreadable files are skipped.
-    public static func overridingCredentials(workingDirectory: String,
-                                             managedSettings: [String] = APICreditCapture.managedSettingsFiles) -> [APICreditCapture.Override] {
-        let files = [workingDirectory + "/.claude/settings.json", workingDirectory + "/.claude/settings.local.json"] + managedSettings
-        return files.compactMap { file in
-            guard let data = BoundedFile.read(file, limit: 1_048_576),
-                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let environment = object["env"] as? [String: Any], let value = environment["ANTHROPIC_AUTH_TOKEN"],
-                  (value as? String)?.isEmpty != true else { return nil }
-            return APICreditCapture.Override(file: file, key: "ANTHROPIC_AUTH_TOKEN")
+    /// Settings files whose `env` Claude Code would apply against the pins, each with the first variable that would:
+    /// the working directory's project settings when they set `ANTHROPIC_AUTH_TOKEN`, which would replace the key and
+    /// which `--settings` cannot pin, and managed settings (`managed-settings.json` and the `.json` files of
+    /// `managed-settings.d`), which outrank `--settings`, when they set the key or a pinned variable to another value.
+    /// The profile's own settings are refused for the key already (`SubscriptionConfiguration`). A file that exists but
+    /// cannot be parsed, or is too large to, is searched as text for those names instead, so it counts when it might set one.
+    public static func overridingSettings(configuration: EndpointConfiguration, configDirectory: String, workingDirectory: String,
+                                          managedSettings: [String] = APICreditCapture.managedSettingsFiles,
+                                          managedDirectory: String = managedSettingsDirectory) -> [APICreditCapture.Override] {
+        let pinned = settingsEnvironment(configuration, configDirectory: configDirectory)
+        let dropIns = ((try? FileManager.default.contentsOfDirectory(atPath: managedDirectory)) ?? []).filter { $0.hasSuffix(".json") }
+            .sorted().map { managedDirectory + "/" + $0 }
+        let project = [workingDirectory + "/.claude/settings.json", workingDirectory + "/.claude/settings.local.json"].map { ($0, false) }
+        return (project + (managedSettings + dropIns).map { ($0, true) }).compactMap { file, outranks in
+            let names = ["ANTHROPIC_AUTH_TOKEN"] + (outranks ? pinned.keys.sorted() : [])
+            var status = stat()
+            guard stat(file, &status) == 0, status.st_mode & S_IFMT == S_IFREG else { return nil }
+            guard let data = BoundedFile.read(file, limit: 1_048_576), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                return mentionedName(names, in: file).map { APICreditCapture.Override(file: file, key: $0) }
+            }
+            guard let environment = object["env"] as? [String: Any] else { return nil }
+            return names.first { name in
+                guard let value = environment[name] else { return false }
+                if name == "ANTHROPIC_AUTH_TOKEN" { return (value as? String)?.isEmpty != true }
+                return (value as? String) != pinned[name]
+            }.map { APICreditCapture.Override(file: file, key: $0) }
         }
+    }
+
+    /// The first of `names` that appears in quotes in the first 16 MiB of `file`, or nil when it cannot be read either.
+    private static func mentionedName(_ names: [String], in file: String) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: file), let data = try? handle.read(upToCount: 16 * 1_048_576) else { return nil }
+        try? handle.close()
+        return names.first { data.range(of: Data(("\"" + $0 + "\"").utf8)) != nil }
     }
 
     /// `arguments` with Claudock's `--settings` first: the user's own `--settings`, if Claude Code would read one, merged
     /// into it and taken out. The object pins the model for interactive choice too: `availableModels` makes `/model` and
     /// the model picker refuse other models (it matches by prefix, so the id without `[1m]` admits both forms), and with
     /// `behavesAs` a single `modelPicker` row maps the pinned id to a model Claude Code knows.
-    public static func arguments(_ arguments: [String], configuration: EndpointConfiguration, workingDirectory: String) throws -> [String] {
-        let given = ClaudeCommandLine.options(in: arguments).filter { $0.name == "--settings" }
+    public static func arguments(_ arguments: [String], configuration: EndpointConfiguration, configDirectory: String,
+                                 workingDirectory: String) throws -> [String] {
+        let options = ClaudeCommandLine.options(in: arguments)
+        // It points Claude Code at project settings elsewhere, which overridingSettings does not read.
+        if options.contains(where: { $0.name == "--project-config-root" }) { throw EndpointLaunchError.unsupportedOption("--project-config-root") }
+        let given = options.filter { $0.name == "--settings" }
         guard given.count <= 1 else { throw EndpointLaunchError.settingsRepeated }
         var rest = arguments, user: [String: Any]?
         if let option = given.first {
@@ -257,7 +290,7 @@ public enum EndpointLaunch {
             user = try userSettings(value, workingDirectory: workingDirectory)
             for index in option.indices.sorted(by: >) { rest.remove(at: index) }
         }
-        return ["--settings", try settings(configuration, merging: user)] + rest
+        return ["--settings", try settings(configuration, configDirectory: configDirectory, merging: user)] + rest
     }
 
     /// As Claude Code reads `--settings`: trimmed text in braces is JSON, anything else a file path from the working directory.
@@ -273,11 +306,11 @@ public enum EndpointLaunch {
         return object
     }
 
-    static func settings(_ configuration: EndpointConfiguration, merging user: [String: Any]?) throws -> String {
+    static func settings(_ configuration: EndpointConfiguration, configDirectory: String, merging user: [String: Any]?) throws -> String {
         var object = user ?? [:]
-        try refuseConflicts(object, configuration: configuration)
+        try refuseConflicts(object, configuration: configuration, configDirectory: configDirectory)
         var environment = object["env"] as? [String: Any] ?? [:]
-        for (name, value) in settingsEnvironment(configuration) { environment[name] = value }
+        for (name, value) in settingsEnvironment(configuration, configDirectory: configDirectory) { environment[name] = value }
         object["env"] = environment
         // A project's key helper would otherwise send its own key to the endpoint, as x-api-key beside the bearer token.
         object["apiKeyHelper"] = ""
@@ -293,7 +326,7 @@ public enum EndpointLaunch {
 
     /// A user's settings may not choose another model, endpoint, or credential: those keys must be absent, blank, or
     /// the pinned values.
-    private static func refuseConflicts(_ object: [String: Any], configuration: EndpointConfiguration) throws {
+    private static func refuseConflicts(_ object: [String: Any], configuration: EndpointConfiguration, configDirectory: String) throws {
         let pinned = configuration.model
         func models(_ value: Any) -> [String]? { (value as? String).map { [$0] } ?? value as? [String] }
         if let value = object["model"], models(value) != [pinned] { throw EndpointLaunchError.settingsConflict("model") }
@@ -309,7 +342,7 @@ public enum EndpointLaunch {
         if let helper = object["apiKeyHelper"], (helper as? String)?.isEmpty != true { throw EndpointLaunchError.settingsConflict("apiKeyHelper") }
         guard let value = object["env"] else { return }
         guard let environment = value as? [String: Any] else { throw EndpointLaunchError.settingsConflict("env") }
-        let pinnedEnvironment = settingsEnvironment(configuration)
+        let pinnedEnvironment = settingsEnvironment(configuration, configDirectory: configDirectory)
         for (name, value) in environment.sorted(by: { $0.key < $1.key }) {
             if let expected = pinnedEnvironment[name] {
                 guard (value as? String) == expected else { throw EndpointLaunchError.settingsConflict("env." + name) }

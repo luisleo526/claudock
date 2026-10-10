@@ -12,8 +12,8 @@ private enum CLIError: LocalizedError {
     case endpointSettings(String, String)
     /// `endpointSession(NAME, SESSION, MODELS, HOST)`: the session to resume has replies from other models.
     case endpointSession(String, String, [String], String)
-    /// `endpointKeyOverride(NAME, FILE, HOST)`: a settings file would replace the endpoint key.
-    case endpointKeyOverride(String, String, String)
+    /// `endpointSettingsOverride(NAME, FILE, VARIABLE, HOST)`: a settings file would replace the endpoint key or a pinned value.
+    case endpointSettingsOverride(String, String, String, String)
 
     var errorDescription: String? {
         switch self {
@@ -46,9 +46,10 @@ private enum CLIError: LocalizedError {
             return "'\(name)' is not a third-party endpoint profile. Add one with: claudock profile add NAME --endpoint URL --model MODEL"
         case .endpointSettings(let name, let detail):
             return "\(name): \(detail) Claudock passes its own --settings to pin the endpoint's model; keep other settings in yours."
-        case .endpointKeyOverride(let name, let file, let host):
-            return "\(name): \(file) sets ANTHROPIC_AUTH_TOKEN, which Claude Code would send to \(host) instead of the endpoint key. "
-                + "Remove it from that file."
+        case .endpointSettingsOverride(let name, let file, let variable, let host):
+            return "\(name): \(file) sets \(variable), which "
+                + (variable == "ANTHROPIC_AUTH_TOKEN" ? "Claude Code would send to \(host) instead of the endpoint key."
+                   : "would override what Claudock pins for \(host).") + " Remove it from that file."
         case .endpointSession(let name, let session, let models, let host):
             return "\(name) runs on \(host), but the session \(session) has replies from \(models.joined(separator: ", ")). "
                 + "A long session made with other models can fail there, for example when Claude Code compacts it. "
@@ -328,7 +329,7 @@ private struct ClaudockCLI {
     /// Usage errors and launches refused for their arguments exit 2, before anything starts.
     private static func isArgumentError(_ error: Error) -> Bool {
         switch error as? CLIError {
-        case .arguments?, .endpointModel?, .endpointSettings?, .endpointSession?, .endpointKeyOverride?: return true
+        case .arguments?, .endpointModel?, .endpointSettings?, .endpointSession?, .endpointSettingsOverride?: return true
         default: return false
         }
     }
@@ -616,10 +617,13 @@ private struct ClaudockCLI {
             do { try EndpointLaunch.checkModelArguments(arguments, configuration: endpoint) }
             catch EndpointLaunchError.modelNotAllowed(let option, let pinned) { throw CLIError.endpointModel(profile.name, option, pinned) }
             let directory = FileManager.default.currentDirectoryPath
-            do { claudeArguments = try EndpointLaunch.arguments(arguments, configuration: endpoint, workingDirectory: directory) }
-            catch let error as EndpointLaunchError { throw CLIError.endpointSettings(profile.name, error.localizedDescription) }
-            if let override = EndpointLaunch.overridingCredentials(workingDirectory: directory).first {
-                throw CLIError.endpointKeyOverride(profile.name, override.file, endpoint.host)
+            do {
+                claudeArguments = try EndpointLaunch.arguments(arguments, configuration: endpoint, configDirectory: profile.configDirectory,
+                                                               workingDirectory: directory)
+            } catch let error as EndpointLaunchError { throw CLIError.endpointSettings(profile.name, error.localizedDescription) }
+            if let override = EndpointLaunch.overridingSettings(configuration: endpoint, configDirectory: profile.configDirectory,
+                                                                workingDirectory: directory).first {
+                throw CLIError.endpointSettingsOverride(profile.name, override.file, override.key, endpoint.host)
             }
             if !allowCrossProviderResume {
                 switch EndpointSession.check(arguments: arguments, workingDirectory: directory, configDirectory: profile.configDirectory,
