@@ -409,4 +409,82 @@ final class MintTokenTests: XCTestCase {
             XCTAssertEqual($0 as? MintTokenError, .tokenExpired)
         }
     }
+
+    func testDeleteArgumentsTargetOnlyTheInferenceTokenItem() throws {
+        let service = MintTokenStore.serviceName(for: profile)
+        XCTAssertEqual(try MintTokenStore.securityDeleteArguments(account: "fixture-user", service: service),
+                       ["delete-generic-password", "-a", "fixture-user", "-s", service])
+        // Claude Code's own items, and Claudock's other namespaces, are never deleted through this command.
+        let foreign = [CredentialStore.serviceName(for: profile), ConsoleLogin.keychainService(for: profile), APIKeyStore.serviceName(for: profile),
+                       "Claude Code", "Claude Code-credentials", service + "\n", service + "0", "Claudock-inference-" + String(repeating: "A", count: 64)]
+        for other in foreign {
+            XCTAssertThrowsError(try MintTokenStore.securityDeleteArguments(account: "fixture-user", service: other), other) {
+                XCTAssertEqual($0 as? MintTokenError, .keychainDeleteFailed)
+            }
+        }
+        XCTAssertThrowsError(try MintTokenStore.securityDeleteArguments(account: "bad\naccount", service: service))
+    }
+
+    func testDeleteRemovesTheSavedTokenAndChecksItIsGone() throws {
+        let service = MintTokenStore.serviceName(for: profile)
+        var commands: [[String]] = []
+        var statuses: [Int32] = [0, 44]
+        XCTAssertTrue(try MintTokenStore.delete(profile: profile, security: { commands.append($0); return statuses.removeFirst() }))
+        XCTAssertEqual(commands, [["delete-generic-password", "-a", NSUserName(), "-s", service],
+                                  ["find-generic-password", "-a", NSUserName(), "-s", service]])
+    }
+
+    func testDeleteReportsThatNoTokenWasSavedWithoutAnyOtherCommand() throws {
+        var commands: [[String]] = []
+        XCTAssertFalse(try MintTokenStore.delete(profile: profile, security: { commands.append($0); return 44 }))
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands.first?.first, "delete-generic-password")
+    }
+
+    func testDeleteFailsWhenKeychainRefusesOrTheItemRemains() {
+        for status: Int32 in [1, 36, 51, 128] {
+            XCTAssertThrowsError(try MintTokenStore.delete(profile: profile, security: { _ in status }), "status \(status)") {
+                XCTAssertEqual($0 as? MintTokenError, .keychainDeleteFailed)
+            }
+        }
+        XCTAssertThrowsError(try MintTokenStore.delete(profile: profile, security: { _ in 0 })) {
+            XCTAssertEqual($0 as? MintTokenError, .keychainDeleteFailed)
+        }
+        XCTAssertThrowsError(try MintTokenStore.delete(profile: profile, security: { _ in throw MonitorError.keychainLocked })) {
+            XCTAssertEqual($0 as? MintTokenError, .keychainUnavailable)
+        }
+    }
+
+    func testASuccessfulDeleteIsNotReportedAsAFailureBecauseTheConfirmingLookupCouldNotRun() throws {
+        // `security` said the item is deleted; a lookup that cannot run afterwards must not turn that into an error.
+        for lookup: Int32? in [nil, 36, 51] {
+            XCTAssertTrue(try MintTokenStore.delete(profile: profile, security: { arguments in
+                if arguments.first == "delete-generic-password" { return 0 }
+                guard let status = lookup else { throw MonitorError.keychainLocked }
+                return status
+            }), "lookup \(String(describing: lookup))")
+        }
+    }
+
+    func testTheDefaultProfilesTokenIsDeletedFromClaudocksNamespaceNeverClaudeCodesLogin() throws {
+        let defaultProfile = Profile(command: "claude", configDirectory: "/synthetic/default")
+        var commands: [[String]] = []
+        XCTAssertFalse(try MintTokenStore.delete(profile: defaultProfile, security: { commands.append($0); return 44 }))
+        let service = try XCTUnwrap(commands.first?.last)
+        XCTAssertEqual(service, MintTokenStore.serviceName(for: defaultProfile))
+        XCTAssertTrue(service.hasPrefix("Claudock-inference-"))
+        XCTAssertNotEqual(service, "Claude Code-credentials")
+    }
+
+    func testDeleteRefusesProfilesThatCannotHoldATokenBeforeAskingKeychain() {
+        let unsupported = [Profile(command: "claude-key", configDirectory: "/synthetic/key", managed: true, authKind: .apiKey),
+                           Profile(command: "claude-console", configDirectory: "/synthetic/console", managed: true, authKind: .consoleLogin),
+                           Profile(command: "claude-unresolved", configDirectory: "", discoveryNote: "Unresolved", managed: true),
+                           Profile(command: "claude-vertex", configDirectory: "/synthetic/vertex", isVertex: true)]
+        for candidate in unsupported {
+            XCTAssertThrowsError(try MintTokenStore.delete(profile: candidate, security: { _ in XCTFail("Unsupported profile reached Keychain"); return 44 })) {
+                XCTAssertEqual($0 as? MintTokenError, .unsupportedProfile)
+            }
+        }
+    }
 }

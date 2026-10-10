@@ -6,7 +6,7 @@ import Darwin
 public enum MintTokenError: Error, LocalizedError, Equatable {
     case unsupportedProfile, loginRequired, invalidCode, stateMismatch, invalidResponse
     case accountMismatch, accountChanged, identityUnavailable, network, exchangeFailed
-    case keychainUnavailable, keychainWriteFailed, tokenTooLarge
+    case keychainUnavailable, keychainWriteFailed, keychainDeleteFailed, tokenTooLarge
     case invalidToken, invalidExpiry, tokenExpired
 
     public var errorDescription: String? {
@@ -23,6 +23,7 @@ public enum MintTokenError: Error, LocalizedError, Equatable {
         case .exchangeFailed: return "Claude rejected this authorization. Open the browser again and use a fresh code."
         case .keychainUnavailable: return "The inference token's Keychain item is unavailable. Unlock your Mac and try again."
         case .keychainWriteFailed: return "The inference token could not be saved and verified in Keychain. Your existing Claude login was preserved."
+        case .keychainDeleteFailed: return "The inference token could not be deleted from Keychain. Unlock your Mac and try again."
         case .tokenTooLarge: return "This token exceeds the supported secure storage size. Your existing Claude login was preserved."
         case .invalidToken: return "Paste the raw sk-ant-oat01- token, or one complete export CLAUDE_CODE_OAUTH_TOKEN assignment. Do not include other commands."
         case .invalidExpiry: return "The token expiration date is invalid. Leave it unknown unless you know the actual expiration."
@@ -416,6 +417,35 @@ public enum MintTokenStore {
         let suffix = "\"\n"
         guard data.count <= 2016, prefix.utf8.count + data.count * 2 + suffix.utf8.count <= 4032 else { throw MintTokenError.tokenTooLarge }
         return Data((prefix + data.map { String(format: "%02x", $0) }.joined() + suffix).utf8)
+    }
+
+    /// Deletes the profile's saved inference token from Keychain without reading it, and says whether there was one.
+    /// Only the `Claudock-inference-…` item is touched, never Claude Code's own login or key.
+    public static func delete(profile: Profile) throws -> Bool {
+        try delete(profile: profile, security: { try CredentialStore.runSecurityStatus($0) })
+    }
+
+    static func delete(profile: Profile, security: ([String]) throws -> Int32) throws -> Bool {
+        try validateProfile(profile)
+        let service = serviceName(for: profile)
+        let command = try securityDeleteArguments(account: NSUserName(), service: service)
+        return try writeLock.withLock {
+            let status: Int32
+            do { status = try security(command) } catch { throw MintTokenError.keychainUnavailable }
+            if status == 44 { return false }
+            guard status == 0 else { throw MintTokenError.keychainDeleteFailed }
+            // `security` reported the deletion. An item that a lookup still finds is a failure; a lookup that cannot
+            // run proves nothing against it.
+            if (try? security(["find-generic-password", "-a", NSUserName(), "-s", service])) == 0 { throw MintTokenError.keychainDeleteFailed }
+            return true
+        }
+    }
+
+    /// The arguments for `security`, which runs no shell; only the inference-token namespace is accepted.
+    static func securityDeleteArguments(account: String, service: String) throws -> [String] {
+        guard account.range(of: #"\A[a-zA-Z0-9._-]+\z"#, options: .regularExpression) != nil,
+              service.range(of: #"\AClaudock-inference-[a-f0-9]{64}\z"#, options: .regularExpression) != nil else { throw MintTokenError.keychainDeleteFailed }
+        return ["delete-generic-password", "-a", account, "-s", service]
     }
 
     private static func write(_ command: Data) throws {
