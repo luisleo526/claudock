@@ -38,6 +38,8 @@ final class EndpointSettingsTests: XCTestCase {
          "ANTHROPIC_DEFAULT_SONNET_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model,
          "ANTHROPIC_SMALL_FAST_MODEL": model, "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
          "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "CLAUDE_CODE_DISABLE_1M_CONTEXT": disable1M,
+         // The advisor tool names a model of its own; it stays off.
+         "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1", "CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL": "",
          // Blank, so a settings file's Anthropic key or headers never travel to the third party beside the endpoint key.
          "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": "",
          // Blank, so no settings file can choose another model for a role or the picker, or another provider.
@@ -144,8 +146,9 @@ final class EndpointSettingsTests: XCTestCase {
         try FileManager.default.createDirectory(at: dropIns, withIntermediateDirectories: true)
         let managed = folder.appendingPathComponent("managed-settings.json")
         XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [])
-        // --settings outranks a project's other variables; only the key, which it cannot carry, matters there.
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_BASE_URL":"https://elsewhere.example","OTHER":"x"}}"#.utf8)
+        // --settings outranks a project's other variables; only the key, which it cannot carry, and the lists Claude Code
+        // adds to its own matter there.
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_BASE_URL":"https://elsewhere.example","OTHER":"x"},"availableModels":["deepseek-flash"],"model":"opus"}"#.utf8)
             .write(to: project.appendingPathComponent("settings.json"))
         // Managed settings outrank --settings: the pinned values themselves and blanks are fine there.
         try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANTHROPIC_API_KEY":"","OTHER":"x"}}"#.utf8).write(to: managed)
@@ -154,30 +157,61 @@ final class EndpointSettingsTests: XCTestCase {
         try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://elsewhere.example","ANTHROPIC_MODEL":"deepseek-flash"}}"#.utf8).write(to: managed)
         try Data(#"{"env":{"CLAUDE_CONFIG_DIR":"/synthetic/other-profile"}}"#.utf8).write(to: dropIns.appendingPathComponent("10-team.json"))
         XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [
-            APICreditCapture.Override(file: project.appendingPathComponent("settings.local.json").path, key: "ANTHROPIC_AUTH_TOKEN"),
-            APICreditCapture.Override(file: managed.path, key: "ANTHROPIC_BASE_URL"),
-            APICreditCapture.Override(file: dropIns.appendingPathComponent("10-team.json").path, key: "CLAUDE_CONFIG_DIR")])
+            APICreditCapture.Override(file: project.appendingPathComponent("settings.local.json").path, key: "env.ANTHROPIC_AUTH_TOKEN"),
+            APICreditCapture.Override(file: managed.path, key: "env.ANTHROPIC_BASE_URL"),
+            APICreditCapture.Override(file: dropIns.appendingPathComponent("10-team.json").path, key: "env.CLAUDE_CONFIG_DIR")])
     }
 
-    func testASettingsFileThatCannotBeParsedIsSearchedAsText() throws {
+    func testProjectListsThatClaudeCodeJoinsAndManagedChoicesAreFound() throws {
+        let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("managed-settings.d")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let managed = folder.appendingPathComponent("managed-settings.json"), file = project.appendingPathComponent("settings.json")
+        // Claude Code joins the allowlist, fallbacks, and overrides of every source instead of letting --settings replace them.
+        for (json, key) in [(#"{"availableModels":["deepseek-flash","deepseek-v4-pro"]}"#, "availableModels"),
+                            (#"{"fallbackModel":"deepseek-v4-pro"}"#, "fallbackModel"),
+                            (#"{"modelOverrides":{"claude-sonnet-4-6":"deepseek-v4-pro"}}"#, "modelOverrides")] {
+            try Data(json.utf8).write(to: file)
+            XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [APICreditCapture.Override(file: file.path, key: key)], json)
+        }
+        try FileManager.default.removeItem(at: file)
+        // Managed settings outrank --settings for every choice it makes.
+        for (json, key) in [(#"{"apiKeyHelper":"/usr/local/bin/key"}"#, "apiKeyHelper"), (#"{"availableModels":["deepseek-v4-pro"]}"#, "availableModels"),
+                            (#"{"model":"deepseek-v4-pro"}"#, "model"), (#"{"modelPicker":{"options":[]}}"#, "modelPicker")] {
+            try Data(json.utf8).write(to: managed)
+            XCTAssertEqual(overrides(managed: managed, dropIns: dropIns), [APICreditCapture.Override(file: managed.path, key: key)], json)
+        }
+    }
+
+    func testDuplicateNamesAreRefusedBecauseParsersDisagreeOnThem() throws {
+        let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("none.d")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("settings.json")
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token","ANTHROPIC_AUTH_TOKEN":""}}"#.utf8).write(to: file)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
+                       [APICreditCapture.Override(file: file.path, key: "env.ANTHROPIC_AUTH_TOKEN")])
+    }
+
+    func testASettingsFileThatCannotBeReadAsAnObjectStopsTheLaunch() throws {
         let project = folder.appendingPathComponent(".claude"), dropIns = folder.appendingPathComponent("none.d")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let local = project.appendingPathComponent("settings.local.json")
-        // Not JSON this parser reads, but a looser one might find the key in it: it counts.
-        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}} // trailing comma"#.utf8).write(to: local)
-        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
-                       [APICreditCapture.Override(file: local.path, key: "ANTHROPIC_AUTH_TOKEN")])
-        try Data(("{\"padding\":\"" + String(repeating: "x", count: 1_100_000) + "\",\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"fixture\"}}").utf8).write(to: local)
-        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns).map(\.key), ["ANTHROPIC_AUTH_TOKEN"],
-                       "a file too large to parse is searched too")
-        try Data(#"{"broken": "#.utf8).write(to: local)
-        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns), [])
+        for content in [#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token"} /* note */}"#, #"{"broken": "#, "[]",
+                        "{\"padding\":\"" + String(repeating: "x", count: 4_200_000) + "\"}"] {
+            try Data(content.utf8).write(to: local)
+            XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns),
+                           [APICreditCapture.Override(file: local.path, key: EndpointLaunch.unreadableSettings)], String(content.prefix(30)))
+        }
+        // Foundation reads a trailing comma where a strict parser stops: either way the file stops the launch.
+        try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture-token",}}"#.utf8).write(to: local)
+        XCTAssertEqual(overrides(managed: folder.appendingPathComponent("missing.json"), dropIns: dropIns).map(\.file), [local.path])
     }
 
-    func testAProjectConfigurationRootIsRefusedBecauseItsSettingsCannotBeChecked() {
-        XCTAssertThrowsError(try EndpointLaunch.arguments(["--project-config-root", "/synthetic/elsewhere", "-p", "x"], configuration: flash,
-                                                          configDirectory: profileFolder, workingDirectory: folder.path)) {
-            XCTAssertEqual($0 as? EndpointLaunchError, .unsupportedOption("--project-config-root"))
+    func testOptionsThatAddOrMoveSettingsAreRefused() {
+        for option in ["--project-config-root", "--managed-settings", "--forward-home-settings", "--deep-link-cwd-b64"] {
+            XCTAssertThrowsError(try EndpointLaunch.arguments([option, "x", "-p", "y"], configuration: flash, configDirectory: profileFolder,
+                                                              workingDirectory: folder.path), option) {
+                XCTAssertEqual($0 as? EndpointLaunchError, .unsupportedOption(option))
+            }
         }
     }
 
