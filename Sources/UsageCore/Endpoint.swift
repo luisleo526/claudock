@@ -206,20 +206,42 @@ public enum EndpointLaunch {
                                       "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
                                       "CLAUDE_CODE_USE_GATEWAY"]
 
+    /// Variables a launch clears that `--settings` leaves alone: the config folder and nested-session markers are
+    /// Claude Code's own, and the key cannot travel in arguments, which other processes can read.
+    static let unpinnedVariables: Set<String> = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"]
+
     /// The variables `--settings` repeats in its `env`. Claude Code copies each settings file's `env` over its process
     /// environment, lowest first, and `--settings` ranks above user, project, and local settings, so no settings file
-    /// below managed settings can point the session elsewhere or choose another model. A blank `ANTHROPIC_API_KEY` and
-    /// `ANTHROPIC_CUSTOM_HEADERS` keep a settings file's Anthropic key or headers from travelling to the endpoint with the
-    /// endpoint key. Empty model and provider variables leave every other role on the pinned defaults. The key itself is
-    /// never here: arguments are visible to other processes.
+    /// below managed settings can point the session elsewhere or choose another model. Every other credential, provider,
+    /// and model variable a launch clears is blank, as are the other model-choosing ones: no settings file can add an
+    /// Anthropic key or headers to the endpoint's requests (`ANTHROPIC_API_KEY` becomes `x-api-key` beside the bearer
+    /// token), switch the provider, or choose a model for another role. The key itself is never here: a settings file
+    /// that sets `ANTHROPIC_AUTH_TOKEN` is refused before launch instead (`overridingCredentials`).
     static func settingsEnvironment(_ configuration: EndpointConfiguration) -> [String: String] {
-        var result = ["ANTHROPIC_BASE_URL": configuration.baseURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                      // Claude Code 2.1.296 reads no such variable; it is set for versions that do.
-                      "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-                      oneMillionSwitch: configuration.isOneMillionTokens ? "" : "1", "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": ""]
-        for name in otherModelVariables { result[name] = "" }
+        var result: [String: String] = [:]
+        for name in LaunchCommand.clearedEnvironment + otherModelVariables where !unpinnedVariables.contains(name) { result[name] = "" }
+        result["ANTHROPIC_BASE_URL"] = configuration.baseURL
+        result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        // Claude Code 2.1.296 reads no such variable; it is set for versions that do.
+        result["DISABLE_NON_ESSENTIAL_MODEL_CALLS"] = "1"
+        result[oneMillionSwitch] = configuration.isOneMillionTokens ? "" : "1"
         for name in modelVariables { result[name] = configuration.model }
         return result
+    }
+
+    /// Settings files that set `ANTHROPIC_AUTH_TOKEN`, which Claude Code would send to the endpoint instead of the key:
+    /// the working directory's project settings and managed settings. The profile's own settings are refused for it
+    /// already (`SubscriptionConfiguration`), and `--settings` cannot pin the key. Unreadable files are skipped.
+    public static func overridingCredentials(workingDirectory: String,
+                                             managedSettings: [String] = APICreditCapture.managedSettingsFiles) -> [APICreditCapture.Override] {
+        let files = [workingDirectory + "/.claude/settings.json", workingDirectory + "/.claude/settings.local.json"] + managedSettings
+        return files.compactMap { file in
+            guard let data = BoundedFile.read(file, limit: 1_048_576),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let environment = object["env"] as? [String: Any], let value = environment["ANTHROPIC_AUTH_TOKEN"],
+                  (value as? String)?.isEmpty != true else { return nil }
+            return APICreditCapture.Override(file: file, key: "ANTHROPIC_AUTH_TOKEN")
+        }
     }
 
     /// `arguments` with Claudock's `--settings` first: the user's own `--settings`, if Claude Code would read one, merged

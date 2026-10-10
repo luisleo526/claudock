@@ -75,9 +75,11 @@ def endpoint_environment(sandbox, extra, profile, key, url=URL, model=MODEL):
 
 def pinned_settings(url=URL, model=MODEL, behaves_as=None, host=HOST, extra=None):
     """The --settings object a launch must pass: the allowlist, the endpoint's variables, and a picker row for behaves-as."""
-    environment = {"ANTHROPIC_BASE_URL": url, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-                   "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1", "ANTHROPIC_API_KEY": "",
-                   "ANTHROPIC_CUSTOM_HEADERS": "", **{name: "" for name in OTHER_MODEL_VARIABLES}}
+    # Every variable a launch clears is blank, except the folder, the nested-session marker, and the key.
+    environment = {name: "" for name in (CLEARED | set(OTHER_MODEL_VARIABLES))
+                   - {"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDECODE", "ANTHROPIC_AUTH_TOKEN"}}
+    environment.update({"ANTHROPIC_BASE_URL": url, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+                        "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1"})
     for name in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
         environment[name] = model
@@ -242,6 +244,20 @@ def user_settings(sandbox, checks):
         result = sandbox.run("run", "deepseek", "--", *arguments)
         checks.expect(result.returncode == 2 and sandbox.record() is None, f"--settings {' '.join(arguments[1:])} must be refused", result)
     checks.done("a user's --settings that changes the model, endpoint, or key, or that cannot be read once, is refused before launch")
+
+    # A project's settings that set ANTHROPIC_AUTH_TOKEN would replace the key; --settings cannot pin it, so the launch stops.
+    project = sandbox.base / ".claude"
+    project.mkdir(exist_ok=True)
+    local = project / "settings.local.json"
+    local.write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-e2e-synthetic"}}))
+    try:
+        result = sandbox.run("run", "deepseek", "--", "-p", "x")
+        checks.expect(result.returncode == 2 and sandbox.record() is None and "settings.local.json" in result.stderr
+                      and "ANTHROPIC_AUTH_TOKEN" in result.stderr and "sk-ant" not in result.stderr,
+                      "a project's settings that set ANTHROPIC_AUTH_TOKEN must stop the launch, naming the file", result)
+    finally:
+        local.unlink()
+    checks.done("a project's settings that would replace the endpoint key stop the launch")
 
 
 def behaves_as(sandbox, checks, key):
