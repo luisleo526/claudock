@@ -23,6 +23,18 @@ struct AccountState: Identifiable, Equatable {
         set { snapshot = newValue.snapshot; plan = newValue.plan; error = newValue.error; retryAt = newValue.retryAt }
     }
 
+    /// Whether the account has room left at `now`, for the Accounts filters, groups, and sort.
+    func availability(at now: Date) -> AccountAvailability {
+        AccountAvailability.classify(profile: profile, snapshot: snapshot, error: error, credit: credit,
+                                     creditFailed: creditError != nil, now: now)
+    }
+
+    /// The share left, 0 to 100: of the tightest subscription limit, or of the Console credit. nil without a reading.
+    func percentLeft(at now: Date) -> Double? {
+        if profile.authKind.isConsole { return credit.map { (1 - $0.fraction) * 100 } }
+        return snapshot?.headroom(at: now)?.percentLeft
+    }
+
     /// How a Console profile is billed, for display: "Console API key" or "Console login · ORGANIZATION".
     var consoleLabel: String? {
         switch profile.authKind {
@@ -44,6 +56,64 @@ struct AccountReading: Sendable {
     var credit: APICreditStatus?
     var creditError: String?
     var organization: String?
+}
+
+/// The order of the Accounts list.
+enum AccountSort: String, CaseIterable, Identifiable {
+    /// The order of Manage profiles.
+    case profile
+    /// Most room left first, then near a limit, full (soonest free first), needing attention, and not tracked.
+    case mostLeft
+    /// Highest usage first; Console profiles follow every subscription.
+    case mostUsed
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .profile: return "Profile order"
+        case .mostLeft: return "Most left first"
+        case .mostUsed: return "Highest usage first"
+        }
+    }
+}
+
+/// How the Accounts list is split into sections.
+enum AccountGrouping: String, CaseIterable, Identifiable {
+    case ungrouped, kind, availability
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .ungrouped: return "No groups"
+        case .kind: return "Account type"
+        case .availability: return "Usage status"
+        }
+    }
+}
+
+/// Which kinds of account the Accounts list shows.
+enum AccountKindFilter: String, CaseIterable, Identifiable {
+    case all, subscription, console
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: return "All types"
+        case .subscription: return "Subscriptions"
+        case .console: return "Console"
+        }
+    }
+    func includes(_ profile: Profile) -> Bool {
+        switch self {
+        case .all: return true
+        case .subscription: return profile.authKind == .subscription
+        case .console: return profile.authKind.isConsole
+        }
+    }
+}
+
+/// One section of the Accounts list.
+struct AccountGroup: Identifiable {
+    let id: String
+    let title: String
+    let accounts: [AccountState]
 }
 
 /// Subscription quota comes through `fetcher`, which reuses a reading younger than `maxAge` from the cache shared
@@ -116,8 +186,17 @@ func accountDetails(_ profile: Profile, knownPlan: SubscriptionPlan?) -> (email:
     @Published var showEmails = UserDefaults.standard.bool(forKey: "showEmails") {
         didSet { UserDefaults.standard.set(showEmails, forKey: "showEmails") }
     }
-    @Published var sortByUsage = UserDefaults.standard.bool(forKey: "sortByUsage") {
-        didSet { UserDefaults.standard.set(sortByUsage, forKey: "sortByUsage") }
+    /// Replaces the earlier "Highest usage first" switch (`sortByUsage`), which it takes over when unset.
+    @Published var accountSort = AccountSort(rawValue: UserDefaults.standard.string(forKey: "accountSort") ?? "")
+        ?? (UserDefaults.standard.bool(forKey: "sortByUsage") ? .mostUsed : .profile) {
+        didSet { UserDefaults.standard.set(accountSort.rawValue, forKey: "accountSort") }
+    }
+    @Published var accountGrouping = AccountGrouping(rawValue: UserDefaults.standard.string(forKey: "accountGrouping") ?? "") ?? .ungrouped {
+        didSet { UserDefaults.standard.set(accountGrouping.rawValue, forKey: "accountGrouping") }
+    }
+    /// Collapsed sections, as "GROUPING:ID", kept across launches.
+    @Published var collapsedGroups = Set(UserDefaults.standard.stringArray(forKey: "collapsedAccountGroups") ?? []) {
+        didSet { UserDefaults.standard.set(collapsedGroups.sorted(), forKey: "collapsedAccountGroups") }
     }
     /// Shared with the CLI, which enforces it when a profile launches.
     @Published var requireInferenceToken = InferenceTokenPolicy.isRequired() {
@@ -142,14 +221,65 @@ func accountDetails(_ profile: Profile, knownPlan: SubscriptionPlan?) -> (email:
     private var creditSaves: [String: Int] = [:]
 
     var sortedAccounts: [AccountState] {
-        if !sortByUsage { return accounts }
-        return accounts.sorted {
-            // Console profiles have no limits, so they follow every subscription account.
-            if $0.profile.authKind.isConsole != $1.profile.authKind.isConsole { return $1.profile.authKind.isConsole }
-            let a = $0.error == nil ? ($0.snapshot?.peak ?? -1) : -1
-            let b = $1.error == nil ? ($1.snapshot?.peak ?? -1) : -1
-            return a == b ? $0.profile.command < $1.profile.command : a > b
+        switch accountSort {
+        case .profile: return accounts
+        case .mostUsed:
+            return accounts.sorted {
+                // Console profiles have no limits, so they follow every subscription account.
+                if $0.profile.authKind.isConsole != $1.profile.authKind.isConsole { return $1.profile.authKind.isConsole }
+                let a = $0.error == nil ? ($0.snapshot?.peak ?? -1) : -1
+                let b = $1.error == nil ? ($1.snapshot?.peak ?? -1) : -1
+                return a == b ? $0.profile.command < $1.profile.command : a > b
+            }
+        case .mostLeft:
+            let now = self.now
+            let order = Dictionary(uniqueKeysWithValues: AccountAvailability.allCases.enumerated().map { ($1, $0) })
+            // Computed once per account, not once per comparison.
+            let keyed = accounts.map { account -> (AccountState, Int, Bool, Double, Date) in
+                let status = account.availability(at: now)
+                return (account, order[status] ?? 0, account.profile.authKind.isConsole, account.percentLeft(at: now) ?? -1,
+                        status == .full ? account.snapshot?.headroom(at: now)?.availableAgain ?? .distantFuture : .distantFuture)
+            }
+            return keyed.sorted { a, b in
+                if a.1 != b.1 { return a.1 < b.1 }
+                // Subscriptions first: Console profiles bill per token.
+                if a.2 != b.2 { return b.2 }
+                if a.3 != b.3 { return a.3 > b.3 }
+                if a.4 != b.4 { return a.4 < b.4 }
+                return a.0.profile.command < b.0.profile.command
+            }.map { $0.0 }
         }
+    }
+    /// How many accounts are in each availability state.
+    var availabilityCounts: [AccountAvailability: Int] {
+        let now = self.now
+        return accounts.reduce(into: [:]) { counts, account in counts[account.availability(at: now), default: 0] += 1 }
+    }
+    /// `accounts`, in their sorted order, split into the sections `accountGrouping` names; empty sections are left out.
+    func groups(_ accounts: [AccountState]) -> [AccountGroup] {
+        switch accountGrouping {
+        case .ungrouped:
+            return [AccountGroup(id: "all", title: "All profiles", accounts: accounts)]
+        case .kind:
+            let kinds: [(String, String, (Profile) -> Bool)] = [
+                ("subscription", "Subscriptions", { !$0.isVertex && $0.discoveryNote == nil && $0.authKind == .subscription }),
+                ("apiKey", "Console API keys", { $0.authKind == .apiKey }),
+                ("consoleLogin", "Console sign-ins", { $0.authKind == .consoleLogin }),
+                ("other", "Other", { ($0.isVertex || $0.discoveryNote != nil) && $0.authKind == .subscription })
+            ]
+            return kinds.map { id, title, matches in AccountGroup(id: id, title: title, accounts: accounts.filter { matches($0.profile) }) }
+                .filter { !$0.accounts.isEmpty }
+        case .availability:
+            let now = self.now
+            return AccountAvailability.allCases.map { status in
+                AccountGroup(id: status.rawValue, title: status.title, accounts: accounts.filter { $0.availability(at: now) == status })
+            }.filter { !$0.accounts.isEmpty }
+        }
+    }
+    func isCollapsed(_ group: AccountGroup) -> Bool { collapsedGroups.contains("\(accountGrouping.rawValue):\(group.id)") }
+    func toggleCollapsed(_ group: AccountGroup) {
+        let key = "\(accountGrouping.rawValue):\(group.id)"
+        if collapsedGroups.contains(key) { collapsedGroups.remove(key) } else { collapsedGroups.insert(key) }
     }
     var availableCount: Int { profileError == nil ? accounts.filter { $0.snapshot != nil && $0.error == nil }.count : 0 }
     var profileCount: Int { accounts.filter { !$0.profile.isVertex }.count }

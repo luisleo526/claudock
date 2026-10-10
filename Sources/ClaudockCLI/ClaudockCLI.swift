@@ -50,6 +50,8 @@ private enum Command {
     case rename(String, String), remove(String), login(String, Bool), run(String, [String])
     /// `usage(maxAge)`: how old, in seconds, a cached reading may be and still be shown without a request.
     case usage(TimeInterval)
+    /// `available(maxAge, namesOnly)`: the profiles with room left, most room first.
+    case available(TimeInterval, Bool)
     case shellEnable, shellDisable, shellStatus, shellProfileNames
     /// nil prints the current setting.
     case requireToken(Bool?)
@@ -61,6 +63,15 @@ private enum Command {
         if ["help", "--help", "-h"].contains(first), arguments.count == 1 { return .help }
         if ["version", "--version"].contains(first), arguments.count == 1 { return .version }
         if first == "usage" { return .usage(try usageMaxAge(Array(arguments.dropFirst()))) }
+        if first == "available" {
+            // `--names` comes first or last, so it never splits `--max-age SECONDS`.
+            var options = Array(arguments.dropFirst())
+            var namesOnly = false
+            if let index = options.firstIndex(of: "--names"), index == 0 || index == options.count - 1 {
+                namesOnly = true; options.remove(at: index)
+            }
+            return .available(try usageMaxAge(options, command: "available [--names]"), namesOnly)
+        }
         if first == "require-token", arguments.count == 2 {
             switch arguments[1] {
             case "on": return .requireToken(true)
@@ -152,7 +163,7 @@ private enum Command {
     }
 
     /// `usage [--max-age SECONDS | --fresh]`: 180 seconds by default, 0 to 86400, and `--fresh` for 0.
-    private static func usageMaxAge(_ options: [String]) throws -> TimeInterval {
+    private static func usageMaxAge(_ options: [String], command: String = "usage") throws -> TimeInterval {
         switch options.count {
         case 0: return 180
         case 1 where options[0] == "--fresh": return 0
@@ -161,7 +172,7 @@ private enum Command {
                 throw CLIError.arguments("--max-age takes a whole number of seconds from 0 to 86400.")
             }
             return TimeInterval(seconds)
-        default: throw CLIError.arguments("Use 'claudock usage', 'claudock usage --max-age SECONDS', or 'claudock usage --fresh'.")
+        default: throw CLIError.arguments("Use 'claudock \(command)', 'claudock \(command) --max-age SECONDS', or 'claudock \(command) --fresh'.")
         }
     }
 
@@ -345,6 +356,8 @@ private struct ClaudockCLI {
             try launch(profile: profile, arguments: login ? signIn : arguments, signIn: login)
         case .usage(let maxAge):
             try await usage(maxAge: maxAge)
+        case .available(let maxAge, let namesOnly):
+            try await available(maxAge: maxAge, namesOnly: namesOnly)
         case .requireToken(let required?):
             try InferenceTokenPolicy.setRequired(required)
             print(required
@@ -564,11 +577,7 @@ private struct ClaudockCLI {
                 }
                 continue
             }
-            let result = await fetcher.reading(for: profile, maxAge: maxAge) { profile in
-                // One request with the saved access token: renewal belongs to the resident app.
-                let credentials = try CredentialStore.read(profile: profile)
-                return UsageReading(plan: credentials.subscriptionPlan, snapshot: try await UsageClient.fetch(credentials: credentials))
-            }
+            let result = await fetcher.reading(for: profile, maxAge: maxAge, fetch: subscriptionReading)
             let shown: UsageReading
             switch result {
             case .current(let reading): shown = reading
@@ -587,6 +596,73 @@ private struct ClaudockCLI {
         }
         await fetcher.finish()
         if failed { exit(1) }
+    }
+
+    /// One request with the saved access token: renewal belongs to the resident app.
+    @Sendable private static func subscriptionReading(_ profile: Profile) async throws -> UsageReading {
+        let credentials = try CredentialStore.read(profile: profile)
+        return UsageReading(plan: credentials.subscriptionPlan, snapshot: try await UsageClient.fetch(credentials: credentials))
+    }
+
+    /// The profiles with room left, read like `usage`: subscriptions by the room left in their tightest 5-hour,
+    /// Weekly, or Fable limit, then Console profiles by the share of their credit left. A profile whose reading
+    /// is cached or that cannot be read gets a note on stderr. Exits 1 when no profile has room.
+    private static func available(maxAge: TimeInterval, namesOnly: Bool) async throws {
+        struct Row { let profile: Profile; let kind: String; let plan: String; let left: String; let limit: String; let resets: String; let rank: Double }
+        let profiles = try ProfileStore.load()
+        let formatter = ISO8601DateFormatter()
+        let fetcher = UsageFetcher()
+        let now = Date()
+        var rows: [Row] = []
+        var nextFree: (profile: Profile, at: Date)?
+        for profile in profiles where profile.discoveryNote == nil && !profile.isVertex && !profile.configDirectory.isEmpty {
+            if profile.authKind.isConsole {
+                let kind = profile.authKind == .apiKey ? "api-key" : "console-login"
+                let credit: APICreditStatus?
+                do { credit = try APICreditStore.status(profile: profile) }
+                catch { writeError("\(field(profile.name)): \(error.localizedDescription)"); continue }
+                guard let credit else {
+                    writeError("\(field(profile.name)): not listed; set its Console credit to track it: claudock profile set-credit \(profile.name) AMOUNT")
+                    continue
+                }
+                guard AccountAvailability.classify(profile: profile, snapshot: nil, error: nil, credit: credit, now: now).hasRoom else { continue }
+                // Console profiles follow every subscription: they are billed per token.
+                rows.append(Row(profile: profile, kind: kind, plan: APICreditStatus.plan, left: credit.leftText, limit: "Credit", resets: "-",
+                                rank: -2 + (1 - credit.fraction)))
+                continue
+            }
+            let result = await fetcher.reading(for: profile, maxAge: maxAge, fetch: subscriptionReading)
+            let reading: UsageReading, error: MonitorError?
+            switch result {
+            case .current(let current): reading = current; error = nil
+            case .cached(let cached, let reason):
+                reading = cached; error = reason
+                writeError("\(field(profile.name)): \(staleReason(reason)); using reading from \(age(of: cached.snapshot.fetchedAt)).")
+            case .failed(let failure):
+                writeError("\(field(profile.name)): not listed; \(failure.localizedDescription)")
+                continue
+            }
+            let status = AccountAvailability.classify(profile: profile, snapshot: reading.snapshot, error: error, credit: nil, now: now)
+            guard let headroom = reading.snapshot.headroom(at: now) else { continue }
+            guard status.hasRoom else {
+                if status == .full, let at = headroom.availableAgain, at < nextFree?.at ?? .distantFuture { nextFree = (profile, at) }
+                continue
+            }
+            let percent = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), headroom.percentLeft)
+            rows.append(Row(profile: profile, kind: "subscription", plan: reading.plan.displayName, left: percent + "%",
+                            limit: headroom.window.title, resets: headroom.window.resetsAt.map(formatter.string(from:)) ?? "unknown",
+                            rank: headroom.percentLeft))
+        }
+        await fetcher.finish()
+        rows.sort { $0.rank == $1.rank ? $0.profile.name < $1.profile.name : $0.rank > $1.rank }
+        if !namesOnly { print("PROFILE\tKIND\tPLAN\tLEFT\tTIGHTEST_LIMIT\tRESETS_UTC") }
+        for row in rows {
+            print(namesOnly ? field(row.profile.name)
+                  : [row.profile.name, row.kind, row.plan, row.left, row.limit, row.resets].map(field).joined(separator: "\t"))
+        }
+        guard rows.isEmpty else { return }
+        writeError("No profile has usage left." + (nextFree.map { " \($0.profile.name) is next free, at \(formatter.string(from: $0.at))." } ?? ""))
+        exit(1)
     }
 
     /// Why `usage` shows an older cached reading.
@@ -637,6 +713,7 @@ private struct ClaudockCLI {
       claudock profile import-shell
       claudock run NAME [-- CLAUDE_ARGS...]
       claudock usage [--max-age SECONDS | --fresh]
+      claudock available [--names] [--max-age SECONDS | --fresh]
       claudock require-token on|off|status
       claudock shell enable|disable|status
       claudock version
@@ -665,6 +742,14 @@ private struct ClaudockCLI {
     makes it fail. One Claudock process asks Claude at a time, half a second
     between requests; other 'usage' runs wait up to 30 seconds for its
     readings, then print what is cached.
+    'available' reads the same way and lists only the profiles with usage
+    left, most first: subscriptions by the room left in their tightest
+    5-hour, Weekly, or Fable limit (a limit past its reset time counts as
+    empty), then Console profiles with credit left, by share left. Profiles
+    near a limit are listed; full ones are not. '--names' prints only the
+    names, one per line, for scripts:
+      claudock run "$(claudock available --names | head -n 1)"
+    It exits 1 when no profile has usage left, naming the next one to free up.
     Shell integration is optional. 'shell enable' adds Claudock's marked zsh
     loader; disable removes only that integration. Existing wrappers stay intact.
 

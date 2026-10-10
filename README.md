@@ -270,6 +270,16 @@ A subscription row has three bars: 5-hour, Weekly, and Fable. A bar that Claude 
 
 A Console row has no limit bars. Once you set its credit, it shows a **Credit** meter such as `$187.42 left of $200.00`, and **LOW CREDIT** when less than 10% or $5 is left. A Console sign-in row also names its Console organization.
 
+### Many accounts
+
+With more than four profiles, a filter bar appears above the list:
+
+- **Status chips** count the profiles in each state and filter the list to one: **Available**, **Near limit** (less than 10% left, or low credit), **Full** (a limit is used up until it resets, or no credit is left), **Needs attention** (a sign-in is needed, or there is no reading), and **Not tracked** (Vertex, a profile to import, or a Console profile with no credit set). Click a chip again to show every profile.
+- **The search field** finds a profile by name, plan, or Console organization, and by email while emails are shown. Press ⌘F to reach it.
+- **The View menu** limits the list to subscriptions or Console profiles, groups it, and sorts it.
+
+**Group accounts by** in the … menu splits the list into **Account type** or **Usage status** sections. Click a section header to collapse it; Claudock remembers collapsed sections. **Sort accounts** offers **Profile order**, **Highest usage first**, and **Most left first**, which puts the profiles with the most room in their tightest 5-hour, Weekly, or Fable limit on top, then Console profiles by the share of credit left, then full profiles, soonest free first.
+
 The **Overview** tab shows the tokens recorded in your local session logs over the last 7 or 30 days. They are not billing or allowance. [How they are counted](docs/GUIDE.md#local-token-activity). Appearance, launch at login, and other settings are in the … menu: [Make it yours](docs/GUIDE.md#make-it-yours).
 
 ### claudock usage
@@ -291,6 +301,24 @@ console  Console API  Credit · $187.42 of $200.00 left  6.29          -
 - `RESETS_UTC` is when the allowance resets, in UTC. It is `unknown` when Claude gives no time, and `-` for credit, which does not reset.
 
 A Console profile with no credit set has no row. A note on stderr names `claudock profile set-credit` instead. The exit status is 0 unless a profile has no reading at all.
+
+### claudock available
+
+`claudock available` lists only the profiles with usage left, most left first. A subscription counts by its tightest 5-hour, Weekly, or Fable limit; a limit past its reset time counts as empty. Console profiles with credit left follow every subscription, since they are billed per token. Profiles near a limit are listed; full ones are not.
+
+```sh
+claudock available
+claudock available --names
+```
+
+```text
+PROFILE   KIND          PLAN         LEFT     TIGHTEST_LIMIT       RESETS_UTC
+weekend   subscription  Pro          82.00%   Weekly · Fable       2026-10-12T18:00:00Z
+personal  subscription  Max 20×      18.00%   5-hour session       2026-10-09T16:10:00Z
+console   api-key       Console API  $187.42  Credit               -
+```
+
+`LEFT` is what is left: a percentage of the tightest limit, or the Console credit in dollars. `--names` prints only the names, one per line, so a script can start Claude under the profile with the most left: `claudock run "$(claudock available --names | head -n 1)"`. It reads usage the same way as `claudock usage` and takes the same `--fresh` and `--max-age SECONDS` options. A profile it cannot read, or a Console profile with no credit set, gets a note on stderr. It exits 1 when no profile has usage left, and names the next profile to free up.
 
 ### Cached readings and rate limits
 
@@ -408,6 +436,7 @@ claudock profile login NAME [--console]                     # Sign in again; --c
 claudock profile import-shell                               # Import claude-NAME functions from your zsh files
 claudock run NAME [-- CLAUDE_ARGS...]                       # Start Claude Code under a profile
 claudock usage [--max-age SECONDS | --fresh]                # Print limits and Console credit
+claudock available [--names] [--max-age SECONDS | --fresh]  # List profiles with usage left, most first
 claudock require-token on|off|status                        # Require an inference token to launch
 claudock shell enable|disable|status                        # Turn zsh integration on or off, or check it
 claudock version                                            # Print the version
