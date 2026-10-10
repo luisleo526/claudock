@@ -54,8 +54,15 @@ final class EndpointSessionTests: XCTestCase {
         XCTAssertEqual(try EndpointSession.otherModels(inTranscript: file, pinned: "deepseek-flash"), ["claude-haiku-5-5", "claude-opus-5-5"])
         let own = try transcript([user, assistant("deepseek-flash"), assistant("<synthetic>"), assistant("deepseek-flash")])
         XCTAssertEqual(try EndpointSession.otherModels(inTranscript: own, pinned: "deepseek-flash"), [])
-        let wide = try transcript([assistant("deepseek-flash")])
-        XCTAssertEqual(try EndpointSession.otherModels(inTranscript: wide, pinned: "deepseek-flash[1m]"), ["deepseek-flash"])
+        // The endpoint answers a [1m] request as the plain model, which Claude Code records; the request keeps the suffix.
+        let wide = try transcript([assistant("deepseek-flash"), assistant("deepseek-flash[1m]")])
+        XCTAssertEqual(try EndpointSession.otherModels(inTranscript: wide, pinned: "deepseek-flash[1m]"), [])
+        XCTAssertEqual(try EndpointSession.otherModels(inTranscript: wide, pinned: "deepseek-flash"), [])
+        // What Claude Code asked for counts too, when the endpoint names its model differently in the reply.
+        let renamed = try transcript([#"{"type":"assistant","requestedModel":"deepseek-flash","message":{"model":"deepseek-v4-flash-0915"}}"#,
+                                      #"{"type":"assistant","requestedModel":"claude-sonnet-5-5[1m]","message":{"model":"claude-sonnet-5-5"}}"#,
+                                      #"{"type":"assistant","requestedModel":"claude-opus-5-5"}"#])
+        XCTAssertEqual(try EndpointSession.otherModels(inTranscript: renamed, pinned: "deepseek-flash"), ["claude-opus-5-5", "claude-sonnet-5-5"])
     }
 
     func testLongLinesAndAFileWithoutAFinalNewlineAreRead() throws {

@@ -28,7 +28,12 @@ final class EndpointSettingsTests: XCTestCase {
          "ANTHROPIC_SMALL_FAST_MODEL": model, "CLAUDE_CODE_SUBAGENT_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
          "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1", "CLAUDE_CODE_DISABLE_1M_CONTEXT": disable1M,
          // Blank, so a settings file's Anthropic key or headers never travel to the third party beside the endpoint key.
-         "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": ""]
+         "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": "",
+         // Blank, so no settings file can choose another model for a role or the picker, or another provider.
+         "ANTHROPIC_DEFAULT_MODEL": "", "CLAUDE_CODE_AUTO_MODE_MODEL": "", "CLAUDE_CODE_BG_CLASSIFIER_MODEL": "",
+         "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL": "", "ANTHROPIC_CUSTOM_MODEL_OPTION": "", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "",
+         "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES": "",
+         "CLAUDE_CODE_USE_GATEWAY": ""]
     }
 
     func testEveryLaunchCarriesOneSettingsObjectThatPinsTheModel() throws {
@@ -37,7 +42,9 @@ final class EndpointSettingsTests: XCTestCase {
         XCTAssertEqual(settings["availableModels"] as? [String], ["deepseek-flash"])
         XCTAssertEqual(settings["env"] as? [String: String], pinnedEnvironment("deepseek-flash"))
         XCTAssertNil(settings["modelPicker"], "without behavesAs the built-in rows stay; they resolve to the pinned model")
-        XCTAssertEqual(Set(settings.keys), ["availableModels", "env"])
+        // A project's key helper would otherwise send its key to the endpoint as x-api-key.
+        XCTAssertEqual(settings["apiKeyHelper"] as? String, "")
+        XCTAssertEqual(Set(settings.keys), ["availableModels", "env", "apiKeyHelper"])
     }
 
     func testBehavesAsAddsTheOnlyPickerRow() throws {
@@ -98,7 +105,9 @@ final class EndpointSettingsTests: XCTestCase {
             (#"{"env":{"ANTHROPIC_BASE_URL":"https://elsewhere.example"}}"#, "env.ANTHROPIC_BASE_URL"),
             (#"{"env":{"ANTHROPIC_API_KEY":"sk-ant-api03-fixture"}}"#, "env.ANTHROPIC_API_KEY"),
             (#"{"env":{"ANTHROPIC_AUTH_TOKEN":"fixture"}}"#, "env.ANTHROPIC_AUTH_TOKEN"),
-            (#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#, "env.CLAUDE_CODE_USE_BEDROCK"), (#"{"env":"x"}"#, "env")]
+            (#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#, "env.CLAUDE_CODE_USE_BEDROCK"), (#"{"env":"x"}"#, "env"),
+            (#"{"env":{"ANTHROPIC_CUSTOM_MODEL_OPTION":"claude-opus-4-8"}}"#, "env.ANTHROPIC_CUSTOM_MODEL_OPTION"),
+            (#"{"env":{"CLAUDE_CODE_USE_GATEWAY":"1"}}"#, "env.CLAUDE_CODE_USE_GATEWAY")]
         for (json, key) in refused {
             XCTAssertThrowsError(try EndpointLaunch.arguments(["--settings", json], configuration: flash, workingDirectory: folder.path), json) { error in
                 XCTAssertEqual(error as? EndpointLaunchError, .settingsConflict(key), json)
@@ -127,7 +136,7 @@ final class EndpointSettingsTests: XCTestCase {
         for arguments in [["--append-system-prompt", "--settings", "-p"], ["-p", "--", "--settings", "{}"], ["-p", "--settings is text"]] {
             let (settings, rest) = try launch(arguments)
             XCTAssertEqual(rest, arguments)
-            XCTAssertEqual(Set(settings.keys), ["availableModels", "env"])
+            XCTAssertEqual(Set(settings.keys), ["availableModels", "env", "apiKeyHelper"])
         }
     }
 }

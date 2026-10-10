@@ -16,7 +16,7 @@ public enum EndpointSessionError: Error, LocalizedError, Equatable {
 /// replied in: a long session made with Claude fails on a third-party endpoint once it is compacted.
 public enum EndpointSession {
     /// What a command line asks Claude Code to load.
-    public enum Request: Equatable, Sendable {
+    enum Request: Equatable, Sendable {
         /// `-c` / `--continue`: the latest session of the working directory.
         case latest
         /// `--resume VALUE`: a session ID, a transcript path, or a search term.
@@ -81,7 +81,7 @@ public enum EndpointSession {
     }
 
     /// The `-c`/`--continue` and `-r`/`--resume` requests in `arguments`, read the way Claude Code reads them.
-    public static func requests(in arguments: [String]) -> [Request] {
+    static func requests(in arguments: [String]) -> [Request] {
         ClaudeCommandLine.options(in: arguments).compactMap { option in
             switch option.name {
             case "-c", "--continue": return .latest
@@ -105,9 +105,11 @@ public enum EndpointSession {
         return String(decoding: sanitized.prefix(200), as: UTF16.self) + "-" + String(abs(Int64(hash)), radix: 36)
     }
 
-    /// The models other than `pinned` that replied in a transcript, from the `message.model` of its `assistant` entries,
-    /// sorted. `<synthetic>` marks Claude Code's own local messages, not a model's reply. Only those two fields of an
-    /// entry are decoded; lines that cannot be an assistant entry are skipped unread, and nothing is printed.
+    /// The models other than `pinned` that replied in a transcript, from its `assistant` entries, sorted. An entry is the
+    /// pinned model's when the model that answered (`message.model`) or the one Claude Code asked for (`requestedModel`)
+    /// is the pinned id, with or without `[1m]`: Claude Code sends and the endpoint answers the plain id. `<synthetic>`
+    /// marks Claude Code's own local messages, not a model's reply. Only those fields of an entry are decoded; lines
+    /// that cannot be an assistant entry are skipped unread, and nothing is printed.
     public static func otherModels(inTranscript url: URL, pinned: String) throws -> [String] {
         // A FIFO or device must not block or feed the launch: only a regular file is read.
         let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
@@ -123,20 +125,24 @@ public enum EndpointSession {
         defer { free(buffer) }
         let marker = Array("\"assistant\"".utf8)
         let decoder = JSONDecoder()
+        func plain(_ model: String) -> String { model.lowercased().hasSuffix("[1m]") ? String(model.dropLast(4)) : model }
+        let pinnedModel = plain(pinned)
         var models = Set<String>()
         while case let length = getline(&buffer, &capacity, file), length >= 0 {
             guard let buffer, memmem(buffer, length, marker, marker.count) != nil,
-                  let entry = try? decoder.decode(Entry.self, from: Data(bytes: buffer, count: length)),
-                  entry.type == "assistant", let model = entry.message?.model, model != pinned, model != "<synthetic>" else { continue }
+                  let entry = try? decoder.decode(Entry.self, from: Data(bytes: buffer, count: length)), entry.type == "assistant",
+                  let model = entry.message?.model ?? entry.requestedModel, model != "<synthetic>",
+                  ![entry.message?.model, entry.requestedModel].contains(where: { $0.map(plain) == pinnedModel }) else { continue }
             models.insert(model)
         }
         guard ferror(file) == 0 else { throw EndpointSessionError.unreadable(url.path) }
         return models.sorted()
     }
 
-    /// The two fields of a transcript entry the check needs; everything else is left undecoded.
+    /// The fields of a transcript entry the check needs; everything else is left undecoded.
     private struct Entry: Decodable {
         let type: String?
+        let requestedModel: String?
         let message: Message?
         struct Message: Decodable { let model: String? }
     }

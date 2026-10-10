@@ -105,6 +105,10 @@ final class EndpointTests: XCTestCase {
             XCTAssertEqual(try EndpointAPIKey(parsing: "export PROVIDER_KEY='" + value + "'").value, value)
         }
         XCTAssertEqual(try EndpointAPIKey(parsing: "TOKEN=abc=def").value, "abc=def")
+        // A raw key with base64 padding is not an assignment of "=".
+        XCTAssertEqual(try EndpointAPIKey(parsing: "AbC123xyz==").value, "AbC123xyz==")
+        XCTAssertEqual(try EndpointAPIKey(parsing: "exportAbC123==").value, "exportAbC123==")
+        XCTAssertEqual(try EndpointAPIKey(parsing: "export PROVIDER_KEY==abc").value, "=abc")
     }
 
     func testMalformedKeysAreRefusedWithoutEchoingThem() {
@@ -239,6 +243,9 @@ final class EndpointTests: XCTestCase {
                        "ANTHROPIC_MODEL": "claude-opus-5-5", "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-5-5", "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
                        "CLAUDE_CONFIG_DIR": "/synthetic/other", "CLAUDE_CODE_OAUTH_TOKEN": "parent-oauth", "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.invalid",
                        "OTEL_LOGS_EXPORTER": "otlp", "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0",
+                       "ANTHROPIC_DEFAULT_MODEL": "claude-opus-5-5", "CLAUDE_CODE_AUTO_MODE_MODEL": "claude-sonnet-5-5",
+                       "CLAUDE_CODE_BG_CLASSIFIER_MODEL": "x", "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL": "x", "ANTHROPIC_CUSTOM_MODEL_OPTION": "x",
+                       "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "x", "CLAUDE_CODE_USE_GATEWAY": "1",
                        "E2E_UNRELATED": "kept", "PATH": "/usr/bin:/bin"]
         let base = try LaunchCommand.environment(profile: profile, inherited: hostile)
         let environment = EndpointLaunch.environment(base, configuration: configuration, key: key)

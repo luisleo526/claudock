@@ -34,12 +34,19 @@ OTHER_MODEL = "deepseek-flash[1m]"
 USAGE_HEADER = "PROFILE\tPLAN\tWINDOW\tUSED_PERCENT\tRESETS_UTC\n"
 # Every variable a launch clears, read from the source so the expected environment follows it.
 CLEARED = set(re.findall(r'"([A-Z_]+)"', (PROJECT / "Sources/UsageCore/LaunchCommand.swift").read_text().split("public static func quote")[0]))
+# Other variables with which Claude Code chooses a model for a role, offers one in the picker, or picks a provider.
+OTHER_MODEL_VARIABLES = ["ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL", "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
+                         "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL", "ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+                         "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+                         "CLAUDE_CODE_USE_GATEWAY"]
 HOSTILE = {"ANTHROPIC_API_KEY": "synthetic-parent-api-key", "ANTHROPIC_AUTH_TOKEN": "synthetic-parent-auth-token",
            "ANTHROPIC_BASE_URL": "https://parent.example.invalid", "ANTHROPIC_MODEL": "claude-opus-5-5",
            "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-5-5", "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
            "CLAUDE_CONFIG_DIR": "/synthetic/other-profile", "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-parent-oauth-token",
            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.invalid", "OTEL_LOGS_EXPORTER": "otlp",
-           "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0", "E2E_UNRELATED": "kept"}
+           "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0", "E2E_UNRELATED": "kept",
+           "ANTHROPIC_CUSTOM_MODEL_OPTION": "claude-opus-4-8", "CLAUDE_CODE_AUTO_MODE_MODEL": "claude-sonnet-5-5",
+           "CLAUDE_CODE_USE_GATEWAY": "1"}
 LITERAL_ARGUMENTS = ["-p", "a b", "quote'word", "$(touch SHOULD_NOT_EXIST)", "; echo bad"]
 
 
@@ -51,7 +58,8 @@ def endpoint_environment(sandbox, extra, profile, key, url=URL, model=MODEL):
     """What a launch of `profile` must receive: the sandbox's own environment and `extra`, without the cleared and
     telemetry variables, plus the endpoint's."""
     expected = {name: value for name, value in sandbox.environment(extra).items()
-                if name not in CLEARED and not name.startswith("OTEL_") and name != "CLAUDE_CODE_ENABLE_TELEMETRY"}
+                if name not in CLEARED and name not in OTHER_MODEL_VARIABLES and not name.startswith("OTEL_")
+                and name != "CLAUDE_CODE_ENABLE_TELEMETRY"}
     expected.update({"CLAUDE_CONFIG_DIR": profile["configDirectory"], "ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": key,
                      "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
                      "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model,
@@ -69,12 +77,13 @@ def pinned_settings(url=URL, model=MODEL, behaves_as=None, host=HOST, extra=None
     """The --settings object a launch must pass: the allowlist, the endpoint's variables, and a picker row for behaves-as."""
     environment = {"ANTHROPIC_BASE_URL": url, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
                    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "" if model.endswith("[1m]") else "1", "ANTHROPIC_API_KEY": "",
-                   "ANTHROPIC_CUSTOM_HEADERS": ""}
+                   "ANTHROPIC_CUSTOM_HEADERS": "", **{name: "" for name in OTHER_MODEL_VARIABLES}}
     for name in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
         environment[name] = model
     settings = dict(extra or {})
     settings["env"] = {**settings.get("env", {}), **environment}
+    settings["apiKeyHelper"] = ""
     settings["availableModels"] = [model.removesuffix("[1m]")]
     if behaves_as:
         settings["modelPicker"] = {"replaceBuiltInOptions": True, "options": [
@@ -268,14 +277,16 @@ def project_folder(sandbox):
     return sandbox.home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(sandbox.base))
 
 
-def write_session(sandbox, folder, models, age, session_id=None):
-    """A compact transcript like Claude Code's: a user line, then one assistant line per model."""
+def write_session(sandbox, folder, models, age, session_id=None, requested=None):
+    """A compact transcript like Claude Code's: a user line, then one assistant line per model, each recording `requested`
+    as the model Claude Code asked for when given."""
     session_id = session_id or str(uuid.uuid4())
     entries = [{"parentUuid": None, "isSidechain": False, "type": "user", "uuid": f"u-{session_id}", "sessionId": session_id,
                 "cwd": str(sandbox.base), "message": {"role": "user", "content": "e2e-transcript-text question"}}]
     entries += [{"parentUuid": f"u-{session_id}", "isSidechain": False, "type": "assistant", "uuid": f"a{index}-{session_id}",
                  "sessionId": session_id, "cwd": str(sandbox.base),
-                 "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "e2e-transcript-text answer"}]}}
+                 "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "e2e-transcript-text answer"}]},
+                 **({"requestedModel": requested} if requested else {})}
                 for index, model in enumerate(models)]
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{session_id}.jsonl"
@@ -336,6 +347,18 @@ def resume_guard(sandbox, checks, profile):
     checks.expect(result.returncode == 2 and sandbox.record() is None and "claude-haiku-5-5" in result.stderr,
                   "the resumed session's subagent transcripts must be checked too", result)
     checks.done("sessions in other project folders and a session's subagent transcripts are checked too")
+
+    # DeepSeek answers a [1m] request as the plain model, and Claude Code records that: still the profile's own session.
+    result = sandbox.run("profile", "set-endpoint", "deepseek", "--model", OTHER_MODEL)
+    checks.expect(result.returncode == 0, "the profile must take the [1m] pin", result)
+    wide_id, _ = write_session(sandbox, folder, [MODEL], age=50, requested=OTHER_MODEL)
+    result = sandbox.run("run", "deepseek", "--", "--resume", wide_id)
+    record = sandbox.record()
+    checks.expect(result.returncode == 0 and record is not None and claude_arguments(record) == ["--resume", wide_id],
+                  "a [1m] profile must resume its own session, recorded under the plain model", result)
+    result = sandbox.run("profile", "set-endpoint", "deepseek", "--model", MODEL)
+    checks.expect(result.returncode == 0, "the profile must return to the plain pin", result)
+    checks.done("a [1m] pin resumes its own sessions, which record the plain model the endpoint answered as")
 
 
 def rejected_input(sandbox, checks):
