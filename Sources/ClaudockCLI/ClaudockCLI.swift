@@ -5,7 +5,7 @@ import UsageCore
 private enum CLIError: LocalizedError {
     case arguments(String), missingProfile(String), ambiguousProfile(String), missingExecutable, missingOwnExecutable, launchFailed(Int32), invalidEnvironment
     case input(String), missingAPIKey(String), apiKeySignIn(String), subscriptionKey(String), apiKeyToken(String), expiredToken(String)
-    case tokenAccountMismatch(String), consoleSignIn(String), subscriptionConsoleSignIn(String), consoleLoginToken(String)
+    case tokenAccountMismatch(String), consoleSignIn(String), subscriptionConsoleSignIn(String), consoleLoginToken(String), noToken(String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +25,7 @@ private enum CLIError: LocalizedError {
             return "'\(name)' is a Claude subscription profile. Only profiles added with 'claudock profile add NAME --api-key' or '--console' use a Console API key."
         case .apiKeyToken(let name): return "'\(name)' uses a Console API key. Inference tokens are only for Claude subscription profiles."
         case .consoleLoginToken(let name): return "'\(name)' signs in to an Anthropic Console account. Inference tokens are only for Claude subscription profiles."
+        case .noToken(let name): return "No inference token is saved for '\(name)'."
         case .consoleSignIn(let name): return "\(name) is not signed in to a Console account. Sign in with: claudock profile login \(name)"
         case .subscriptionConsoleSignIn(let name):
             return "'\(name)' is a Claude subscription profile and signs in with: claudock profile login \(name). "
@@ -43,6 +44,7 @@ private enum CLIError: LocalizedError {
 private enum Command {
     case help, version, list, importShell
     case add(String, String?), addAPIKey(String, String?), addConsoleLogin(String, String?), setKey(String), setToken(String, Date?), setupToken(String), tokens
+    case clearToken(String)
     case setCredit(String, Decimal)
     /// `login(NAME, console)`: `--console` asks for an Anthropic Console sign-in.
     case rename(String, String), remove(String), login(String, Bool), run(String, [String])
@@ -90,6 +92,9 @@ private enum Command {
             case "setup-token" where arguments.count > 3:
                 throw CLIError.arguments("profile setup-token takes only a profile name: claudock profile setup-token NAME.")
             case "tokens" where arguments.count == 2: return .tokens
+            case "clear-token" where arguments.count == 3: return .clearToken(try name(arguments[2]))
+            case "clear-token" where arguments.count > 3:
+                throw CLIError.arguments("profile clear-token takes only a profile name: claudock profile clear-token NAME.")
             case "set-credit" where arguments.count == 4: return .setCredit(try name(arguments[2]), try creditAmount(arguments[3]))
             case "set-credit" where arguments.count > 2:
                 throw CLIError.arguments("profile set-credit takes a profile name and an amount in US dollars: claudock profile set-credit NAME AMOUNT.")
@@ -265,12 +270,19 @@ private struct ClaudockCLI {
                 print("To switch back, sign in again with: claudock profile login \(switched.name) --console")
             }
         case .setToken(let name, let expiry):
-            let profile = try resolve(name)
-            try requireTokenSupport(profile)
-            guard profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else { throw MintTokenError.unsupportedProfile }
+            let profile = try tokenProfile(name)
             let token = try MintTokenStore.importToken(raw: SecretInput.read(prompt: "Inference token: "), profile: profile, expiresAt: expiry)
             print("Saved an inference token for \(profile.name) in Keychain; 'claudock run \(profile.name)' uses it. "
                   + "Expires: \(token.expiresAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"). Its account is not verified.")
+        case .clearToken(let name):
+            let profile = try tokenProfile(name)
+            guard try MintTokenStore.delete(profile: profile) else { throw CLIError.noToken(profile.name) }
+            print("Deleted the inference token saved for \(profile.name) from Keychain (service \(MintTokenStore.serviceName(for: profile))). "
+                  + "Claude Code's own login was not touched.")
+            print(InferenceTokenPolicy.isRequired()
+                  ? "Claudock requires an inference token to launch, so 'claudock run \(profile.name)' is refused until you save one: "
+                      + "claudock profile setup-token \(profile.name), then pbpaste | claudock profile set-token \(profile.name)."
+                  : "'claudock run \(profile.name)' now starts Claude with the profile's normal login.")
         case .setupToken(let name):
             let profile = try resolve(name)
             try requireTokenSupport(profile)
@@ -300,17 +312,11 @@ private struct ClaudockCLI {
             let profile = try resolve(name)
             try ProfileStore.remove(profile: profile)
             switch profile.authKind {
-            case .apiKey:
-                let service = APIKeyStore.serviceName(for: profile)
-                print("Removed \(name) from Claudock. Claude data, its Console API key, and your own shell commands were preserved.")
-                print("The key stays in Keychain under service \(service). To delete it: security delete-generic-password -s \(service)")
-            case .consoleLogin:
-                let service = LaunchCommand.quote(ConsoleLogin.keychainService(for: profile))
-                print("Removed \(name) from Claudock. Claude data, its Console sign-in, and your own shell commands were preserved.")
-                print("Claude Code keeps the sign-in's API key in Keychain under service \(service). To delete it: security delete-generic-password -s \(service)")
-            case .subscription:
-                print("Removed \(name) from Claudock. Claude data, credentials, and your own shell commands were preserved.")
+            case .apiKey: print("Removed \(name) from Claudock. Claude data, its Console API key, and your own shell commands were preserved.")
+            case .consoleLogin: print("Removed \(name) from Claudock. Claude data, its Console sign-in, and your own shell commands were preserved.")
+            case .subscription: print("Removed \(name) from Claudock. Claude data, credentials, and your own shell commands were preserved.")
             }
+            printLeftovers(of: profile)
         case .login(let name, let console):
             let profile = try resolve(name)
             switch profile.authKind {
@@ -385,6 +391,33 @@ private struct ClaudockCLI {
 
     /// Claude Code's sign-in to an Anthropic Console account; it creates and keeps the profile's API key itself.
     private static let consoleSignIn = ["auth", "login", "--console"]
+
+    /// The profile that `name` selects, for a command that saves or deletes its inference token.
+    private static func tokenProfile(_ name: String) throws -> Profile {
+        let profile = try resolve(name)
+        try requireTokenSupport(profile)
+        guard profile.discoveryNote == nil, !profile.isVertex, !profile.configDirectory.isEmpty else { throw MintTokenError.unsupportedProfile }
+        return profile
+    }
+
+    /// Removal keeps every credential, and the profile list forgets where they are. So say what is still in Keychain,
+    /// each item with the command that deletes it, and the config folder; deleting an item does not revoke its key.
+    private static func printLeftovers(of profile: Profile) {
+        let lookup = ProfileKeychainItems.lookup(for: profile)
+        if !lookup.existing.isEmpty || !lookup.unchecked.isEmpty {
+            print("Credentials left in Keychain. To delete one, run its command:")
+            for item in lookup.existing { print("  \(item.title)\n    \(item.deleteCommand)") }
+            for item in lookup.unchecked { print("  \(item.title) (Keychain could not be checked; it may not exist)\n    \(item.deleteCommand)") }
+        }
+        if !profile.configDirectory.isEmpty {
+            // Quoted, so the line can go into `rm -r` as it is. A terminal must not receive control characters, so they
+            // become spaces, and then the name shown is not exact.
+            let shown = field(profile.configDirectory)
+            print("Config folder: \(LaunchCommand.quote(shown))"
+                  + (shown == profile.configDirectory ? "" : " (control characters in the name are shown as spaces)"))
+        }
+        print("Keys and tokens stay valid at Anthropic until they are revoked in the Console or on claude.ai.")
+    }
 
     /// Inference tokens belong to subscription profiles.
     private static func requireTokenSupport(_ profile: Profile) throws {
@@ -597,6 +630,7 @@ private struct ClaudockCLI {
       claudock profile set-token NAME [--expires ISO8601_DATE]
       claudock profile setup-token NAME
       claudock profile tokens
+      claudock profile clear-token NAME
       claudock profile rename NAME NEWNAME
       claudock profile remove NAME
       claudock profile login NAME [--console]
@@ -608,7 +642,10 @@ private struct ClaudockCLI {
       claudock version
 
     Profiles are stored by Claudock. Adding, renaming, or removing a profile
-    does not edit .zshrc. Removal keeps Claude data and credentials.
+    does not edit .zshrc. Removal keeps Claude data and credentials: 'profile
+    remove' lists the Keychain items still holding them, each with the command
+    that deletes it, and the config folder. Deleting an item does not revoke its
+    key; revoke API keys in the Console, and logins and tokens on claude.ai.
     Profile names or exact SELECTOR values select a profile. An exact selector
     takes precedence; ambiguous display names require the selector from 'list'.
     Selectors are profile identifiers; they do not create shell commands.
@@ -669,6 +706,9 @@ private struct ClaudockCLI {
       claudock profile setup-token NAME
       pbpaste | claudock profile set-token NAME
     'run NAME -- setup-token' does the same when nothing comes before setup-token.
+    'profile clear-token NAME' deletes the token saved for a profile, and only
+    that item: Claude Code's own login stays. The profile then starts with its
+    normal login, or is refused while 'require-token' is on.
     'require-token on' makes every Claudock launch of a subscription profile
     ('run', shortcuts, Open in Terminal, Continue as…) use its inference token:
     a missing, expired, or unreadable token stops the launch instead of using

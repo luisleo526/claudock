@@ -23,6 +23,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import select
 import shutil
 import signal
@@ -144,8 +145,42 @@ def keychain_item_exists(service):
     return result.returncode == 0
 
 
+# The real default profile's Keychain items: Claude Code's login and Console key, and Claudock's token and key, which
+# take their names from the login's. No check may create, overwrite, track for deletion, or delete them.
+DEFAULT_PROFILE_SERVICES = ("Claude Code", "Claude Code-credentials",
+                            "Claudock-inference-" + hashlib.sha256(b"Claude Code-credentials").hexdigest(),
+                            "Claudock-apikey-" + hashlib.sha256(b"Claude Code-credentials").hexdigest())
+
+
+def refuse_default_profile_item(service):
+    if service in DEFAULT_PROFILE_SERVICES:
+        raise ValueError(f"refusing to touch the default profile's Keychain item {service!r}")
+
+
+def create_keychain_item(service):
+    """Saves a generic-password item with a random synthetic value, the way Claude Code does: `security -i` with the
+    value hex-encoded on stdin. The default profile's real items are refused."""
+    refuse_default_profile_item(service)
+    value = os.urandom(24).hex().encode().hex()
+    result = subprocess.run([SECURITY, "-i"], input=f'add-generic-password -U -a "{ACCOUNT}" -s "{service}" -X "{value}"\n'.encode(),
+                            env={**os.environ, "HOME": REAL_HOME}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+    if result.returncode != 0:
+        raise RuntimeError(f"Could not create the synthetic Keychain item (status {result.returncode})")
+
+
+def delete_command(service):
+    """The command `claudock profile remove` prints, and the README tells the reader to run, for a Keychain item."""
+    return f"security delete-generic-password -s '{service}'"
+
+
+def printed_delete_services(output):
+    """The services whose delete commands `output` shows, in order."""
+    return re.findall(r"security delete-generic-password -s '([^'\n]*)'", output)
+
+
 def delete_keychain_item(service):
     """Returns True once no item with this service remains."""
+    refuse_default_profile_item(service)
     for _ in range(3):
         result = subprocess.run([SECURITY, "delete-generic-password", "-a", ACCOUNT, "-s", service],
                                 env={**os.environ, "HOME": REAL_HOME}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -241,10 +276,14 @@ class Sandbox:
         return next(profile["registryID"] for profile in profiles if profile["command"] == "claude-" + name)
 
     def track(self, service):
-        # The unhashed services hold the real default profile's login; teardown must never delete them.
-        if service in ("Claude Code", "Claude Code-credentials"):
-            raise ValueError(f"refusing to track the default profile's Keychain item {service!r}")
+        # Teardown deletes what is tracked, so it must never be the real default profile's items.
+        refuse_default_profile_item(service)
         self.services.add(service)
+
+    def create_keychain_item(self, service):
+        """Tracks the item for teardown, then creates it with a synthetic value."""
+        self.track(service)
+        create_keychain_item(service)
 
     def close(self):
         """Deletes tracked Keychain items and the sandbox. Returns the services that existed and were
@@ -348,3 +387,48 @@ class Checks:
 
     def done(self, name):
         self.passed.append(name)
+
+
+# The Keychain items `claudock profile remove` can list for a profile, in the order it lists them.
+LEFTOVER_ITEMS = (("login", credential_service), ("console key", managed_key_service),
+                  ("inference token", inference_service), ("API key", api_key_service))
+
+
+def shell_quoted_folder(path):
+    """How `profile remove` shows a config folder: in single quotes, so the line can go into a shell as it is."""
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
+def check_removal(sandbox, checks, name, present):
+    """Removes the profile `name` and checks what `profile remove` printed. `present` names the Keychain items that
+    exist for the profile, among "login", "console key", "inference token", and "API key". The output must hold
+    exactly their delete commands, in that order, and mention no other service. The profile's config folder, quoted
+    for the shell, and the reminder that keys stay valid at Anthropic until revoked come after them. The profile
+    goes; every item stays. Returns the result."""
+    unknown = set(present) - {kind for kind, _ in LEFTOVER_ITEMS}
+    if unknown:
+        raise ValueError(f"unknown Keychain items {sorted(unknown)!r}")
+    profile = sandbox.listed()[name]
+    services = {kind: service(profile) for kind, service in LEFTOVER_ITEMS}
+    expected = [services[kind] for kind, _ in LEFTOVER_ITEMS if kind in present]
+    result = sandbox.run("profile", "remove", name)
+    checks.expect(result.returncode == 0 and result.stderr == "", f"profile remove {name} must succeed without warnings", result)
+    lines = result.stdout.splitlines()
+    commands = [line.strip() for line in lines]
+    checks.expect(lines and lines[0].startswith(f"Removed {name} from Claudock."), "remove must keep its success line first", result)
+    checks.expect(printed_delete_services(result.stdout) == expected,
+                  f"remove must print delete commands for exactly {expected!r}, in order", result)
+    for kind, service in services.items():
+        if kind in present:
+            checks.expect(delete_command(service) in commands, f"remove must print the exact delete command for the {kind} item on a line of its own", result)
+        else:
+            checks.expect(service not in result.stdout, f"remove must not mention the {kind} item, which does not exist", result)
+    last_command = max((number for number, line in enumerate(lines) if "security delete-generic-password" in line), default=0)
+    checks.expect(len(lines) >= 3 and last_command < len(lines) - 2 and lines[-2] == "Config folder: " + shell_quoted_folder(profile["configDirectory"]),
+                  "remove must print the config folder, quoted for the shell, after the delete commands", result)
+    checks.expect("revoked" in lines[-1] and "Console" in lines[-1] and "claude.ai" in lines[-1],
+                  "remove must end by saying that keys stay valid until revoked in the Console or on claude.ai", result)
+    checks.expect(name not in sandbox.listed(), f"{name} must be removed from the registry")
+    for kind in present:
+        checks.expect(keychain_item_exists(services[kind]), f"removal must keep the {kind} item")
+    return result

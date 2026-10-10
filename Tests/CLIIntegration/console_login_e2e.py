@@ -18,7 +18,7 @@ import json
 import secrets
 import sys
 
-from claudock_e2e import (Checks, api_key_service, build_cli, clean_up_on_termination, credential_service,
+from claudock_e2e import (Checks, api_key_service, build_cli, check_removal, clean_up_on_termination, credential_service,
                           delete_keychain_item, inference_service, keychain_item_exists, managed_key_service,
                           preflight, read_policy_preference, restore_policy_preference)
 from credit_e2e import CREDIT_FAKE, HEADER, TELEMETRY_KEYS, CreditSandbox, finish, set_credit, synthetic_key
@@ -252,6 +252,10 @@ def switch_api_key_profile(checks, sandbox):
     checks.expect(launched_key() == replacement, "after set-key, run must inject the new key")
     checks.done("set-key on a console-login profile switches it to api-key and injects the key again")
 
+    # The profile now has its pasted key and the key Claude Code made at sign-in, which it no longer uses.
+    check_removal(sandbox, checks, "k1", present={"console key", "API key"})
+    checks.done("remove lists both keys of a profile that switched between a pasted key and a Console sign-in")
+
 
 def refusals(checks, sandbox, original_policy):
     result = sandbox.run("profile", "add", "sub")
@@ -276,10 +280,17 @@ def refusals(checks, sandbox, original_policy):
     checks.expect(result.returncode == 1 and "Inference tokens are only for" in result.stderr and token not in result.stdout + result.stderr,
                   "profile set-token must refuse a console-login profile without echoing the token", result)
     checks.expect(not keychain_item_exists(inference_service(sandbox.listed()["c1"])), "a refused set-token stores nothing")
+    # clear-token refuses it too, and deletes nothing: an item in the token namespace stays.
+    sandbox.create_keychain_item(inference_service(sandbox.listed()["c1"]))
+    result = sandbox.run("profile", "clear-token", "c1")
+    checks.expect(result.returncode == 1 and "Inference tokens are only for" in result.stderr and sandbox.record() is None,
+                  "profile clear-token must refuse a console-login profile", result)
+    checks.expect(keychain_item_exists(inference_service(sandbox.listed()["c1"])), "a refused clear-token deletes nothing")
+    checks.expect(delete_keychain_item(inference_service(sandbox.listed()["c1"])), "could not remove the synthetic item the refusal check created")
     result = sandbox.run("profile", "tokens")
     rows = {line.split("\t")[0]: line.split("\t") for line in result.stdout.splitlines()[1:]}
     checks.expect(result.returncode == 0 and rows.get("c1") == ["c1", "n/a", "-"], f"tokens must list c1 as n/a, got {rows.get('c1')!r}", result)
-    checks.done("setup-token and set-token refuse console-login profiles; tokens lists them as n/a")
+    checks.done("setup-token, set-token, and clear-token refuse console-login profiles; tokens lists them as n/a")
 
     result = sandbox.run("require-token", "on")
     checks.expect(result.returncode == 0 and read_policy_preference() is True, "require-token on must succeed", result)
@@ -306,13 +317,10 @@ def usage_and_removal(cli, checks, sandboxes):
                   "usage without credit must print the skip line with the Console organization", result)
     checks.done("usage without credit: skip line names the Console organization, no row, exit 0")
 
-    service = managed_key_service(c3)
-    result = sandbox.run("profile", "remove", "c3")
-    checks.expect(result.returncode == 0 and "c3" not in sandbox.listed(), "profile remove must remove the console-login profile", result)
-    checks.expect(f"security delete-generic-password -s '{service}'" in result.stdout,
-                  "removal must print Claude Code's managed-key service and how to delete it", result)
-    checks.expect(keychain_item_exists(service), "removal must keep Claude Code's managed key")
-    checks.done("remove keeps Claude Code's managed key and prints its service")
+    # Claude Code's key from the sign-in, and the OAuth login it can keep beside it (a synthetic item stands in).
+    sandbox.create_keychain_item(credential_service(c3))
+    check_removal(sandbox, checks, "c3", present={"login", "console key"})
+    checks.done("remove keeps Claude Code's key and login of a console-login profile and prints their delete commands")
 
 
 def arguments(checks, sandbox):

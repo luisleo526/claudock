@@ -15,9 +15,10 @@ from pathlib import Path
 import secrets
 import sys
 
-from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, clean_up_on_termination,
-                          credential_service, inference_service, keychain_item_exists, preflight,
-                          read_policy_preference, restore_policy_preference)
+from claudock_e2e import (DEFAULT_PROFILE_SERVICES, Checks, Sandbox, TerminalRun, api_key_service, build_cli, check_removal,
+                          clean_up_on_termination, credential_service, delete_keychain_item, inference_service,
+                          keychain_item_exists, managed_key_service, preflight, read_policy_preference,
+                          refuse_default_profile_item, restore_policy_preference)
 
 
 PROMPT = b"Inference token: "
@@ -371,10 +372,141 @@ def setup_token_rejections(sandbox, checks):
     checks.done("profile setup-token takes only a profile name")
 
 
+def clear_token(sandbox, checks):
+    """`profile clear-token` deletes the saved inference token and nothing else."""
+    work = sandbox.listed()["work"]
+    login = credential_service(work)
+    # Claude Code keeps the profile's login in an item of its own; a synthetic one stands in for it.
+    sandbox.create_keychain_item(login)
+    token = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=token)
+    checks.expect(result.returncode == 0 and keychain_item_exists(inference_service(work)), "clear-token needs a saved token to delete", result)
+
+    result = sandbox.run("profile", "clear-token", "work")
+    checks.expect(result.returncode == 0 and result.stderr == "", "clear-token must delete the saved token", result)
+    checks.expect("work" in result.stdout and inference_service(work) in result.stdout, "clear-token must say what it deleted", result)
+    checks.expect(token not in result.stdout + result.stderr, "clear-token must not print the token")
+    checks.expect(not keychain_item_exists(inference_service(work)), "the inference-token item must be gone")
+    checks.expect(keychain_item_exists(login), "clear-token must leave Claude Code's own login alone")
+    rows = token_rows(sandbox, checks, token)
+    checks.expect(rows.get("work") == ["none", "-"], f"tokens must show none after clear-token, got {rows.get('work')!r}")
+    checks.expect(launched_token(sandbox, checks, "work") is None, "run must use the profile's own login once its token is cleared")
+    checks.done("clear-token deletes only the saved inference token; tokens shows none; run uses the profile's own login")
+
+    result = sandbox.run("profile", "clear-token", "work")
+    checks.expect(result.returncode == 1 and result.stdout == "" and "No inference token is saved for 'work'" in result.stderr,
+                  "clear-token with no saved token must exit 1 and say so", result)
+    checks.expect(keychain_item_exists(login), "a clear-token with nothing to delete must leave Claude Code's own login alone")
+    checks.done("clear-token with no saved token exits 1 with a clear message")
+
+    saved = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=saved)
+    checks.expect(result.returncode == 0, "set-token must work again after clear-token", result)
+    checks.expect(launched_token(sandbox, checks, "work") == saved, "a token saved after clear-token must launch")
+    checks.done("a token can be saved again after clear-token")
+
+    result = sandbox.run("require-token", "on")
+    checks.expect(result.returncode == 0, "require-token on must succeed", result)
+    result = sandbox.run("profile", "clear-token", "work")
+    checks.expect(result.returncode == 0 and "requires an inference token" in result.stdout and saved not in result.stdout + result.stderr,
+                  "clear-token must warn that launches are refused while a token is required", result)
+    result = sandbox.run("run", "work")
+    checks.expect(result.returncode == 1 and result.stderr == token_required_error("work") and sandbox.record() is None,
+                  "with require-token on, run must be refused after the token is cleared", result)
+    result = sandbox.run("require-token", "off")
+    checks.expect(result.returncode == 0 and not read_policy_preference(), "require-token off must clear the shared preference", result)
+    checks.done("require-token on: a launch is refused once the token is cleared")
+
+    # Arguments: only a profile name; nothing is deleted by a usage error.
+    value = synthetic()
+    result = sandbox.run("profile", "set-token", "work", stdin=value)
+    checks.expect(result.returncode == 0, "set-token must save the token the usage errors must not delete", result)
+    for arguments in (("profile", "clear-token"), ("profile", "clear-token", "work", "extra"),
+                      ("profile", "clear-token", "work", "--expires", "2099-01-01"), ("profile", "clear-token", value)):
+        result = sandbox.run(*arguments, stdin=value)
+        checks.expect(result.returncode == 2, f"{' '.join(arguments[:4])} must be a usage error", result)
+        checks.expect(value not in result.stdout + result.stderr, "a usage error must not echo a token")
+        if len(arguments) > 3:
+            checks.expect("claudock profile clear-token NAME" in result.stderr, "extra arguments must get the clear-token usage", result)
+    checks.expect(launched_token(sandbox, checks, "work") == value, "usage errors must not delete the saved token")
+    result = sandbox.run("profile", "clear-token", "work")
+    checks.expect(result.returncode == 0, "clear-token must delete the token the usage errors left", result)
+    checks.done("clear-token takes only a profile name")
+
+    # Claude Code's own login and the other kinds of profile.
+    console = sandbox.listed()["console"]
+    sandbox.create_keychain_item(inference_service(console))
+    result = sandbox.run("profile", "clear-token", "console")
+    checks.expect(result.returncode == 1 and "Console API key" in result.stderr and "Inference tokens are only for" in result.stderr,
+                  "clear-token must refuse an API-key profile", result)
+    checks.expect(keychain_item_exists(inference_service(console)), "a refused clear-token must delete nothing")
+    checks.expect(delete_keychain_item(inference_service(console)), "could not remove the synthetic item the refusal check created")
+    result = sandbox.run("profile", "clear-token", "default")
+    checks.expect(result.returncode == 1 and "Choose a supported Claude subscription profile" in result.stderr,
+                  "clear-token must refuse an unresolved profile", result)
+    checks.expect(keychain_item_exists(login), "refused clear-token commands must leave Claude Code's own login alone")
+    checks.done("clear-token refuses API-key and unresolved profiles")
+
+
+def removal(sandbox, checks):
+    """`profile remove` keeps every credential and lists the Keychain items that exist for the profile."""
+    result = sandbox.run("profile", "add", "gone")
+    checks.expect(result.returncode == 0, "the removal checks need a subscription profile", result)
+    gone = sandbox.listed()["gone"]
+    for service in (credential_service(gone), managed_key_service(gone), inference_service(gone), api_key_service(gone)):
+        sandbox.track(service)
+    # A login Claude Code saved, stood in for by a synthetic item, and a token saved with set-token.
+    sandbox.create_keychain_item(credential_service(gone))
+    token = synthetic()
+    result = sandbox.run("profile", "set-token", "gone", stdin=token)
+    checks.expect(result.returncode == 0, "the removal check needs a saved token", result)
+    result = check_removal(sandbox, checks, "gone", present={"login", "inference token"})
+    checks.expect(token not in result.stdout + result.stderr, "remove must not print the token")
+    checks.done("remove lists the login and the inference token that exist, with their delete commands, the folder, and the revoke reminder")
+
+    result = sandbox.run("profile", "add", "nothing")
+    checks.expect(result.returncode == 0, "the removal checks need a profile with no Keychain items", result)
+    nothing = sandbox.listed()["nothing"]
+    for service in (credential_service(nothing), managed_key_service(nothing), inference_service(nothing), api_key_service(nothing)):
+        sandbox.track(service)
+    result = check_removal(sandbox, checks, "nothing", present=set())
+    checks.expect("security" not in result.stdout and "Keychain" not in result.stdout, "remove must name no Keychain item when none exists", result)
+    checks.done("remove prints no delete command for a profile that left no Keychain item")
+
+    # A folder name with an apostrophe still gives a line that can be pasted into a shell. (A control character in a
+    # folder name is refused when the profile is added, so it cannot be tried here; check.py covers how it is shown.)
+    directory = sandbox.base / "Bob's folder"
+    directory.mkdir()
+    result = sandbox.run("profile", "add", "apostrophe", "--directory", str(directory))
+    checks.expect(result.returncode == 0, "the removal checks need a profile whose folder name has an apostrophe", result)
+    odd = sandbox.listed()["apostrophe"]
+    for service in (credential_service(odd), managed_key_service(odd), inference_service(odd), api_key_service(odd)):
+        sandbox.track(service)
+    result = check_removal(sandbox, checks, "apostrophe", present=set())
+    checks.expect("Config folder: '" + str(directory) + "'" not in result.stdout and "'\\''" in result.stdout,
+                  "the apostrophe in the folder name must be escaped for the shell", result)
+    checks.done("remove prints the config folder quoted for the shell, an apostrophe in its name included")
+
+
+def default_profile_items_are_refused(sandbox, checks):
+    """The helpers must never create, track for deletion, or delete the real default profile's Keychain items. Only
+    the guard and `track` are exercised: a missing guard would make these calls touch the real items."""
+    checks.expect(len(set(DEFAULT_PROFILE_SERVICES)) == 4, "the default profile has four distinct Keychain items")
+    for service in DEFAULT_PROFILE_SERVICES:
+        for refuse in (refuse_default_profile_item, sandbox.track):
+            try:
+                refuse(service)
+            except ValueError:
+                continue
+            raise AssertionError(f"the harness must refuse the default profile's Keychain item {service!r}")
+    checks.expect(sandbox.services == set(), "no default item may be tracked for deletion")
+    checks.done("the harness refuses the default profile's Keychain items")
+
+
 def help_text(sandbox, checks):
     result = sandbox.run("help")
     for text in ("profile set-token NAME [--expires ISO8601_DATE]", "profile tokens", "run NAME -- setup-token",
-                 "pbpaste | claudock profile set-token NAME", "require-token on|off|status"):
+                 "pbpaste | claudock profile set-token NAME", "require-token on|off|status", "profile clear-token NAME"):
         checks.expect(text in result.stdout, f"help must document {text!r}", result)
     checks.expect(result.stdout.count("claudock profile setup-token NAME") >= 2,
                   "help must list profile setup-token in its usage and in the token flow", result)
@@ -394,6 +526,7 @@ def main():
     try:
         sandbox = Sandbox(cli, "e2e-tokens")
         sandboxes.append(sandbox)
+        default_profile_items_are_refused(sandbox, checks)
         result = sandbox.run("profile", "add", "work")
         checks.expect(result.returncode == 0, "the token sandbox needs a subscription profile", result)
         sandbox.track(inference_service(sandbox.listed()["work"]))
@@ -410,6 +543,8 @@ def main():
         setup_token_command(sandbox, checks)
         account_mismatch(sandbox, checks)
         setup_token_rejections(sandbox, checks)
+        clear_token(sandbox, checks)
+        removal(sandbox, checks)
         help_text(sandbox, checks)
     except AssertionError as error:
         failure = str(error)

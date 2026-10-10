@@ -16,8 +16,9 @@ import secrets
 import signal
 import sys
 
-from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, clean_up_on_termination,
-                          credential_service, delete_keychain_item, keychain_item_exists, preflight)
+from claudock_e2e import (Checks, Sandbox, TerminalRun, api_key_service, build_cli, check_removal, clean_up_on_termination,
+                          credential_service, delete_keychain_item, inference_service, keychain_item_exists, managed_key_service,
+                          preflight)
 
 
 PROMPT = b"Console API key: "
@@ -283,13 +284,19 @@ def terminal_prompt(sandbox, checks):
 
 
 def removal(sandbox, checks, console):
-    service = api_key_service(console)
-    result = sandbox.run("profile", "remove", "console")
-    checks.expect(result.returncode == 0, "profile remove must succeed", result)
-    checks.expect(service in result.stdout, "removal must print the key's Keychain service name", result)
-    checks.expect("console" not in sandbox.listed(), "the profile must be removed from the registry")
-    checks.expect(keychain_item_exists(service), "removal must keep the Keychain item")
-    checks.done("remove keeps the Keychain item and prints its service")
+    # Only the key: one delete command, and nothing about the items the profile never had.
+    usr = sandbox.listed()["usrkey"]
+    for service in (credential_service(usr), managed_key_service(usr), inference_service(usr)):
+        sandbox.track(service)
+    check_removal(sandbox, checks, "usrkey", present={"API key"})
+    checks.done("remove keeps the API key and prints its delete command, the folder, and the revoke reminder")
+
+    # A profile that once signed in to a Console account also leaves Claude Code's key behind, unused. With a login
+    # and a token item beside them, all four kinds exist and are listed in order.
+    for service in (credential_service(console), managed_key_service(console), inference_service(console)):
+        sandbox.create_keychain_item(service)
+    check_removal(sandbox, checks, "console", present={"login", "console key", "inference token", "API key"})
+    checks.done("remove lists all four kinds of Keychain item, in order, when they all exist, and keeps them")
 
 
 def usage_skip(cli, checks, sandboxes):
