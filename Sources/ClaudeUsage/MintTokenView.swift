@@ -7,6 +7,8 @@ struct MintTokenView: View {
     private enum Field: Hashable { case token, authorizationCode }
 
     let profile: Profile
+    /// Whether Claudock has an inference token saved for the profile, so there is one to delete.
+    let tokenSaved: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var mode: Mode = .paste
     @State private var tokenText = ""
@@ -16,6 +18,10 @@ struct MintTokenView: View {
     @State private var failure: String?
     @State private var saved = false
     @State private var savedFromPaste = false
+    @State private var confirmingDelete = false
+    @State private var deleting = false
+    /// Nil until Delete token has run, then whether it removed a saved token (false: none was left).
+    @State private var deleted: Bool?
     @State private var expiry: Date?
     @State private var operation: Task<Void, Never>?
     @FocusState private var focusedField: Field?
@@ -45,6 +51,11 @@ struct MintTokenView: View {
                     Text("Assigned to \(profile.name). The token's account was not verified remotely.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            } else if let deleted {
+                Label(deleted ? "Deleted from Keychain" : "No inference token was saved", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(deleted ? .green : .secondary)
+                Text("Claude Code's own login for \(profile.name) was not touched. The token stays valid at Anthropic until you revoke it on claude.ai.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Picker("Token setup", selection: $mode) {
                     Text("Paste token").tag(Mode.paste)
@@ -85,17 +96,24 @@ struct MintTokenView: View {
                         .focused($focusedField, equals: .authorizationCode)
                         .onSubmit { saveToken() }
                 }
-                if busy { ProgressView("Saving inference token…").controlSize(.small) }
+                if busy { ProgressView(deleting ? "Deleting inference token…" : "Saving inference token…").controlSize(.small) }
             }
             Text("Inference only. Quota monitoring uses a separate Claude Code login.")
                 .font(.caption).foregroundStyle(.secondary)
             if let failure { Text(failure).font(.callout).foregroundStyle(.red) }
             if isDemo { Text("Demo mode does not read the clipboard, open sign-in, or access Keychain.").font(.caption).foregroundStyle(.secondary) }
             HStack {
+                if tokenSaved && !saved && deleted == nil {
+                    Button("Delete token", role: .destructive) { confirmingDelete = true }
+                        .disabled(busy || isDemo)
+                        .accessibilityLabel("Delete the inference token saved for \(profile.name)")
+                        .accessibilityIdentifier("deleteInferenceTokenButton")
+                        .help("Delete this profile's inference token from Keychain")
+                }
                 Spacer()
-                Button(saved ? "Done" : "Cancel") { operation?.cancel(); clearInputs(); dismiss() }
+                Button(saved || deleted != nil ? "Done" : "Cancel") { operation?.cancel(); clearInputs(); dismiss() }
                     .keyboardShortcut(.cancelAction).disabled(busy)
-                if !saved {
+                if !saved && deleted == nil {
                     Button(mode == .paste ? "Save to Keychain" : "Create token", action: saveToken)
                         .keyboardShortcut(.defaultAction).disabled(!canSave)
                         .accessibilityIdentifier("saveInferenceTokenButton")
@@ -110,6 +128,14 @@ struct MintTokenView: View {
             focusedField = !isDemo && mode == .paste ? .token : nil
         }
         .onDisappear { operation?.cancel(); clearInputs() }
+        .alert("Delete inference token?", isPresented: $confirmingDelete) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete token", role: .destructive) { deleteToken() }
+        } message: {
+            Text("Delete the inference token Claudock saved for \(profile.name) from Keychain? Claude Code's own login is not touched. "
+                 + "\(profile.name) then starts with its normal login, or is refused while Require inference token to launch is on. "
+                 + "The token is not revoked.")
+        }
     }
 
     private func clearInputs() { tokenText = ""; code = ""; flow = nil }
@@ -137,6 +163,19 @@ struct MintTokenView: View {
             flow = next
             focusedField = .authorizationCode
         } catch { flow = nil; failure = error.localizedDescription }
+    }
+
+    private func deleteToken() {
+        guard !busy, !isDemo else { return }
+        let selectedProfile = profile
+        busy = true; deleting = true; failure = nil
+        operation = Task {
+            do {
+                deleted = try await Task.detached(priority: .userInitiated) { try MintTokenStore.delete(profile: selectedProfile) }.value
+            } catch is CancellationError { }
+            catch { failure = error.localizedDescription }
+            busy = false; deleting = false
+        }
     }
 
     private func saveToken() {
