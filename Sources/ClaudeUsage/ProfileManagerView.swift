@@ -179,13 +179,13 @@ struct ProfileManagerView: View {
         default: return "Set token…"
         }
     }
-    /// Whether an inference token item may exist for the row: its last status read found one, one that belongs to another
-    /// login included, or could not be read at all, as with a token that no longer decodes, which is the one to delete.
+    /// Whether an inference token item may exist for the row: its latest status read could not read it, as with a token
+    /// that no longer decodes, which is the one to delete, or found one, one that belongs to another login included.
     private func hasSavedToken(_ profile: Profile) -> Bool {
+        if unavailableCredentialStatuses.contains(profile.id) { return true }
         switch credentialStatuses[profile.id] {
         case .token(.active)?, .token(.expired)?, .token(.imported)?, .tokenOfAnotherAccount?: return true
-        case .token(.notConfigured)?, .apiKey?, .consoleLogin?: return false
-        case nil: return unavailableCredentialStatuses.contains(profile.id)
+        default: return false
         }
     }
     private func beginCredentialChange(_ profile: Profile) {

@@ -164,7 +164,7 @@ claudock profile remove office
 
 Removing a profile keeps its folder, its conversations, and its credentials. To delete the credentials and the folder as well, follow these steps in order. Steps 2 to 4 cannot be undone.
 
-1. Remove the profile in Terminal, or with **Remove…** in Manage profiles. The command prints each credential the profile left in Keychain, with the command that deletes it, and then the profile's folder, quoted for the shell, which the profile list no longer shows once the profile is gone. The app shows the same in its notice. A profile can leave up to four items. The command prints those that exist, and marks any that Keychain could not be asked about:
+1. Remove the profile in Terminal, or with **Remove…** in Manage profiles. The command prints each credential the profile left in Keychain, with the command that deletes it, and then the profile's folder, quoted for the shell, which the profile list no longer shows once the profile is gone. The app shows the same in its notice, which stays until your next action in Manage profiles, so copy what you need first. A profile can leave up to four items. The command prints those that exist, and marks any that Keychain could not be asked about:
 
    - `Claude Code-credentials-…`: Claude Code's login for the profile's folder, for a subscription or a Console account.
    - `Claude Code-…`: the API key Claude Code made when you signed in to a Console account.
@@ -351,7 +351,7 @@ Set the credit again from the Console whenever you check it.
 
 An inference token is a long-lived Claude Code token (`sk-ant-oat01-…`) for a subscription profile. Claudock keeps it in Keychain and passes it to Claude Code when it starts that profile, so Claude Code uses it instead of the profile's normal login. Console profiles do not use tokens.
 
-In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one. When a token is saved, **Delete token** removes it from Keychain after you confirm.
+In the app, open **Manage profiles** and choose **Set token…** (or **Manage token…**) on the profile's row. **Paste token** saves a token you already have. **Create in browser** makes a new one. When a token is saved, or its status cannot be read, **Delete token** removes it from Keychain after you confirm.
 
 *The commands and the setting below need a build from `main`; not in v1.6.0.* In Terminal:
 
